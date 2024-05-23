@@ -2012,7 +2012,7 @@ df_window_update_and_render(Arena *arena, DF_Window *ws, DF_CmdList *cmds)
             df_cmd_params_mark_slot(&p, DF_CmdParamSlot_Window);
             df_cmd_params_mark_slot(&p, DF_CmdParamSlot_Panel);
             df_cmd_params_mark_slot(&p, DF_CmdParamSlot_Entity);
-            df_cmd_list_push(arena, cmds, &p, df_cmd_spec_from_core_cmd_kind(DF_CoreCmdKind_PendingEntity));
+            df_cmd_list_push(arena, cmds, &p, df_cmd_spec_from_core_cmd_kind(DF_CoreCmdKind_Switch));
           }
         }break;
         case DF_CoreCmdKind_Reload:
@@ -2044,14 +2044,21 @@ df_window_update_and_render(Arena *arena, DF_Window *ws, DF_CmdList *cmds)
         case DF_CoreCmdKind_Switch:
         {
           B32 already_opened = 0;
-          DF_Panel *panel = df_panel_from_handle(params.panel);
-          for(DF_View *v = panel->first_tab_view; !df_view_is_nil(v); v = v->next)
+          for(DF_Panel *panel = ws->root_panel; !df_panel_is_nil(panel); panel = df_panel_rec_df_pre(panel).next)
           {
-            DF_Entity *v_param_entity = df_entity_from_handle(v->entity);
-            if(v_param_entity == df_entity_from_handle(params.entity))
+            for(DF_View *view = panel->first_tab_view; !df_view_is_nil(view); view = view->next)
             {
-              panel->selected_tab_view = df_handle_from_view(v);
-              already_opened = 1;
+              DF_Entity *v_param_entity = df_entity_from_handle(view->entity);
+              if(v_param_entity == df_entity_from_handle(params.entity))
+              {
+                panel->selected_tab_view = df_handle_from_view(view);
+                ws->focused_panel = panel;
+                already_opened = 1;
+                break;
+              }
+            }
+            if(already_opened == 1)
+            {
               break;
             }
           }
