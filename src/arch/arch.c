@@ -160,7 +160,11 @@ arch_reg_code_from_dw(Arch arch, DW_RegCode code)
   {
     ARCH_Info *arch_info = arch_info_from_arch(arch);
     U8 *dw_from_reg_code_table = arch_dw_from_reg_code_table_from_arch(arch);
-    for EachIndex(c, arch_info->reg_code_count)
+    // An arch with no table gets the single-byte nil table.
+    U64 code_count = (dw_from_reg_code_table == &arch_reg_code_u8_nil) ? 0 : arch_info->reg_code_count;
+    // Real registers start at index 1; index 0 is nil, which stores DWARF code 0
+    // like unmapped registers do, but DWARF code 0 is a real register (rax, x0).
+    for(U64 c = 1; c < code_count; c += 1)
     {
       if(dw_from_reg_code_table[c] == code)
       {
