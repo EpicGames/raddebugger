@@ -32,6 +32,9 @@ typedef struct LNK_Input
 {
   String8           path;
   String8           data;
+  String8           compressed_data;
+  LNK_CompressedObj *compressed_obj;
+  U8                *compressed_eager_base;
   B32               disallow;
   B32               is_thin;
   B32               owns_file_map;
@@ -206,7 +209,6 @@ typedef struct LNK_BaseRelocPageArray
 typedef struct
 {
   B32                   search_anti_deps;
-  B32                   reset_search_cursor;
   LNK_Link             *link;
   HashMap              *imports_hm;
   LNK_SymbolTable      *symtab;
@@ -232,6 +234,13 @@ typedef struct
   U64                  image_base;
   COFF_SectionHeader **image_section_table;
 } LNK_ObjRelocPatcher;
+
+// Per-worker arenas backing the patched debug-section copies (lnk_obj_reloc_patcher
+// pushes on g_sect_copy_arenas[worker_id]; arena_alloc recycles free-list blocks so the
+// pages are warm). Released wholesale in lnk_build_pdb after the last $S reader
+// (module write + global-record materialize), gated off when /PDBSTRIPPED follows.
+global Arena **g_sect_copy_arenas     = 0;
+global U64     g_sect_copy_arena_count = 0;
 
 typedef struct
 {
@@ -378,7 +387,7 @@ internal LNK_Input * lnk_inputer_push_lib_thin(LNK_Inputer *inputer, LNK_Config 
 
 internal B32               lnk_inputer_has_items(LNK_Inputer *inputer);
 internal LNK_InputPtrArray lnk_inputer_flush(Arena *arena, TP_Context *tp, LNK_Inputer *inputer, LNK_IO_Flags io_flags, LNK_InputList *all_inputs, LNK_InputList *new_inputs);
-internal void               lnk_inputer_release_file_maps(TP_Context *tp, LNK_Inputer *inputer);
+internal void               lnk_inputer_release_file_maps(TP_Context *tp, U64 worker_cap, LNK_Inputer *inputer);
 
 // --- Link Context ------------------------------------------------------------
 
@@ -396,7 +405,9 @@ internal LNK_LinkResult lnk_link_image (TP_Context *tp, TP_Arena *arena, LNK_Con
 // --- Optimizations -----------------------------------------------------------
 
 internal void lnk_opt_ref(TP_Context *tp, LNK_SymbolTable *symtab, LNK_Config *config, LNK_Obj **objs, U64 objs_count);
-internal void lnk_opt_icf(TP_Context *tp, LNK_SymbolTable *symtab, LNK_Config *config, LNK_Obj **objs, U64 objs_count);
+internal void lnk_opt_icf(TP_Context *tp, Arena *perm, LNK_SymbolTable *symtab, LNK_Config *config, LNK_Obj **objs, U64 objs_count);
+internal U32  lnk_icf_debug_s_child_from_section(LNK_Obj *obj, U32 fn_sn);
+internal void lnk_icf_mark_folded_lines(TP_Context *tp, TP_Arena *arena, LNK_Obj **objs, U64 objs_count);
 
 // --- Win32 Image -------------------------------------------------------------
 
@@ -409,3 +420,9 @@ internal LNK_ImageContext lnk_build_image(TP_Arena *arena, TP_Context *tp, LNK_C
 
 internal void lnk_log_link_stats(LNK_ObjList obj_list, LNK_LibList *lib_index, LNK_SectionTable *sectab);
 internal void lnk_log_timers(void);
+
+// One-line end-of-link summary for production triage (always on). Prints
+// exactly once; safe to call from any exit path (values best-effort on early
+// error exits). Defined in lnk.c; called from lnk_exit and entry_point.
+internal void lnk_print_summary(int exit_code);
+
