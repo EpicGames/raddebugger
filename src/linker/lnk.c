@@ -1633,6 +1633,47 @@ lnk_search_lib_task_work_count(LNK_SearchLibTask *task, U64 task_id)
   return work_count;
 }
 
+internal void
+lnk_asan_lib_names(Arena *arena, LNK_Inputer *inputer, String8 arch_name, String8 thunk_stem,
+                   String8 *dynamic_out, String8 *thunk_out)
+{
+  String8 stems[] = { str8_lit("clang_rt.asan_dynamic"), thunk_stem };
+  String8 names[2] = {0};
+  String8 requested[2] = {0};
+  for EachIndex(role, ArrayCount(stems)) {
+    String8 short_name = str8f(arena, "%S.lib", stems[role]);
+    names[role] = str8f(arena, "%S-%S.lib", stems[role], arch_name);
+    for EachNode(input, LNK_Input, inputer->libs.first) {
+      String8 name = str8_skip_last_slash(input->path);
+      if (str8_match(name, short_name, StringMatchFlag_CaseInsensitive) ||
+          str8_match(name, names[role], StringMatchFlag_CaseInsensitive)) {
+        requested[role] = input->path;
+        break;
+      }
+    }
+  }
+
+  // Clang distributions can use unsuffixed names in architecture-specific
+  // directories. Reuse requested components instead of adding an SDK variant.
+  for EachIndex(role, ArrayCount(stems)) {
+    if (requested[role].size) {
+      names[role] = requested[role];
+    } else if (requested[1 - role].size) {
+      // With only one component supplied, infer its matching companion, not
+      // a different compiler runtime. Prefer its directory, then LIBPATH.
+      String8 other_path = requested[1 - role];
+      String8 other_name = str8_skip_last_slash(other_path);
+      String8 suffix = str8_skip(other_name, stems[1 - role].size);
+      String8 name = str8f(arena, "%S%S", stems[role], suffix);
+      String8 dir = str8_prefix(other_path, other_path.size - other_name.size);
+      String8 path = str8f(arena, "%S%S", dir, name);
+      names[role] = file_path_exists(path) ? path : name;
+    }
+  }
+  *dynamic_out = names[0];
+  *thunk_out = names[1];
+}
+
 internal LNK_Lib *
 lnk_find_first_crt_lib(LNK_Config *config, LNK_Inputer *inputer)
 {
@@ -1710,8 +1751,9 @@ lnk_link_inputs(TP_Context      *tp,
                 B32 link_vc_libs = lnk_symbol_table_searchf(symtab, "__you_must_link_with_VCAsan_lib")  != 0 ||
                                    lnk_symbol_table_searchf(symtab, "___you_must_link_with_VCAsan_lib") != 0;
                 if (str8_match(crt_lib_name, str8_lit("msvcrt"), StringMatchFlag_CaseInsensitive) || str8_match(crt_lib_name, str8_lit("msvcrtd"), StringMatchFlag_CaseInsensitive)) {
-                  String8 dynamic_lib_name = str8f(inputer->arena, "clang_rt.asan_dynamic-%S.lib", arch_name);
-                  String8 thunk_lib_name   = str8f(inputer->arena, "clang_rt.asan_dynamic_runtime_thunk-%S.lib", arch_name);
+                  String8 dynamic_lib_name, thunk_lib_name;
+                  lnk_asan_lib_names(inputer->arena, inputer, arch_name, str8_lit("clang_rt.asan_dynamic_runtime_thunk"),
+                                     &dynamic_lib_name, &thunk_lib_name);
                   lnk_whole_archive(config, thunk_lib_name);
                   lnk_inputer_push_lib_thin(inputer, config, LNK_InputSource_Obj, dynamic_lib_name);
                   lnk_inputer_push_lib_thin(inputer, config, LNK_InputSource_Obj, thunk_lib_name);
@@ -1723,8 +1765,9 @@ lnk_link_inputs(TP_Context      *tp,
                     }
                   }
                 } else if (str8_match(crt_lib_name, str8_lit("libcmt"), StringMatchFlag_CaseInsensitive) || str8_match(crt_lib_name, str8_lit("libcmtd"), StringMatchFlag_CaseInsensitive)) {
-                  String8 dynamic_lib_name = str8f(inputer->arena, "clang_rt.asan_dynamic-%S.lib", arch_name);
-                  String8 thunk_lib_name   = str8f(inputer->arena, "clang_rt.asan_static_runtime_thunk-%S.lib", arch_name);
+                  String8 dynamic_lib_name, thunk_lib_name;
+                  lnk_asan_lib_names(inputer->arena, inputer, arch_name, str8_lit("clang_rt.asan_static_runtime_thunk"),
+                                     &dynamic_lib_name, &thunk_lib_name);
                   lnk_whole_archive(config, thunk_lib_name);
                   lnk_inputer_push_lib_thin(inputer, config, LNK_InputSource_Obj, dynamic_lib_name);
                   lnk_inputer_push_lib_thin(inputer, config, LNK_InputSource_Obj, thunk_lib_name);

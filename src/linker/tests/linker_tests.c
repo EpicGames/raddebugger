@@ -8217,6 +8217,109 @@ t_radlink_validate_asan_out(String8 obj_name)
   return is_ok;
 }
 
+internal B32
+t_write_asan_inference_lib(Arena *arena, String8 path, char *symbol, char *section, U8 value, char *registration_section)
+{
+  String8 data = t_coff_from_def_lib(arena, (T_COFF_DefLib){
+    .emit_second_member = 1,
+    .members = (T_COFF_DefLibMember[]){
+      {.type = T_COFF_DefLibMember_Obj, .obj = {
+        .machine = T_COFF_DefSetMachine(X64),
+        .sections = (T_COFF_DefSection[]){{"data", section, str8(&value, 1), .flags = "r:data"}, {0}},
+        .symbols = (T_COFF_DefSymbol[]){T_COFF_DefSymbol_Extern(symbol, "data", 0), {0}},
+      }},
+      {.type = registration_section ? T_COFF_DefLibMember_Obj : 0, .obj = {
+        .machine = T_COFF_DefSetMachine(X64),
+        .sections = (T_COFF_DefSection[]){{"data", registration_section, str8(&value, 1), .flags = "r:data"}, {0}},
+        .symbols = (T_COFF_DefSymbol[]){T_COFF_DefSymbol_Extern("registration", "data", 0), {0}},
+      }},
+      {0}},
+  });
+  return t_write_file(path, data);
+}
+
+TEST(infer_asan_explicit_runtime)
+{
+  T_Ok(make_directory(t_make_file_path(arena, str8_lit("explicit runtime"))));
+  T_Ok(make_directory(t_make_file_path(arena, str8_lit("sdk"))));
+  T_Ok(make_directory(t_make_file_path(arena, str8_lit("solo"))));
+  T_Ok(t_write_def_obj("entry.obj", (T_COFF_DefObj){
+    .machine = T_COFF_DefSetMachine(X64),
+    .sections = (T_COFF_DefSection[]){{"text", ".text", str8_lit("\xC3"), .flags = "rx:code"}, {0}},
+    .symbols = (T_COFF_DefSymbol[]){T_COFF_DefSymbol_ExternFunc("entry", "text", 0), {0}},
+  }));
+  T_Ok(t_write_asan_inference_lib(arena, str8_lit("sdk/msvcrt.lib"), "crt_marker", ".crt", 1, 0));
+  T_Ok(t_write_asan_inference_lib(arena, str8_lit("sdk/libcmt.lib"), "crt_marker", ".crt", 1, 0));
+  T_Ok(t_write_asan_inference_lib(arena, str8_lit("explicit runtime/clang_rt.asan_dynamic.lib"), "__asan_init", ".ert", 0x11, 0));
+  T_Ok(t_write_asan_inference_lib(arena, str8_lit("sdk/clang_rt.asan_dynamic-x86_64.lib"), "__asan_init", ".srt", 0x31, 0));
+  T_Ok(t_write_asan_inference_lib(arena, str8_lit("solo/clang_rt.asan_dynamic-x86_64.lib"), "__asan_init", ".ort", 0x51, 0));
+  char *thunks[] = {"clang_rt.asan_dynamic_runtime_thunk", "clang_rt.asan_static_runtime_thunk"};
+  for EachIndex(crt, ArrayCount(thunks)) {
+    T_Ok(t_write_asan_inference_lib(arena, str8f(arena, "explicit runtime/%s.lib", thunks[crt]),
+                                    "__asan_globals_start", ".eth", 0x21 + crt, ".ereg"));
+    T_Ok(t_write_asan_inference_lib(arena, str8f(arena, "sdk/%s-x86_64.lib", thunks[crt]),
+                                    "__asan_globals_start", ".sth", 0x41 + crt, ".sreg"));
+  }
+  // Explicit pair; unchanged defaults; either component alone; canonical pair;
+  // canonical import alone with its companion found through LIBPATH.
+  U32 modes[] = {3, 0, 1, 2, 4, 8};
+  for EachIndex(crt, ArrayCount(thunks)) {
+    for EachIndex(case_idx, ArrayCount(modes)) {
+      U32 mode = modes[case_idx];
+      B32 explicit_family = mode == 1 || mode == 2 || mode == 3;
+      String8 runtime_arg = str8_zero(), thunk_arg = str8_zero();
+      if (mode & 1) { runtime_arg = str8_lit("\"explicit runtime/clang_rt.asan_dynamic.lib\""); }
+      if (mode & 2) { thunk_arg = str8f(arena, "\"explicit runtime/%s.lib\"", thunks[crt]); }
+      if (mode == 4) {
+        runtime_arg = str8_lit("sdk/clang_rt.asan_dynamic-x86_64.lib");
+        thunk_arg = str8f(arena, "sdk/%s-x86_64.lib", thunks[crt]);
+      }
+      if (mode == 8) { runtime_arg = str8_lit("solo/clang_rt.asan_dynamic-x86_64.lib"); }
+      t_invoke_linkerf("/entry:entry /subsystem:console /inferasanlibs /opt:noref,noicf /out:infer.exe /libpath:sdk "
+                       "/include:__asan_init /include:__asan_globals_start entry.obj %S %S sdk/%s.lib",
+                       runtime_arg, thunk_arg, crt ? "libcmt" : "msvcrt");
+      T_Ok(g_last_exit_code == 0);
+      String8 image = t_read_file(arena, str8_lit("infer.exe"));
+      PE_BinInfo bin = pe_bin_info_from_data(arena, image);
+      COFF_SectionHeader *sections = (COFF_SectionHeader *)(image.str + bin.section_table_range.min);
+      char *expected_runtime = mode == 8 ? ".ort" : explicit_family ? ".ert" : ".srt";
+      char *expected_thunk = explicit_family ? ".eth" : ".sth";
+      char *expected_registration = explicit_family ? ".ereg" : ".sreg";
+      U32 found = 0;
+      for EachIndex(i, bin.section_count) {
+        COFF_SectionHeader *section = &sections[i];
+        if (MemoryMatch(section->name, expected_runtime, 5)) {
+          T_Ok(image.str[section->foff] == (mode == 8 ? 0x51 : explicit_family ? 0x11 : 0x31));
+          found |= 1;
+        }
+        if (MemoryMatch(section->name, expected_thunk, 5)) {
+          T_Ok(image.str[section->foff] == (explicit_family ? 0x21 : 0x41) + crt);
+          found |= 2;
+        }
+        if (MemoryMatch(section->name, expected_registration, 6)) { found |= 4; }
+        if (explicit_family) {
+          T_Ok(!MemoryMatch(section->name, ".srt", 5));
+          T_Ok(!MemoryMatch(section->name, ".sth", 5));
+          T_Ok(!MemoryMatch(section->name, ".sreg", 6));
+        } else {
+          T_Ok(!MemoryMatch(section->name, ".ert", 5));
+          T_Ok(!MemoryMatch(section->name, ".eth", 5));
+          T_Ok(!MemoryMatch(section->name, ".ereg", 6));
+        }
+      }
+      T_Ok(found == 7); // includes the unreferenced, whole-archived registration member
+    }
+  }
+  // Do not hide genuine duplicates when the caller explicitly requests both.
+  t_invoke_linkerf("/entry:entry /subsystem:console /inferasanlibs /out:duplicate.exe /libpath:sdk "
+                   "/include:__asan_init /include:__asan_globals_start entry.obj sdk/msvcrt.lib "
+                   "\"explicit runtime/clang_rt.asan_dynamic.lib\" "
+                   "\"explicit runtime/clang_rt.asan_dynamic_runtime_thunk.lib\" "
+                   "sdk/clang_rt.asan_dynamic_runtime_thunk-x86_64.lib "
+                   "/wholearchive:sdk/clang_rt.asan_dynamic_runtime_thunk-x86_64.lib");
+  T_Ok(g_last_exit_code == LNK_Error_MultiplyDefinedSymbol);
+}
+
 TEST(infer_asan)
 {
   char *program = 
