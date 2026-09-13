@@ -2903,7 +2903,9 @@ TEST(import_export)
   T_Ok(t_write_def_obj("export.obj", (T_COFF_DefObj){
     .machine = T_COFF_DefSetMachine(X64),
     .sections = (T_COFF_DefSection[]){
-      { "data", ".data", str8_lit("test"), .flags = "rw:data" },
+      // keep the separate from CRT/import data, and back every export
+      // offset (including ord3 and ord4) with bytes in this section
+      { "data", ".exports", str8_lit_comp("test\0\0\0\0\0\x09\x0A"), .flags = "rw:data" },
       {0}
     },
     .symbols = (T_COFF_DefSymbol[]){
@@ -2964,7 +2966,8 @@ TEST(import_export)
       PE_BinInfo           pe            = pe_bin_info_from_data(arena, dll);
       COFF_SectionHeader  *section_table = (COFF_SectionHeader *)str8_substr(dll, pe.section_table_range).str;
       PE_ParsedExportTable export_table  = pe_exports_from_data(arena, pe.section_count, section_table, dll, pe.data_dir_franges[PE_DataDirectoryIndex_EXPORT], pe.data_dir_vranges[PE_DataDirectoryIndex_EXPORT]);
-      COFF_SectionHeader  *data_sect     = coff_section_header_from_name(str8_zero(), section_table, pe.section_count, str8_lit(".data"));
+      COFF_SectionHeader  *data_sect     = coff_section_header_from_name(str8_zero(), section_table, pe.section_count, str8_lit(".exports"));
+      T_Ok(data_sect != 0);
 
       // validate header
       T_Ok(export_table.flags == 0);
@@ -3019,6 +3022,9 @@ TEST(import_export)
       PE_BinInfo           pe            = pe_bin_info_from_data(arena, dll);
       COFF_SectionHeader  *section_table = (COFF_SectionHeader *)str8_substr(dll, pe.section_table_range).str;
       PE_ParsedExportTable export_table  = pe_exports_from_data(arena, pe.section_count, section_table, dll, pe.data_dir_franges[PE_DataDirectoryIndex_EXPORT], pe.data_dir_vranges[PE_DataDirectoryIndex_EXPORT]);
+      COFF_SectionHeader  *s1_sect       = coff_section_header_from_name(str8_zero(), section_table, pe.section_count, str8_lit(".s1"));
+      COFF_SectionHeader  *s2_sect       = coff_section_header_from_name(str8_zero(), section_table, pe.section_count, str8_lit(".s2"));
+      T_Ok(s1_sect != 0 && s2_sect != 0);
 
       // validate header
       T_Ok(export_table.flags == 0);
@@ -3041,10 +3047,10 @@ TEST(import_export)
       T_Ok(str8_match(export_table.exports[3].forwarder, str8_zero(), 0));
 
       // validate voffs
-      T_Ok(export_table.exports[0].voff == 0x3000);
-      T_Ok(export_table.exports[1].voff == 0x4000);
-      T_Ok(export_table.exports[2].voff == 0x4000);
-      T_Ok(export_table.exports[3].voff == 0x3000);
+      T_Ok(export_table.exports[0].voff == s1_sect->voff);
+      T_Ok(export_table.exports[1].voff == s2_sect->voff);
+      T_Ok(export_table.exports[2].voff == s2_sect->voff);
+      T_Ok(export_table.exports[3].voff == s1_sect->voff);
 
       // validate ordinals
       T_Ok(export_table.exports[0].ordinal == 2);
@@ -8592,16 +8598,16 @@ TEST(infer_asan)
 TEST(determ_test)
 {
   // compile the test target (torture)
-  t_invoke_cl("/Brepro /fsanitize=address /c /Z7 /DBUILD_GIT_HASH=Stringify() /Fo:test.obj -I%S /Zc:preprocessor %S/torture/torture_main.c", t_src_path(), t_src_path());
+  t_invoke_cl("/Brepro /fsanitize=address /c /Z7 /DBUILD_GIT_HASH=Stringify() /Fo:test.obj -I\"%S\" /Zc:preprocessor \"%S/torture/torture_main.c\"", t_src_path(), t_src_path());
   T_Ok(g_last_exit_code == 0);
 
   U64 run_count = 25;
   T_Ok(run_count > 1);
   String8 test_path = t_make_file_path(arena, str8_lit("test.obj"));
-  String8 lib_path = str8_chop_last_slash(t_radlink_path());
+  String8 lib_path = str8_chop_last_slash(t_linker_path());
 
   // single-threaded link
-  t_invoke_linkerf("%S /libpath:\"%S\" /debug:full /rad_time_stamp:0 /rad_workers:1 /pdbaltpath:main.pdb /rad_log:-all /rad_ignore:74 /out:main.exe", test_path, lib_path);
+  t_invoke_linkerf("\"%S\" /libpath:\"%S\" /debug:full /rad_time_stamp:0 /rad_workers:1 /pdbaltpath:main.pdb /rad_log:-all /rad_ignore:74 /out:main.exe", test_path, lib_path);
   T_Ok(g_last_exit_code == 0);
 
   // read b
@@ -8612,14 +8618,30 @@ TEST(determ_test)
   ProcessList linkers = {0};
   for EachIndex(i, run_count) {
     String8 out_path = t_make_file_path(arena, str8f(arena, "%llu.exe", i));
-    String8 cmdl = str8f(arena, "%S %S /libpath:\"%S\" /debug:full /rad_time_stamp:0 /rad_imagealtpath:main.exe /pdbaltpath:main.pdb /rad_log:-all /rad_ignore:74 /out:%S", t_radlink_path(), test_path, lib_path, out_path);
-    Process process_handle = launch_cmd_line(cmdl);
+    // TODO: use an argument list: launch_cmd_line splits on spaces without parsing
+    // quotes. Match the baseline link's working directory as well
+    ProcessLaunchParams params = {0};
+    params.path = g_wdir;
+    params.inherit_env = 1;
+    str8_list_push(arena, &params.cmd_line, t_linker_path());
+    str8_list_push(arena, &params.cmd_line, test_path);
+    str8_list_pushf(arena, &params.cmd_line, "/libpath:%S", lib_path);
+    char *args[] = { "/debug:full", "/rad_time_stamp:0", "/rad_imagealtpath:main.exe", "/pdbaltpath:main.pdb", "/rad_log:-all", "/rad_ignore:74" };
+    for EachElement(arg_idx, args) {
+      str8_list_push(arena, &params.cmd_line, str8_cstring(args[arg_idx]));
+    }
+    str8_list_pushf(arena, &params.cmd_line, "/out:%S", out_path);
+    Process process_handle = process_launch(&params);
     T_Ok(!process_match(process_zero(), process_handle));
     process_list_push(arena, &linkers, process_handle);
   }
 
   // wait for linkers
-  for EachNode(n, ProcessNode, linkers.first) { process_join(n->v, max_U64, 0); }
+  for EachNode(n, ProcessNode, linkers.first) {
+    U64 exit_code = 1;
+    T_Ok(process_join(n->v, max_U64, &exit_code));
+    T_Ok(exit_code == 0);
+  }
 
   for EachIndex(i, run_count) {
     Temp temp = temp_begin(arena);
