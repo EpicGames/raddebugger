@@ -50,7 +50,7 @@ internal String8 t_radbin_path(void);
 internal String8 t_cl_path(void);
 internal String8 t_clang_path(void);
 internal String8 t_gcc_path(void);
-internal String8 t_radlink_path(void);
+internal String8 t_linker_path(void);
 internal String8 t_cwd_path(void);
 internal String8 t_src_path(void);
 
@@ -60,7 +60,7 @@ internal B32 t_invoke_cl(char *fmt, ...);
 internal B32 t_invoke_linkerf(char *fmt, ...);
 internal B32 t_invoke_radbin(char *fmt, ...);
 internal void t_kill_all(String8 pattern);
-#define t_invoke_linker_timeout(c, t)       T_Ok(t_invoke(t_radlink_path(), c, t))
+#define t_invoke_linker_timeout(c, t)       T_Ok(t_invoke(t_linker_path(), c, t))
 #define t_invoke_linker_timeoutf(t, f, ...) t_invoke_linker_timeout(push_str8f(arena, f, ##__VA_ARGS__), t)
 #define t_invoke_linker(c)                  t_invoke_linker_timeout(c, max_U64)
 

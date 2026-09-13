@@ -1503,7 +1503,7 @@ internal TEST_FUNCTION_DEF(dbg_script_runner)
   }
   
   // run linkers
-  String8 linker_path = t_radlink_path();
+  String8 linker_path = t_linker_path();
   for EachNode(directive, T_DbgScriptDirective, script.directives[OperatingSystem_CURRENT][T_DbgScriptDirectiveKind_Link].first) {
     String8 expanded_args = lnk_expand_env_vars_windows(arena, script_vars, directive->args);
     if (t_invoke(linker_path, expanded_args, max_U64) == 0) {
