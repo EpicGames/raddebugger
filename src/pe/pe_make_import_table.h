@@ -28,6 +28,7 @@ typedef struct PE_MakeImportList
 internal void                pe_make_import_header_list_push_node(PE_MakeImportList *list, PE_MakeImportNode *node);
 internal PE_MakeImportNode * pe_make_import_header_list_push(Arena *arena, PE_MakeImportList *list, PE_MakeImport header);
 internal String8             pe_undecorate_import_name(String8 name);
+internal String8             pe_import_name_no_prefix(String8 name);
 
 internal COFF_ObjSymbol * pe_make_indirect_jump_thunk_x64(COFF_ObjWriter *obj_writer, COFF_ObjSection *code_sect, COFF_ObjSymbol *iat_symbol, String8 thunk_name);
 internal COFF_ObjSymbol * pe_make_load_thunk_x64(COFF_ObjWriter *obj_writer, COFF_ObjSection *code_sect, COFF_ObjSymbol *imp_addr_ptr, COFF_ObjSymbol *tail_merge, String8 func_name);

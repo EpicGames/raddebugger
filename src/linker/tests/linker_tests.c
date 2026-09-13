@@ -4909,6 +4909,132 @@ TEST(communal_var_vs_regular_comdat)
   }
 }
 
+TEST(import_name_no_prefix)
+{
+  // IMPORT_NAME_NOPREFIX removes exactly one leading '?', '@', or '_'.
+  // Unlike IMPORT_NAME_UNDECORATE, it must preserve the rest of the name.
+  struct {
+    char *symbol_name;
+    char *export_name;
+  } cases[] = {
+    { "_add",                       "add" },
+    { "_StdcallImport@8",            "StdcallImport@8" },
+    { "@FastcallImport@8",           "FastcallImport@8" },
+    { "?Method@Class@@QEAAXXZ",       "Method@Class@@QEAAXXZ" },
+    { "__DoublePrefix",              "_DoublePrefix" },
+    { "PlainImport@8",               "PlainImport@8" },
+  };
+  struct {
+    char *args;
+    B32 delayed;
+  } opts[] = {
+    { "/opt:ref", 0 },
+    { "/opt:noref", 0 },
+    { "/opt:ref /delayload:noprefix.dll", 1 },
+    { "/opt:noref /delayload:noprefix.dll", 1 },
+  };
+
+  for EachElement(case_idx, cases) {
+    String8 symbol_name = str8_cstring(cases[case_idx].symbol_name);
+    String8 iat_name = str8f(arena, "__imp_%S", symbol_name);
+
+    // Synthetic x64 inputs isolate the import-name encoding from compiler
+    // name decoration and do not require a DLL or an x86 toolchain to run.
+    T_Ok(t_write_def_lib("noprefix.lib", (T_COFF_DefLib){
+      .emit_second_member = 1,
+      .members = (T_COFF_DefLibMember[]){
+        {
+          .type = T_COFF_DefLibMember_Import,
+          .import = { "noprefix.dll", cases[case_idx].symbol_name,
+                      COFF_ImportBy_NameNoPrefix, COFF_ImportHeader_Code,
+                      .hit_or_ordinal = 17 },
+        },
+        {0},
+      },
+    }));
+    T_Ok(t_write_def_obj("entry.obj", (T_COFF_DefObj){
+      .sections = (T_COFF_DefSection[]){
+        {
+          "text", ".text",
+          str8_lit_comp(
+            "\x48\x83\xEC\x28"     // sub rsp,28h
+            "\xE8\0\0\0\0"        // call decorated function's jump thunk
+            "\xFF\x15\0\0\0\0"    // call [__imp_decorated_function]
+            "\x48\x83\xC4\x28\xC3" // add rsp,28h; ret
+          ),
+          .flags = "rx:code",
+          .relocs = (T_COFF_DefReloc[]){
+            T_COFF_DefReloc(X64_Rel32, 5, cases[case_idx].symbol_name),
+            T_COFF_DefReloc(X64_Rel32, 11, (char *)iat_name.str),
+            {0},
+          },
+        },
+        {0},
+      },
+      .symbols = (T_COFF_DefSymbol[]){
+        T_COFF_DefSymbol_ExternFunc("entry", "text", 0),
+        // Link-only test: the delay helper only needs to resolve to a ret.
+        T_COFF_DefSymbol_ExternFunc("__delayLoadHelper2", "text", 19),
+        T_COFF_DefSymbol_UndefFunc(cases[case_idx].symbol_name),
+        T_COFF_DefSymbol_Undef((char *)iat_name.str),
+        {0},
+      },
+    }));
+
+    for EachElement(opt_idx, opts) {
+      t_infof("NameNoPrefix import %S -> %s (%s)\n", symbol_name, cases[case_idx].export_name, opts[opt_idx].args);
+      t_invoke_linkerf("/nodefaultlib /subsystem:console /entry:entry /out:noprefix.exe %s entry.obj noprefix.lib", opts[opt_idx].args);
+      T_Ok(g_last_exit_code == 0);
+
+      String8 image = t_read_file(arena, str8_lit("noprefix.exe"));
+      PE_BinInfo bin = pe_bin_info_from_data(arena, image);
+      COFF_SectionHeader *sections = (COFF_SectionHeader *)(image.str + bin.section_table_range.min);
+      PE_ParsedImport *import = 0;
+      U64 iat_voff = 0;
+      if (opts[opt_idx].delayed) {
+        T_Ok(bin.data_dir_count > PE_DataDirectoryIndex_DELAY_IMPORT);
+        PE_ParsedDelayImportTable imports = pe_delay_imports_from_data(arena, bin.is_pe32, bin.section_count, sections, image, bin.data_dir_franges[PE_DataDirectoryIndex_DELAY_IMPORT]);
+        T_Ok(imports.count == 1);
+        T_Ok(str8_match(imports.v[0].name, str8_lit("noprefix.dll"), 0));
+        T_Ok(imports.v[0].import_count == 1);
+        import = &imports.v[0].imports[0];
+        iat_voff = imports.v[0].iat_voff;
+      } else {
+        T_Ok(bin.data_dir_count > PE_DataDirectoryIndex_IMPORT);
+        PE_ParsedStaticImportTable imports = pe_static_imports_from_data(arena, bin.is_pe32, bin.section_count, sections, image, bin.data_dir_franges[PE_DataDirectoryIndex_IMPORT]);
+        T_Ok(imports.count == 1);
+        T_Ok(str8_match(imports.v[0].name, str8_lit("noprefix.dll"), 0));
+        T_Ok(imports.v[0].import_count == 1);
+        import = &imports.v[0].imports[0];
+        iat_voff = imports.v[0].import_address_table_voff;
+      }
+      T_Ok(import->type == PE_ParsedImport_Name);
+      if (!opts[opt_idx].delayed) {
+        T_Ok(import->u.name.hint == 17);
+      }
+      T_Ok(str8_match(import->u.name.string, str8_cstring(cases[case_idx].export_name), 0));
+
+      // Prefix stripping must not rename the COFF symbols or disconnect the
+      // direct-call thunk from the slot referenced by __imp_<original name>.
+      U64 entry_off = pe_foff_from_voff(image, &bin, bin.entry_point);
+      S32 call_disp = 0, iat_disp = 0, thunk_disp = 0;
+      T_Ok(str8_deserial_read_struct(image, entry_off + 5, &call_disp) == sizeof(call_disp));
+      T_Ok(str8_deserial_read_struct(image, entry_off + 11, &iat_disp) == sizeof(iat_disp));
+      U64 thunk_voff = (U64)((S64)bin.entry_point + 9 + call_disp);
+      U64 thunk_off = pe_foff_from_voff(image, &bin, thunk_voff);
+      T_Ok(str8_match(str8_substr(image, rng_1u64(thunk_off, thunk_off + 2)), str8_lit("\xFF\x25"), 0));
+      T_Ok(str8_deserial_read_struct(image, thunk_off + 2, &thunk_disp) == sizeof(thunk_disp));
+      T_Ok((U64)((S64)bin.entry_point + 15 + iat_disp) == iat_voff);
+      T_Ok((U64)((S64)thunk_voff + 6 + thunk_disp) == iat_voff);
+      U64 iat_off = pe_foff_from_voff(image, &bin, iat_voff);
+      U64 iat_entry = 0, iat_end = 1;
+      T_Ok(str8_deserial_read_struct(image, iat_off, &iat_entry) == sizeof(iat_entry));
+      T_Ok(str8_deserial_read_struct(image, iat_off + 8, &iat_end) == sizeof(iat_end));
+      T_Ok(iat_entry != 0 && iat_end == 0);
+    }
+  }
+}
+
 TEST(import_undecorate)
 {
   // Keep the decorated COFF symbols, but use the undecorated DLL export name

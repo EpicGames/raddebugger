@@ -18,12 +18,20 @@ pe_make_import_header_list_push(Arena *arena, PE_MakeImportList *list, PE_MakeIm
 }
 
 internal String8
-pe_undecorate_import_name(String8 name)
+pe_import_name_no_prefix(String8 name)
 {
-  // COFF IMPORT_NAME_UNDECORATE strips one prefix character and the suffix starting at the first '@'
+  // COFF IMPORT_NAME_NOPREFIX strips exactly one prefix character
   if (name.size && (name.str[0] == '?' || name.str[0] == '@' || name.str[0] == '_')) {
     name = str8_skip(name, 1);
   }
+  return name;
+}
+
+internal String8
+pe_undecorate_import_name(String8 name)
+{
+  // IMPORT_NAME_UNDECORATE additionally removes the suffix at the first '@'.
+  name = pe_import_name_no_prefix(name);
   return str8_prefix(name, str8_find_needle(name, 0, str8_lit("@"), 0));
 }
 
@@ -297,11 +305,15 @@ pe_make_import_dll_obj_static(Arena *arena, COFF_TimeStamp time_stamp, COFF_Mach
       str8_list_push(obj_writer->arena, &iat_sect->data, ordinal_data);
     } break;
     case COFF_ImportBy_Undecorate:
+    case COFF_ImportBy_NameNoPrefix:
     case COFF_ImportBy_Name: {
       COFF_ObjSection *int_sect = coff_obj_writer_push_section(obj_writer, str8_lit(".idata$6"), PE_IDATA_SECTION_FLAGS|COFF_SectionFlag_Align2Bytes|comdat_flags, str8_zero());
       coff_obj_writer_push_symbol_associative(obj_writer, int_sect, iat_sect);
       COFF_ObjSymbol *int_symbol = coff_obj_writer_push_symbol_static(obj_writer, int_sect->name, 0, int_sect);
       String8 lookup_name = import_header.import_by == COFF_ImportBy_Undecorate ? pe_undecorate_import_name(import_header.func_name) : import_header.func_name;
+      if (import_header.import_by == COFF_ImportBy_NameNoPrefix) {
+        lookup_name = pe_import_name_no_prefix(import_header.func_name);
+      }
       String8 int_data = coff_make_import_lookup(obj_writer->arena, import_header.hint_or_ordinal, lookup_name);
       str8_list_push(obj_writer->arena, &int_sect->data, int_data);
       str8_list_push_aligner(obj_writer->arena, &int_sect->data, 0, 2);
@@ -314,7 +326,6 @@ pe_make_import_dll_obj_static(Arena *arena, COFF_TimeStamp time_stamp, COFF_Mach
       str8_list_push(obj_writer->arena, &ilt_sect->data, str8_array(import_entry, import_size));
       str8_list_push(obj_writer->arena, &iat_sect->data, str8_array(import_entry, import_size));
     } break;
-    case COFF_ImportBy_NameNoPrefix: { NotImplemented; } break;
     default: { InvalidPath; } break;
     }
 
@@ -473,9 +484,13 @@ pe_make_import_dll_obj_delayed(Arena *arena, COFF_TimeStamp time_stamp, COFF_Mac
       }
     } break;
     case COFF_ImportBy_Undecorate:
+    case COFF_ImportBy_NameNoPrefix:
     case COFF_ImportBy_Name: {
       // put together name look up entry
       String8 lookup_name = import_header.import_by == COFF_ImportBy_Undecorate ? pe_undecorate_import_name(import_header.func_name) : import_header.func_name;
+      if (import_header.import_by == COFF_ImportBy_NameNoPrefix) {
+        lookup_name = pe_import_name_no_prefix(import_header.func_name);
+      }
       String8 int_data = coff_make_import_lookup(obj_writer->arena, import_header.hint_or_ordinal, lookup_name);
       U64 int_data_offset = int_sect->data.total_size;
       str8_list_push(obj_writer->arena, &int_sect->data, int_data);
@@ -516,7 +531,6 @@ pe_make_import_dll_obj_delayed(Arena *arena, COFF_TimeStamp time_stamp, COFF_Mac
         coff_obj_writer_section_push_reloc_addr(obj_writer, uiat_sect, uiat_data_offset, load_thunk_symbol);
       }
     } break;
-    case COFF_ImportBy_NameNoPrefix: { NotImplemented; } break;
     }
   }
 
