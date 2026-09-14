@@ -260,7 +260,11 @@ lnk_can_replace_symbol(LNK_Symbol *dst, LNK_Symbol *src)
   }
   // abs vs abs
   else if (dst_interp == COFF_SymbolValueInterp_Abs && src_interp == COFF_SymbolValueInterp_Abs) {
-    lnk_error_multiply_defined_symbol(dst, src);
+    if (dst_parsed.value == src_parsed.value) {
+      can_replace = lnk_symbol_is_before(src, dst);
+    } else {
+      lnk_error_multiply_defined_symbol(dst, src);
+    }
   }
   // weak vs weak
   else if (dst_interp == COFF_SymbolValueInterp_Weak && src_interp == COFF_SymbolValueInterp_Weak) {
