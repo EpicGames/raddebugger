@@ -50,6 +50,7 @@ global LNK_CmdSwitch g_cmd_switch_map[] =
   { LNK_CmdSwitch_Natvis,             0, LNK_CmdValueKind_Scalar, "NATVIS",               ":FILENAME",                      "NATVIS to embed in the PDB."                                  },
   { LNK_CmdSwitch_NoDefaultLib,       1, LNK_CmdValueKind_Scalar, "NODEFAULTLIB",         ":LIBNAME",                       "Ignore a /DEFAULTLIB."                                        },
   { LNK_CmdSwitch_NoDefaultLib,       0, LNK_CmdValueKind_Scalar, "NOD",                  ":LIBNAME",                       "Alias for /NODEFAULTLIB."                                     },
+  { LNK_CmdSwitch_NoEntry,            0, LNK_CmdValueKind_Null,   "NOENTRY",              "",                               "Link to a DLL without an entry point."                        },
   { LNK_CmdSwitch_NoExp,              0, LNK_CmdValueKind_Null,   "NOEXP",                "",                               "No support."                                                  },
   { LNK_CmdSwitch_NoImpLib,           0, LNK_CmdValueKind_Null,   "NOIMPLIB",             "",                               "Do not create the import library."                            },
   { LNK_CmdSwitch_NxCompat,           0, LNK_CmdValueKind_Scalar, "NXCOMPAT",             "[:NO]",                          "Image is compatible with data execution prevention."          },
@@ -1362,6 +1363,7 @@ lnk_apply_cmd_option_to_config(LNK_Config *config, String8 cmd_name, String8 val
     }
 
     config->entry_point_name = new_entry_point_name;
+    config->no_entry         = 0;
   } break;
 
   case LNK_CmdSwitch_Export: {
@@ -1699,6 +1701,10 @@ lnk_apply_cmd_option_to_config(LNK_Config *config, String8 cmd_name, String8 val
         hash_map_push_path_u64(config->arena, &config->disallow_lib_ht, lib_name, 1);
       }
     }
+  } break;
+
+  case LNK_CmdSwitch_NoEntry: {
+    config->no_entry = 1;
   } break;
 
   case LNK_CmdSwitch_NoExp: {
@@ -3188,6 +3194,10 @@ lnk_config_init(U64 argc, char **argv)
   // create temporary files names
   if (config->write_temp_files == LNK_SwitchState_Yes) {
     lnk_apply_write_temp_files(arena, config);
+  }
+
+  if (config->no_entry && (config->file_characteristics & PE_ImageFileCharacteristic_DLL) == 0) {
+    lnk_error_cmd_switch(LNK_Error_IncomatibleCmdOptions, 0, LNK_CmdSwitch_NoEntry, "cannot link current image without an entry point; please use /DLL");
   }
 
   scratch_end(scratch);

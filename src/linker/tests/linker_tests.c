@@ -637,6 +637,175 @@ TEST(simple_link_test)
   T_Ok(opt->loader_flags == 0);
 }
 
+TEST(entry_point)
+{
+  // Give the user entry, CRT startup, and custom entry distinct offsets so that
+  // the PE header tells us which symbol was selected, including CRT redirection.
+  struct {
+    char *user_entry;
+    char *crt_entry;
+  } entries[] = {
+    { "main",     "mainCRTStartup"     },
+    { "wmain",    "wmainCRTStartup"    },
+    { "WinMain",  "WinMainCRTStartup"  },
+    { "wWinMain", "wWinMainCRTStartup" },
+    { "DllMain",  "_DllMainCRTStartup" },
+  };
+  for EachElement(i, entries) {
+    T_COFF_DefObj obj = {
+      .machine = T_COFF_DefSetMachine(X64),
+      .sections = (T_COFF_DefSection[]){
+        { "text", ".text", str8_lit_comp("\xc3\xc3\xc3"), .flags = "rx:code@1" },
+        {0}
+      },
+      .symbols = (T_COFF_DefSymbol[]){
+        T_COFF_DefSymbol_ExternFunc(entries[i].user_entry, "text", 0),
+        T_COFF_DefSymbol_ExternFunc(entries[i].crt_entry, "text", 1),
+        T_COFF_DefSymbol_ExternFunc("custom_entry", "text", 2),
+        {0}
+      }
+    };
+    T_Ok(t_write_def_obj((char *)str8f(arena, "%s.obj", entries[i].user_entry).str, obj));
+    T_Ok(t_write_def_lib((char *)str8f(arena, "%s.lib", entries[i].user_entry).str, (T_COFF_DefLib){
+      .members = (T_COFF_DefLibMember[]){
+        { .type = T_COFF_DefLibMember_Obj, .obj = obj },
+        {0}
+      }
+    }));
+  }
+
+  // Keep a real input section even when no startup object is needed.
+  T_Ok(t_write_def_obj("data.obj", (T_COFF_DefObj){
+    .sections = (T_COFF_DefSection[]){
+      { "data", ".data", str8_lit("data"), .flags = "rw:data" },
+      {0}
+    }
+  }));
+  T_Ok(t_write_def_obj("crt.obj", (T_COFF_DefObj){
+    .sections = (T_COFF_DefSection[]){
+      { "text", ".text", str8_lit_comp("\xc3"), .flags = "rx:code@1" },
+      {0}
+    },
+    .symbols = (T_COFF_DefSymbol[]){
+      T_COFF_DefSymbol_ExternFunc("mainCRTStartup", "text", 0),
+      {0}
+    }
+  }));
+
+  // /NOENTRY must not extract this member just to resolve DLL startup. Without /NOENTRY,
+  // the missing dependency proves that the member was extracted.
+  T_Ok(t_write_def_lib("bad_startup.lib", (T_COFF_DefLib){
+    .members = (T_COFF_DefLibMember[]){
+      { .type = T_COFF_DefLibMember_Obj, .obj = {
+        .sections = (T_COFF_DefSection[]){
+          { "text", ".text", str8_lit_comp("\xe8\0\0\0\0\xc3"), .flags = "rx:code@1",
+            .relocs = (T_COFF_DefReloc[]){
+              T_COFF_DefReloc(X64_Rel32, 1, "missing_dependency"),
+              {0}
+            }
+          },
+          {0}
+        },
+        .symbols = (T_COFF_DefSymbol[]){
+          T_COFF_DefSymbol_ExternFunc("_DllMainCRTStartup", "text", 0),
+          T_COFF_DefSymbol_UndefFunc("missing_dependency"),
+          {0}
+        }
+      } },
+      {0}
+    }
+  }));
+
+  struct {
+    char                *options;
+    char                *inputs;
+    PE_WindowsSubsystem  subsystem;
+    S32                  entry_off; // -1 means no entry point.
+    LNK_ErrorCode        error;
+  } cases[] = {
+    // Explicit /ENTRY bypasses CRT redirection and overrides default startup.
+    { "/subsystem:console /entry:custom_entry", "main.obj",    PE_WindowsSubsystem_WINDOWS_CUI, 2 },
+    { "/subsystem:console /entry:main",         "main.obj",    PE_WindowsSubsystem_WINDOWS_CUI, 0 },
+    { "/entry:main",                            "main.obj",    PE_WindowsSubsystem_WINDOWS_CUI, 0 },
+    { "/dll /entry:custom_entry",               "DllMain.obj", PE_WindowsSubsystem_WINDOWS_GUI, 2 },
+    { "/subsystem:console /entry:custom_entry", "main.lib",    PE_WindowsSubsystem_WINDOWS_CUI, 2 },
+
+    // Infer the subsystem and redirect each user entry to its CRT startup.
+    { "",                   "main.obj",     PE_WindowsSubsystem_WINDOWS_CUI, 1 },
+    { "",                   "wmain.obj",    PE_WindowsSubsystem_WINDOWS_CUI, 1 },
+    { "",                   "WinMain.obj",  PE_WindowsSubsystem_WINDOWS_GUI, 1 },
+    { "",                   "wWinMain.obj", PE_WindowsSubsystem_WINDOWS_GUI, 1 },
+    { "/subsystem:console", "main.obj",     PE_WindowsSubsystem_WINDOWS_CUI, 1 },
+    { "/subsystem:console", "wmain.obj",    PE_WindowsSubsystem_WINDOWS_CUI, 1 },
+    { "/subsystem:windows", "WinMain.obj",  PE_WindowsSubsystem_WINDOWS_GUI, 1 },
+    { "/subsystem:windows", "wWinMain.obj", PE_WindowsSubsystem_WINDOWS_GUI, 1 },
+    { "/subsystem:console", "crt.obj",      PE_WindowsSubsystem_WINDOWS_CUI, 0 },
+
+    // Resolve startup from a library, or use the default DLL entry/subsystem.
+    { "/subsystem:console",                           "main.lib",     PE_WindowsSubsystem_WINDOWS_CUI, 1 },
+    { "/subsystem:console /entry:wmainCRTStartup",    "wmain.lib",    PE_WindowsSubsystem_WINDOWS_CUI, 1 },
+    { "/subsystem:windows",                           "WinMain.lib",  PE_WindowsSubsystem_WINDOWS_GUI, 1 },
+    { "/subsystem:windows /entry:wWinMainCRTStartup", "wWinMain.lib", PE_WindowsSubsystem_WINDOWS_GUI, 1 },
+    { "/dll",                                         "DllMain.obj",  PE_WindowsSubsystem_WINDOWS_GUI, 1 },
+    { "/dll",                                         "DllMain.lib",  PE_WindowsSubsystem_WINDOWS_GUI, 1 },
+    { "/dll /subsystem:console",                      "DllMain.obj",  PE_WindowsSubsystem_WINDOWS_CUI, 1 },
+
+    // /NOENTRY leaves a zero RVA even when default startup symbols are available.
+    { "/dll /noentry",                    "",                PE_WindowsSubsystem_WINDOWS_GUI, -1 },
+    { "/noentry /dll",                    "",                PE_WindowsSubsystem_WINDOWS_GUI, -1 },
+    { "/dll /noentry",                    "DllMain.obj",     PE_WindowsSubsystem_WINDOWS_GUI, -1 },
+    { "/dll /noentry",                    "DllMain.lib",     PE_WindowsSubsystem_WINDOWS_GUI, -1 },
+    { "/dll /noentry",                    "bad_startup.lib", PE_WindowsSubsystem_WINDOWS_GUI, -1 },
+    { "/dll /noentry /subsystem:console", "",                PE_WindowsSubsystem_WINDOWS_CUI, -1 },
+
+    // Match LINK: the last /ENTRY or /NOENTRY wins, including undefined entries.
+    { "/dll /entry:custom_entry /noentry",       "DllMain.obj", PE_WindowsSubsystem_WINDOWS_GUI, -1 },
+    { "/dll /noentry /entry:custom_entry",       "DllMain.obj", PE_WindowsSubsystem_WINDOWS_GUI,  2 },
+    { "/dll /entry:missing_entry /noentry",      "",            PE_WindowsSubsystem_WINDOWS_GUI, -1, LNK_Error_UnresolvedSymbol },
+    { "/dll /noentry /entry:missing_entry",      "",            0,                               -1, LNK_Error_UnresolvedSymbol },
+    { "/noentry /subsystem:console /entry:main", "main.obj",    PE_WindowsSubsystem_WINDOWS_CUI,  0 },
+
+    // Missing startup, unresolved explicit entry, and invalid /NOENTRY usage.
+    { "/subsystem:console",                      "",                0, 0, LNK_Error_EntryPoint            },
+    { "/dll",                                    "",                0, 0, LNK_Error_EntryPoint            },
+    { "/subsystem:console /entry:missing_entry", "main.obj",        0, 0, LNK_Error_UnresolvedSymbol      },
+    { "/dll",                                    "bad_startup.lib", 0, 0, LNK_Error_UnresolvedSymbol      },
+    { "/noentry /subsystem:console",             "",                0, 0, LNK_Error_IncomatibleCmdOptions },
+    { "/subsystem:console /entry:main /noentry", "main.obj",        0, 0, LNK_Error_IncomatibleCmdOptions },
+  };
+
+  for EachElement(i, cases) {
+    String8 out_name = str8f(arena, "entry_%u.dll", i);
+    test_outf("entry configuration %u: %s data.obj %s\n", i, cases[i].options, cases[i].inputs);
+    T_Ok(t_invoke_linkerf("/machine:x64 /nod /manifest:no /opt:ref /opt:noicf /out:%S %s data.obj %s", out_name, cases[i].options, cases[i].inputs));
+
+    if (cases[i].error) {
+      T_Ok(g_last_exit_code != 0);
+      
+      if (t_id_linker() == Linker_radlink) {
+        T_Ok(g_last_exit_code == cases[i].error);
+      }
+    } else {
+      T_Ok(g_last_exit_code == 0);
+
+      String8    image = t_read_file(arena, out_name);
+      PE_BinInfo pe    = pe_bin_info_from_data(arena, image);
+      T_Ok(pe.arch == Arch_x64);
+      T_Ok(pe.subsystem == cases[i].subsystem);
+
+      if (cases[i].entry_off < 0) {
+        T_Ok(pe.entry_point == 0);
+      } else {
+        COFF_SectionHeader *sections = (COFF_SectionHeader *)str8_substr(image, pe.section_table_range).str;
+        String8             strings  = str8_substr(image, pe.string_table_range);
+        COFF_SectionHeader *text     = coff_section_header_from_name(strings, sections, pe.section_count, str8_lit(".text"));
+        T_Ok(text);
+        T_Ok(pe.entry_point == text->voff + cases[i].entry_off);
+      }
+    }
+  }
+}
+
 TEST(map)
 {
   T_Ok(t_write_def_obj("map.obj", (T_COFF_DefObj){

@@ -1366,13 +1366,13 @@ lnk_load_inputs(TP_Context *tp, TP_Arena *arena, LNK_Config *config, LNK_Inputer
   // load new libs
   lnk_load_libs(tp, arena, config, inputer, link);
 
-  // resolve entry point
+  // resolve entry point and subsystem
   if (link->try_to_resolve_entry_point) {
     B32 is_entry_point_name_inferred = config->entry_point_name.size == 0;
 
     // loop over all possible subsystems and entry point names and pick
     // subsystem that has a defined entry point symbol
-    if (config->entry_point_name.size == 0) {
+    if (config->no_entry == 0 && config->entry_point_name.size == 0) {
       PE_WindowsSubsystem  subsys_first       = config->subsystem;
       PE_WindowsSubsystem  subsys_last        = config->subsystem == PE_WindowsSubsystem_UNKNOWN ? PE_WindowsSubsystem_COUNT : config->subsystem+1;
       LNK_Symbol          *entry_point_symbol = 0;
@@ -1391,7 +1391,7 @@ lnk_load_inputs(TP_Context *tp, TP_Arena *arena, LNK_Config *config, LNK_Inputer
     }
 
     // search for entry point in libs
-    if (config->entry_point_name.size == 0 && config->subsystem != PE_WindowsSubsystem_UNKNOWN) {
+    if (config->no_entry == 0 && config->entry_point_name.size == 0 && config->subsystem != PE_WindowsSubsystem_UNKNOWN) {
       String8Array entry_points = pe_get_entry_point_names(config->machine, config->subsystem, config->file_characteristics);
       for EachIndex(entry_idx, entry_points.count) {
         for (LNK_LibNode *lib_n = link->libs.first; lib_n != 0; lib_n = lib_n->next) {
@@ -1427,7 +1427,9 @@ lnk_load_inputs(TP_Context *tp, TP_Arena *arena, LNK_Config *config, LNK_Inputer
       }
 
       // generate undefined symbol for entry point
-      lnk_include_symbol(config, config->entry_point_name, 0);
+      if (config->entry_point_name.size) {
+        lnk_include_symbol(config, config->entry_point_name, 0);
+      }
 
       // do we have a subsystem?
       if (config->subsystem != PE_WindowsSubsystem_UNKNOWN) {
@@ -2271,7 +2273,7 @@ lnk_link_image(TP_Context *tp, TP_Arena *arena, LNK_Config *config, LNK_Inputer 
   //
   // was entry point resolved?
   //
-  if (config->entry_point_name.size == 0 || link->try_to_resolve_entry_point) {
+  if (config->no_entry == 0 && (config->entry_point_name.size == 0 || link->try_to_resolve_entry_point)) {
     String8      machine_str   = coff_string_from_machine_type(config->machine);
     String8      subsystem_str = pe_string_from_subsystem(config->subsystem);
     String8Array entry_points  = pe_get_entry_point_names(config->machine, config->subsystem, config->file_characteristics);
@@ -5635,7 +5637,7 @@ lnk_build_win32_header(Arena *arena, LNK_SymbolTable *symtab, LNK_Config *config
   //
   // entry point
   //
-  {
+  if (config->no_entry == 0) {
     Temp scratch = scratch_begin(&arena, 1);
 
     COFF_SectionHeader **section_table = push_array(arena, COFF_SectionHeader *, coff_section_table_count + 1);
@@ -7076,6 +7078,8 @@ entry_point(CmdLine *cmdline)
   case LNK_BootMode_TypeServer: lnk_run_type_server(tp, tp_arena, config); break;
   }
 
+  // Stop workers before tearing down linker state.
+  tp_release(tp);
   lnk_log_end();
   scratch_end(scratch);
 }
