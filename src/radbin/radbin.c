@@ -1035,11 +1035,17 @@ rb_thread_entry_point(void *p)
         case OutputKind_Breakpad:
         {
           //- rjf: flatten to RDI data
-          String8List rdi_blobs = rdim_file_blobs_from_section_bundle(arena, serialized_section_bundle);
-          String8 rdi_data = str8_list_join(arena, &rdi_blobs, 0);
-          RDI_Parsed rdi_ = {0};
-          RDI_Parsed *rdi = &rdi_;
-          RDI_ParseStatus rdi_status = rdi_parse(rdi_data.str, rdi_data.size, rdi);
+          ProfBegin("flatten to RDI data");
+          RDI_Parsed *rdi = 0;
+          if(lane_idx() == 0)
+          {
+            String8List rdi_blobs = rdim_file_blobs_from_section_bundle(arena, serialized_section_bundle);
+            String8 rdi_data = str8_list_join(arena, &rdi_blobs, 0);
+            rdi = push_array(arena, RDI_Parsed, 1);
+            rdi_parse(rdi_data.str, rdi_data.size, rdi);
+          }
+          lane_sync_u64(&rdi, 0);
+          ProfEnd();
           
           //- rjf: set up shared state
           typedef struct P2B_Shared P2B_Shared;
@@ -1112,14 +1118,17 @@ rb_thread_entry_point(void *p)
           {
             U64 count = 0;
             RDI_SourceFile *v = rdi_table_from_name(rdi, SourceFiles, &count);
-            Rng1U64 range = lane_range(count);
-            for EachInRange(idx, range)
+            if(count > 0)
             {
-              String8List *out = &p2b_shared->lane_file_dumps[lane_idx()];
-              Temp scratch = scratch_begin(&arena, 1);
-              String8 src_path = str8_from_rdi_path_node_idx(scratch.arena, rdi, PathStyle_Relative, v[idx].file_path_node_idx);
-              str8_list_pushf(arena, out, "FILE %I64u %S\n", idx, src_path);
-              scratch_end(scratch);
+              Rng1U64 range = lane_range(count-1);
+              for EachInRange(idx, range)
+              {
+                String8List *out = &p2b_shared->lane_file_dumps[lane_idx()];
+                Temp scratch = scratch_begin(&arena, 1);
+                String8 src_path = str8_from_rdi_path_node_idx(scratch.arena, rdi, PathStyle_Relative, v[idx+1].file_path_node_idx);
+                str8_list_pushf(arena, out, "FILE %I64u %S\n", idx+1, src_path);
+                scratch_end(scratch);
+              }
             }
           }
           
@@ -1137,7 +1146,6 @@ rb_thread_entry_point(void *p)
               RDI_Scope *root_scope = rdi_element_from_name_idx(rdi, Scopes, proc->root_scope_idx);
               if(root_scope->voff_range_opl > root_scope->voff_range_first)
               {
-                
                 // rjf: dump function record
                 RDIM_Rng1U64 voff_range =
                 {
@@ -1146,7 +1154,8 @@ rb_thread_entry_point(void *p)
                 };
                 {
                   Temp scratch = scratch_begin(0, 0);
-                  str8_list_pushf(arena, out, "FUNC %I64x %I64x %I64x %S\n", voff_range.min, voff_range.max-voff_range.min, 0ull, fully_qualified_str8_from_rdi_symbol(scratch.arena, rdi, proc));
+                  String8 name = fully_qualified_str8_from_rdi_symbol(scratch.arena, rdi, proc);
+                  str8_list_pushf(arena, out, "FUNC %I64x %I64x %I64x %S\n", voff_range.min, voff_range.max-voff_range.min, 0ull, name);
                   scratch_end(scratch);
                 }
                 

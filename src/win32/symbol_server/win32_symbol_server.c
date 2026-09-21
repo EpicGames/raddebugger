@@ -229,6 +229,7 @@ smsv_async_tick(void)
     }
   }
   lane_sync_u64(&request_tasks, 0);
+  lane_sync_u64(&request_task_count, 0);
   
   //- rjf: do all request tasks
   {

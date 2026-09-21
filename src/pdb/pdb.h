@@ -181,7 +181,7 @@ typedef U16 PDB_DbiBuildNumber;
 #define PDB_DbiBuildNumberMinor(bn)     ((bn)&0xFF)
 #define PDB_DbiBuildNumberMajor(bn)     (((bn) >> 8)&0x7F)
 #define PDB_DbiBuildNumberNewFormat(bn) (!!((bn)&PDB_DbiBuildNumberNewFormatFlag))
-#define PDB_DbiMakeBuildNumber(maj, min) (PDB_DbiBuildNumber)(PDB_DbiBuildNumberNewFormatFlag | ((min)&0xFF) | (((maj)&0x7F) << 16))
+#define PDB_DbiMakeBuildNumber(maj, min) (PDB_DbiBuildNumber)(PDB_DbiBuildNumberNewFormatFlag | ((min)&0xFF) | (((maj)&0x7F) << 8))
 
 typedef U16 PDB_DbiHeaderFlags;
 enum

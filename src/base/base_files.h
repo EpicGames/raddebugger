@@ -40,6 +40,13 @@ struct File
   U64 u64[1];
 };
 
+typedef struct FilePair FilePair;
+struct FilePair
+{
+  File read;
+  File write;
+};
+
 typedef struct FileMap FileMap;
 struct FileMap
 {
@@ -70,6 +77,11 @@ internal String8 file_read_cstring(Arena *arena, File file, U64 off);
 //- rjf: files
 internal File           file_open(AccessFlags flags, String8 path);
 internal void           file_close(File file);
+internal FilePair       file_pipe_make(B32 read_inherited, B32 write_inherited);
+internal U64            file_pipe_read(File file, void *out_data, U64 size);
+internal U64            file_pipe_write(File file, void *data, U64 size);
+internal U64            file_pipe_bytes_available(File file);
+internal B32            file_pipe_is_end(File file);
 internal U64            file_read(File file, Rng1U64 rng, void *out_data);
 #define file_read_struct(f, off, ptr) file_read((f), r1u64((off), (off)+sizeof(*(ptr))), (ptr))
 internal U64            file_write(File file, Rng1U64 rng, void *data);
@@ -77,9 +89,12 @@ internal B32            file_set_times(File file, DateTime time);
 internal FileProperties properties_from_file(File file);
 internal FileID         id_from_file(File file);
 internal B32            file_reserve_size(File file, U64 size);
+internal B32            file_set_size(File file, U64 size);
+internal B32            file_flush(File file);
 internal B32            delete_file_at_path(String8 path);
 internal B32            copy_file_path(String8 dst, String8 src);
 internal B32            move_file_path(String8 dst, String8 src);
+internal B32            replace_file_path(String8 dst, String8 src);
 internal String8        full_path_from_path(Arena *arena, String8 path);
 internal B32            file_path_exists(String8 path);
 internal B32            folder_path_exists(String8 path);
@@ -89,6 +104,7 @@ internal FileProperties properties_from_file_path(String8 path);
 internal FileMap file_map_open(AccessFlags flags, File file);
 internal void    file_map_close(FileMap map);
 internal void *  file_map_view_open(FileMap map, AccessFlags flags, Rng1U64 range);
+internal void *  file_map_view_replace_placeholder(FileMap map, void *ptr, Rng1U64 range);
 internal void    file_map_view_close(FileMap map, void *ptr, Rng1U64 range);
 
 //- rjf: directory iteration

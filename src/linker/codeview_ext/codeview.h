@@ -240,8 +240,10 @@ typedef struct CV_DebugT
   Rng1U64 ti_ranges     [CV_TypeIndexSource_COUNT];
 
   // PCH
-  Rng1U64 pch_ti_range[CV_TypeIndexSource_COUNT];
-  U32     pch_obj_idx;
+  B8             has_pch;
+  CV_PrecompInfo precomp;
+  Rng1U64        pch_ti_range[CV_TypeIndexSource_COUNT];
+  U32            pch_obj_idx;
 } CV_DebugT;
 
 ////////////////////////////////

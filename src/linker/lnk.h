@@ -64,6 +64,7 @@ typedef struct LNK_Inputer
   LNK_InputList  new_objs;
 
   HashTable     *libs_ht;
+  HashTable     *cmd_lib_names_ht;
   HashTable     *missing_lib_ht;
   LNK_InputList  libs;
   LNK_InputList  new_libs[LNK_InputSource_Count];
@@ -98,6 +99,7 @@ typedef struct LNK_Link
   LNK_LibList              libs;
   LNK_ObjNode            **last_symbol_input;
   LNK_IncludeSymbolNode  **last_include;
+  LNK_AltNameNode        **last_func_override_alt_name;
   String8Node            **last_cmd_lib;
   String8Node            **last_default_lib;
   String8Node            **last_obj_lib;
@@ -115,8 +117,9 @@ typedef struct LNK_LinkResult
 
 // -- Image Layout ------------------------------------------------------------
 
-#define LNK_REMOVED_SECTION_NUMBER_32 (U32)-3
-#define LNK_REMOVED_SECTION_NUMBER_16 (U16)-3
+#define LNK_REMOVED_ASSOCIATIVE_SYMBOL_VALUE ((U32)-4)
+#define LNK_REMOVED_SECTION_NUMBER_32        ((U32)-3)
+#define LNK_REMOVED_SECTION_NUMBER_16        ((U16)-3)
 
 typedef struct LNK_ImageContext
 {
@@ -206,7 +209,6 @@ typedef struct LNK_BaseRelocPageArray
 typedef struct
 {
   B32                   search_anti_deps;
-  B32                   reset_search_cursor;
   LNK_Link             *link;
   HashMap              *imports_hm;
   LNK_SymbolTable      *symtab;
@@ -376,9 +378,9 @@ internal LNK_Input * lnk_inputer_push_lib(LNK_Inputer *inputer, LNK_InputSourceT
 internal LNK_Input * lnk_inputer_push_lib_linkgen(LNK_Inputer *inputer, LNK_InputSourceType input_source, String8 path, String8 data);
 internal LNK_Input * lnk_inputer_push_lib_thin(LNK_Inputer *inputer, LNK_Config *config, LNK_InputSourceType input_source, String8 lib_path);
 
-internal B32               lnk_inputer_has_items(LNK_Inputer *inputer);
+internal B32               lnk_has_pending_input_work(LNK_Inputer *inputer, LNK_Link *link);
 internal LNK_InputPtrArray lnk_inputer_flush(Arena *arena, TP_Context *tp, LNK_Inputer *inputer, LNK_IO_Flags io_flags, LNK_InputList *all_inputs, LNK_InputList *new_inputs);
-internal void               lnk_inputer_release_file_maps(TP_Context *tp, LNK_Inputer *inputer);
+internal void              lnk_inputer_release_file_maps(TP_Context *tp, LNK_Inputer *inputer);
 
 // --- Link Context ------------------------------------------------------------
 

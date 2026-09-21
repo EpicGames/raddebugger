@@ -138,22 +138,22 @@ THREAD_POOL_TASK_FUNC(lnk_strip_debug_t_sig_task)
   U64               obj_idx = task_id;
   LNK_ParseCvTypes *task    = raw_task;
 
-  for EachIndex(i, task->raw_types[obj_idx].count) {
-    String8 *d = task->raw_types[obj_idx].v + i;
-    if (d->size == 0)                   { continue; }
-    if (d->size < sizeof(CV_Signature)) { lnk_error_obj(LNK_Error_IllData, task->input->obj_arr[obj_idx], ".debug$T must have at least 4 bytes for CodeView signature"); continue; }
+  String8 *d = &task->raw_types[obj_idx];
+  if (d->size == 0) { goto exit; }
+  if (d->size < sizeof(CV_Signature)) { lnk_error_obj(LNK_Error_IllData, task->input->obj_arr[obj_idx], ".debug$T must have at least 4 bytes for CodeView signature"); goto exit; }
 
-    CV_Signature sig = cv_signature_from_debug_s(*d);
-    switch (sig) {
-    default: {
-      lnk_error_obj(LNK_Warning_IllData, task->input->obj_arr[obj_idx], "unknown CodeView type signature in section (TODO: print section index)");
-      *d = str8(0,0);
-    } break;
-    case CV_Signature_C13: {
-      *d = str8_skip(*d, sizeof(CV_Signature));
-    } break;
-    }
+  CV_Signature sig = cv_signature_from_debug_s(*d);
+  switch (sig) {
+  default: {
+    lnk_error_obj(LNK_Warning_IllData, task->input->obj_arr[obj_idx], "unknown CodeView type signature in section (TODO: print section index)");
+    *d = str8(0,0);
+  } break;
+  case CV_Signature_C13: {
+    *d = str8_skip(*d, sizeof(CV_Signature));
+  } break;
   }
+
+  exit:;
 }
 
 internal
@@ -161,11 +161,7 @@ THREAD_POOL_TASK_FUNC(lnk_parse_debug_t_task)
 {
   ProfBeginFunction();
   LNK_ParseCvTypes *task = raw_task;
-  if (task->raw_types[task_id].count > 0) {
-    task->out_types[task_id] = cv_debug_t_from_data(arena, task->raw_types[task_id].v[0], CV_LeafAlign);
-  } else {
-    MemoryZeroStruct(&task->out_types[task_id]);
-  }
+  task->out_types[task_id] = cv_debug_t_from_data(arena, task->raw_types[task_id], CV_LeafAlign);
   ProfEnd();
 }
 
@@ -662,7 +658,14 @@ lnk_make_code_view_input(TP_Context *tp, TP_Arena *tp_arena, LNK_Config *config,
   ProfBegin("Extract CodeView");
   Temp scratch = scratch_begin(0,0);
 
-  LNK_CodeViewInput input = { .config = config, .obj_count = obj_count, .count = obj_count, .obj_arr = obj_arr, .rrt_input = rrt_input, .ts_obj_range = r1u64(0,0) };
+  LNK_CodeViewInput input = {
+    .config       = config,
+    .obj_count    = obj_count,
+    .count        = obj_count,
+    .obj_arr      = obj_arr,
+    .rrt_input    = rrt_input,
+    .ts_obj_range = r1u64(0,0)
+  };
 
   HashMap rrt_hm = {0};
   ProfScope("Make obj path -> RRT hash map")
@@ -674,52 +677,51 @@ lnk_make_code_view_input(TP_Context *tp, TP_Arena *tp_arena, LNK_Config *config,
     }
   }
 
-  ProfBegin("Apply RRT to Objs");
+  ProfScope("Apply RRT to Objs") {
+    // hash map (obj path, obj idx)
+    HashMap obj_path_hm = {0};
+    for EachIndex(obj_idx, obj_count) {
+      hash_map_push_path_u64(scratch.arena, &obj_path_hm, obj_arr[obj_idx]->path, obj_idx);
+    }
 
-  // hash map (obj path, obj idx)
-  HashMap obj_path_hm = {0};
-  for EachIndex(obj_idx, obj_count) {
-    hash_map_push_path_u64(scratch.arena, &obj_path_hm, obj_arr[obj_idx]->path, obj_idx);
-  }
+    for EachIndex(obj_idx, obj_count) {
+      LNK_Obj *obj            = obj_arr[obj_idx];
+      U64     *packed_rrt_idx = hash_map_search_path_u64(&rrt_hm, obj->path);
 
-  for EachIndex(obj_idx, obj_count) {
-    LNK_Obj *obj            = obj_arr[obj_idx];
-    U64     *packed_rrt_idx = hash_map_search_path_u64(&rrt_hm, obj->path);
+      // obj is not part of any input RRT
+      if (packed_rrt_idx == 0) { continue; }
 
-    // obj is not part of any input RRT
-    if (packed_rrt_idx == 0) { continue; }
+      // unpack index
+      U32      rrt_idx     = *packed_rrt_idx >> 32;
+      U32      rrt_obj_idx = *packed_rrt_idx & max_U32;
+      LNK_RRT *rrt         = &rrt_input.v[rrt_idx];
 
-    // unpack index
-    U32      rrt_idx     = *packed_rrt_idx >> 32;
-    U32      rrt_obj_idx = *packed_rrt_idx & max_U32;
-    LNK_RRT *rrt         = &rrt_input.v[rrt_idx];
+      // obj was recompiled, do not apply RRT indirection
+      FileProperties obj_file_props = properties_from_file_path(obj->path);
+      if (rrt->obj_time_stamps[rrt_obj_idx] != obj_file_props.modified) { continue; }
 
-    // obj was recompiled, do not apply RRT indirection
-    FileProperties obj_file_props = properties_from_file_path(obj->path);
-    if (rrt->obj_time_stamps[rrt_obj_idx] != obj_file_props.modified) { continue; }
+      // invalidate debug section pointers
+      obj->coff.debug_t_section_number = 0;
+      obj->coff.debug_p_section_number = 0;
+      obj->coff.debug_h_section_number = 0;
 
-    // invalidate debug section pointers
-    obj->coff.debug_t_section_number = 0;
-    obj->coff.debug_p_section_number = 0;
-    obj->coff.debug_h_section_number = 0;
+      // apply type index map 
+      obj->ti_range = rrt->obj_ti_ranges[rrt_obj_idx];
+      obj->ti_map   = rrt->obj_ti_maps  [rrt_obj_idx];
 
-    // apply type index map 
-    obj->ti_range = rrt->obj_ti_ranges[rrt_obj_idx];
-    obj->ti_map   = rrt->obj_ti_maps  [rrt_obj_idx];
-
-    // apply PCH info
-    U32 rrt_pch_obj_idx = rrt->obj_pch_indices[rrt_obj_idx];
-    if (rrt_pch_obj_idx < rrt->obj_count) {
-      String8  rrt_pch_obj_path = rrt->obj_paths.v[rrt_pch_obj_idx];
-      U64      pch_obj_idx      = *hash_map_search_path_u64(&obj_path_hm, rrt_pch_obj_path);
-      obj->pch_ti_range = rrt->obj_pch_ti_ranges[rrt_obj_idx];
-      obj->pch_obj_idx  = pch_obj_idx;
-    } else {
-      obj->pch_ti_range = r1u64(0,0);
-      obj->pch_obj_idx  = ~0;
+      // apply PCH info
+      U32 rrt_pch_obj_idx = rrt->obj_pch_indices[rrt_obj_idx];
+      if (rrt_pch_obj_idx < rrt->obj_count) {
+        String8  rrt_pch_obj_path = rrt->obj_paths.v[rrt_pch_obj_idx];
+        U64      pch_obj_idx      = *hash_map_search_path_u64(&obj_path_hm, rrt_pch_obj_path);
+        obj->pch_ti_range = rrt->obj_pch_ti_ranges[rrt_obj_idx];
+        obj->pch_obj_idx  = pch_obj_idx;
+      } else {
+        obj->pch_ti_range = r1u64(0,0);
+        obj->pch_obj_idx  = ~0;
+      }
     }
   }
-  ProfEnd();
   
   ProfBegin("Collect CodeView");
   input.debug_s_list_arr = lnk_collect_obj_sections(tp, tp_arena, obj_count, obj_arr, str8_lit(".debug$S"), 0);
@@ -770,55 +772,44 @@ lnk_make_code_view_input(TP_Context *tp, TP_Arena *tp_arena, LNK_Config *config,
     }
   }
 
-  ProfBegin("Parse CodeView");
   CV_DebugT *debug_p_arr;
+  ProfScope("Parse CodeView")
   {
     // parse .debug$S
     input.debug_s_arr = push_array(tp_arena->v[0], CV_DebugS, input.obj_count);
     tp_for_parallel_prof(tp, tp_arena, obj_count, lnk_parse_debug_s_task, &input, "Parse .debug$S");
 
     // collect .debug$P and .debug$T
-    String8Array *raw_debug_p_arr = push_array(scratch.arena, String8Array, obj_count);
-    String8Array *raw_debug_t_arr = push_array(scratch.arena, String8Array, obj_count);
+    String8 *raw_debug_p_arr = push_array(scratch.arena, String8, obj_count);
+    String8 *raw_debug_t_arr = push_array(scratch.arena, String8, obj_count);
     for EachIndex(obj_idx, obj_count) {
       LNK_Obj *obj = obj_arr[obj_idx];
-
-      if (obj->coff.debug_t_section_number > 0) {
-        raw_debug_t_arr[obj_idx].count = 1;
-        raw_debug_t_arr[obj_idx].v     = push_array(scratch.arena, String8, 1);
-        raw_debug_t_arr[obj_idx].v[0]  = lnk_obj_section_data_from_number(obj, obj->coff.debug_t_section_number);
-      }
-
-      if (obj->coff.debug_p_section_number > 0) {
-        raw_debug_p_arr[obj_idx].count = 1;
-        raw_debug_p_arr[obj_idx].v     = push_array(scratch.arena, String8, 1);
-        raw_debug_p_arr[obj_idx].v[0]  = lnk_obj_section_data_from_number(obj, obj->coff.debug_p_section_number);
-      }
+      if (obj->coff.debug_t_section_number > 0) { raw_debug_t_arr[obj_idx] = lnk_obj_section_data_from_number(obj, obj->coff.debug_t_section_number); }
+      if (obj->coff.debug_p_section_number > 0) { raw_debug_p_arr[obj_idx] = lnk_obj_section_data_from_number(obj, obj->coff.debug_p_section_number); }
     }
 
     LNK_ParseCvTypes parse_types = { .input = &input };
 
-    // parse .debug$P
+    // .debug$P
     debug_p_arr = push_array(tp_arena->v[0], CV_DebugT, obj_count);
     parse_types.raw_types = raw_debug_p_arr;
     parse_types.out_types = debug_p_arr;
-    tp_for_parallel_prof(tp, 0,        obj_count, lnk_strip_debug_t_sig_task, &parse_types, "Strip .debug$P");
+    tp_for_parallel_prof(tp, 0,        obj_count, lnk_strip_debug_t_sig_task, &parse_types, "Strip Signature .debug$P");
     tp_for_parallel_prof(tp, tp_arena, obj_count, lnk_parse_debug_t_task,     &parse_types, "Parse .debug$P");
 
-    // parse .debug$T
+    // .debug$T
     input.debug_t_arr     = push_array(tp_arena->v[0], CV_DebugT, obj_count);
     parse_types.raw_types = raw_debug_t_arr;
     parse_types.out_types = input.debug_t_arr;
-    tp_for_parallel_prof(tp, 0,        obj_count, lnk_strip_debug_t_sig_task, &parse_types, "Strip .debug$T");
-    tp_for_parallel_prof(tp, tp_arena, obj_count, lnk_parse_debug_t_task,     &parse_types, "Parse .debug$T");
+    tp_for_parallel_prof(tp, 0, obj_count, lnk_strip_debug_t_sig_task, &parse_types, "Strip Signature .debug$T");
+    tp_for_parallel_prof(tp, tp_arena, obj_count, lnk_parse_debug_t_task, &parse_types, "Parse .debug$T");
 
-    // parse .debug$H
+    // .debug$H
     input.debug_h_arr = push_array(tp_arena->v[0], CV_DebugH, input.obj_count);
     if (config->ghash) {
       tp_for_parallel_prof(tp, tp_arena, obj_count, lnk_parse_debug_h_task, &input, "Parse .debug$H");
     }
   }
-  ProfEnd();
 
   // sort objs based on type: PCH, /Zi (external), /Z7 (internal)
   input.debug_p_indices.v = push_array(tp_arena->v[0], U32, obj_count); 
@@ -1020,31 +1011,31 @@ lnk_make_code_view_input(TP_Context *tp, TP_Arena *tp_arena, LNK_Config *config,
     }
 
     for EachIndex(i, input.int_obj_indices.count) {
-      U64        obj_idx = input.int_obj_indices.v[i];
-      CV_DebugT *debug_t = &input.debug_t_arr[obj_idx];
+      U64             obj_idx = input.int_obj_indices.v[i];
+      CV_DebugT      *debug_t = &input.debug_t_arr[obj_idx];
+      CV_PrecompInfo *precomp = &debug_t->precomp;
 
       // skip objs that do not depend on PCH
-      if ( ! cv_debug_t_is_pch(debug_t)) { continue; }
+      if ( ! debug_t->has_pch) { continue; }
 
       // find PCH obj by file path
-      CV_PrecompInfo  precomp             = cv_precomp_info_from_leaf(cv_debug_t_get_leaf(debug_t, 0));
-      String8         obj_path            = path_absolute_dst_from_relative_dst_src(scratch.arena, precomp.obj_name, config->work_dir);
-      U64            *debug_p_obj_idx_ptr = hash_map_search_path_u64(&debug_p_hm_path, obj_path);
-      U64             debug_p_obj_idx     = debug_p_obj_idx_ptr ? *debug_p_obj_idx_ptr : max_U64;
+      String8  obj_path            = path_absolute_dst_from_relative_dst_src(scratch.arena, precomp->obj_name, config->work_dir);
+      U64     *debug_p_obj_idx_ptr = hash_map_search_path_u64(&debug_p_hm_path, obj_path);
+      U64      debug_p_obj_idx     = debug_p_obj_idx_ptr ? *debug_p_obj_idx_ptr : max_U64;
 
-      // find PCH obj by signature
+      // fallback: find PCH obj by signature
       if (debug_p_obj_idx_ptr == 0) {
         for EachIndex(pch_i, input.debug_p_indices.count) {
           U64        pch_obj_idx = input.debug_p_indices.v[pch_i];
           CV_DebugT *pch_debug_t = &input.debug_t_arr[pch_obj_idx];
-          if (precomp.leaf_count >= pch_debug_t->count) { continue; }
+          if (precomp->leaf_count >= pch_debug_t->count) { continue; }
 
-          CV_Leaf end_leaf = cv_debug_t_get_leaf(pch_debug_t, precomp.leaf_count);
+          CV_Leaf end_leaf = cv_debug_t_get_leaf(pch_debug_t, precomp->leaf_count);
           if (end_leaf.kind != CV_LeafKind_ENDPRECOMP)        { continue; }
           if (end_leaf.data.size < sizeof(CV_LeafEndPreComp)) { continue; }
 
           CV_LeafEndPreComp *end_precomp = str8_deserial_get_raw_ptr(end_leaf.data, 0, sizeof(*end_precomp));
-          if (end_precomp->sig != precomp.sig) { continue; }
+          if (end_precomp->sig != precomp->sig) { continue; }
 
           debug_p_obj_idx = pch_obj_idx;
           break;
@@ -1061,25 +1052,21 @@ lnk_make_code_view_input(TP_Context *tp, TP_Arena *tp_arena, LNK_Config *config,
       CV_DebugT *debug_p = &input.debug_t_arr[debug_p_obj_idx];
 
       // error check LF_PRECOMP
-      if (precomp.start_index > CV_MinComplexTypeIndex) { lnk_error_obj(LNK_Warning_AtypicalStartIndex,    obj_arr[obj_idx], "atypical start index 0x%x in LF_PRECOMP", precomp.start_index); }
-      if (precomp.start_index < CV_MinComplexTypeIndex) { lnk_error_obj(LNK_Error_InvalidStartIndex,       obj_arr[obj_idx], "invalid start index 0x%x in LF_PRECOMP; must be >= 0x%x", precomp.start_index, CV_MinComplexTypeIndex); continue; }
-      if (precomp.leaf_count  >= debug_p->count)        { lnk_error_obj(LNK_Error_InvalidPrecompLeafCount, obj_arr[obj_idx], "leaf count %u LF_PRECOMP exceeds leaf count %u in .debug$P in %S", precomp.leaf_count, debug_p->count, obj_arr[debug_p_obj_idx]->path); continue; }
+      if (precomp->start_index > CV_MinComplexTypeIndex) { lnk_error_obj(LNK_Warning_AtypicalStartIndex,    obj_arr[obj_idx], "atypical start index 0x%x in LF_PRECOMP", precomp->start_index); }
+      if (precomp->start_index < CV_MinComplexTypeIndex) { lnk_error_obj(LNK_Error_InvalidStartIndex,       obj_arr[obj_idx], "invalid start index 0x%x in LF_PRECOMP; must be >= 0x%x", precomp->start_index, CV_MinComplexTypeIndex); continue; }
+      if (precomp->leaf_count  >= debug_p->count)        { lnk_error_obj(LNK_Error_InvalidPrecompLeafCount, obj_arr[obj_idx], "leaf count %u LF_PRECOMP exceeds leaf count %u in .debug$P in %S", precomp->leaf_count, debug_p->count, obj_arr[debug_p_obj_idx]->path); continue; }
 
-      // get LF_PRECOMP
-      CV_Leaf            endprecomp_leaf = cv_debug_t_get_leaf(debug_p, precomp.leaf_count);
+      // get LF_ENDPRECOMP
+      CV_Leaf            endprecomp_leaf = cv_debug_t_get_leaf(debug_p, precomp->leaf_count);
       CV_LeafEndPreComp *endprecomp      = str8_deserial_get_raw_ptr(endprecomp_leaf.data, 0, sizeof(*endprecomp));
 
       // error check LF_ENDPRECOMP
-      if (endprecomp_leaf.kind      != CV_LeafKind_ENDPRECOMP)    { lnk_error_obj(LNK_Error_EndprecompNotFound, obj_arr[obj_idx], "missing LF_ENDPRECOMP [0x%x] in %S", precomp.leaf_count, obj_arr[debug_p_obj_idx]->path); continue; }
+      if (endprecomp_leaf.kind      != CV_LeafKind_ENDPRECOMP)    { lnk_error_obj(LNK_Error_EndprecompNotFound, obj_arr[obj_idx], "missing LF_ENDPRECOMP [0x%x] in %S", precomp->leaf_count, obj_arr[debug_p_obj_idx]->path); continue; }
       if (endprecomp_leaf.data.size != sizeof(CV_LeafEndPreComp)) { lnk_error_obj(LNK_Error_IllData,            obj_arr[obj_idx], "invalid size 0x%x for LF_ENDPRECOMP", endprecomp_leaf.data.size); continue; }
-      if (endprecomp->sig           != precomp.sig)               { lnk_error_obj(LNK_Error_PrecompSigMismatch, obj_arr[obj_idx], "PCH signature mismatch, expected 0x%x got 0x%x; PCH obj %S", precomp.sig, endprecomp->sig, obj_arr[debug_p_obj_idx]->path); continue; }
+      if (endprecomp->sig           != precomp->sig)              { lnk_error_obj(LNK_Error_PrecompSigMismatch, obj_arr[obj_idx], "PCH signature mismatch, expected 0x%x got 0x%x; PCH obj %S", precomp->sig, endprecomp->sig, obj_arr[debug_p_obj_idx]->path); continue; }
 
-      for (U64 i = 1; i < CV_TypeIndexSource_COUNT; i += 1) { debug_t->pch_ti_range[i] = r1u64(precomp.start_index, precomp.start_index + precomp.leaf_count); }
-      debug_t->pch_obj_idx  = debug_p_obj_idx;
-
-      // remove CV_LeafKind_PRECOMP
-      debug_t->count    -= 1;
-      debug_t->offsets  += 1;
+      // associate .debug$P and .debug$T
+      debug_t->pch_obj_idx = debug_p_obj_idx;
     }
 
     // remove LF_ENDPRECOMP from .debug$P

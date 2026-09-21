@@ -89,6 +89,16 @@ struct W32_Entity
 };
 
 ////////////////////////////////
+//~ On Demand Memory
+
+typedef struct
+{
+  MemoryReadFaultFunction *fault;
+  void *user_data;
+  PVOID handler;
+} W32_DemandMemory;
+
+////////////////////////////////
 //~ rjf: State
 
 typedef struct W32_State W32_State;
@@ -105,6 +115,8 @@ struct W32_State
   CRITICAL_SECTION entity_mutex;
   Arena *entity_arena;
   W32_Entity *entity_free;
+
+  W32_DemandMemory demand_memory;
 };
 
 ////////////////////////////////

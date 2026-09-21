@@ -59,10 +59,10 @@ t_test_layer_from_name(Arena *arena, String8 pattern)
 internal Linker
 t_id_linker(void)
 {
-  String8 name = str8_chop_last_dot(str8_skip_last_slash(g_linker_path));
-  if (str8_match(name, str8_lit("radlink"),  StringMatchFlag_CaseInsensitive)) { return Linker_radlink;  }
-  if (str8_match(name, str8_lit("link"),     StringMatchFlag_CaseInsensitive)) { return Linker_msvc; }
-  if (str8_match(name, str8_lit("lld-link"), StringMatchFlag_CaseInsensitive)) { return Linker_lld; }
+  String8 name = str8_chop_last_dot(str8_skip_last_slash(t_linker_path()));
+  if (str8_matchi(name, str8_lit("radlink")))  { return Linker_radlink; }
+  if (str8_matchi(name, str8_lit("link")))     { return Linker_msvc;    }
+  if (str8_matchi(name, str8_lit("lld-link"))) { return Linker_lld;     }
   return Linker_Null;
 }
 
@@ -372,7 +372,7 @@ t_cl_version(void)
 }
 
 internal String8
-t_radlink_path(void)
+t_linker_path(void)
 {
   local_persist String8 path = {0};
   if(g_linker_path.size != 0)
@@ -384,9 +384,9 @@ t_radlink_path(void)
     ArenaParams params = { .reserve_size = sizeof(buffer), .commit_size = sizeof(buffer), .optional_backing_buffer = buffer };
     Arena *arena = arena_alloc_(&params);
 #if OS_WINDOWS
-    path = full_path_from_path(arena, str8_lit("radlink.exe"));
+    path = str8f(arena, "%S/radlink.exe", get_process_info()->binary_path);
 #else
-    path = full_path_from_path(arena, str8_lit("radlink"));
+    path = str8f(arena, "%S/radlink", get_process_info()->binary_path);
 #endif
     AssertAlways(path.size);
   }
@@ -444,7 +444,8 @@ t_src_path(void)
   local_persist U8 path[4096] = {0};
   if (path[0] == 0) {
     Temp scratch = scratch_begin(0, 0);
-    String8 src = str8f(scratch.arena, "%S/src", t_cwd_path());
+    String8 root = str8_chop_last_slash(get_process_info()->binary_path);
+    String8 src = str8f(scratch.arena, "%S/src", root);
     MemoryCopyStr8(path, src);
     path[src.size] = 0;
     scratch_end(scratch);
@@ -880,7 +881,7 @@ t_invoke_linkerf(char *fmt, ...)
   va_start(args, fmt);
   String8 cmdl = push_str8fv(scratch.arena, fmt, args);
   va_end(args);
-  B32 is_ok = t_invoke(t_radlink_path(), cmdl, max_U64);
+  B32 is_ok = t_invoke(t_linker_path(), cmdl, max_U64);
   scratch_end(scratch);
   return is_ok;
 }
@@ -948,7 +949,7 @@ t_match_linef(String8 *output, char *fmt, ...)
   return is_match;
 }
 
-force_inline int
+internal force_inline int
 t_test_info_is_before(void *a_, void *b_)
 {
   TestInfo **a = a_;

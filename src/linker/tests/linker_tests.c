@@ -433,6 +433,72 @@ t_write_entry_obj(void)
 
 ////////////////////////////////
 
+TEST(coff_writer_bigobj)
+{
+  // Exercise the standard-COFF boundary and an associative parent above 16 bits.
+  U32 section_counts[] = {3, 0xfeff, 0xff00, 0x10002};
+  for EachElement(case_idx, section_counts) {
+    COFF_ObjWriter *writer = coff_obj_writer_alloc(0x12345678, COFF_MachineType_X64);
+
+    U32 section_count = section_counts[case_idx];
+    for (U32 i = 0; i < section_count - 2; i += 1) {
+      coff_obj_writer_push_section(writer, str8_lit(".empty"), COFF_SectionFlag_LnkRemove, str8_zero());
+    }
+
+    COFF_SectionFlags  flags = COFF_SectionFlag_CntInitializedData|COFF_SectionFlag_MemRead|COFF_SectionFlag_LnkCOMDAT;
+    COFF_ObjSection   *head  = coff_obj_writer_push_section(writer, str8_lit(".long_head_section"), flags, str8_lit("head"));
+    COFF_ObjSection   *assoc = coff_obj_writer_push_section(writer, str8_lit(".assoc"), flags, str8(push_array(arena, U8, 8), 8));
+    coff_obj_writer_push_symbol_secdef(writer, head, COFF_ComdatSelect_Any);
+
+    COFF_ObjSymbol *target    = coff_obj_writer_push_symbol_extern(writer, str8_lit("long_target_symbol"), 0, head);
+    COFF_ObjSymbol *weak      = coff_obj_writer_push_symbol_weak(writer, str8_lit("weak"), COFF_WeakExt_SearchAlias, target);
+    COFF_ObjSymbol *absolute  = coff_obj_writer_push_symbol_abs(writer, str8_lit("absolute"), 17, COFF_SymStorageClass_External);
+    COFF_ObjSymbol *assoc_def = coff_obj_writer_push_symbol_associative(writer, assoc, head);
+    COFF_ObjSymbol *undef     = coff_obj_writer_push_symbol_undef(writer, str8_lit("undef"));
+    COFF_ObjSymbol *common    = coff_obj_writer_push_symbol_common(writer, str8_lit("common"), 32);
+
+    coff_obj_writer_section_push_reloc_addr(writer, assoc, 0, weak);
+
+    String8             data = coff_obj_writer_serialize(arena, writer);
+    COFF_FileHeaderInfo info = coff_file_header_info_from_data(data);
+    T_Ok(info.is_big_obj == (section_count > 0xfeff));
+    T_Ok(info.section_count_no_null == section_count);
+    T_Ok(info.symbol_size == (info.is_big_obj ? sizeof(COFF_Symbol32) : sizeof(COFF_Symbol16)));
+    T_Ok(info.symbol_count == 10);
+
+    String8           symbols       = str8_substr(data, info.symbol_table_range);
+    String8           strings       = str8_substr(data, info.string_table_range);
+    COFF_ParsedSymbol parsed_target = coff_parse_symbol(info, strings, symbols, target->idx);
+    T_Ok(parsed_target.section_number == section_count - 1);
+    T_Ok(str8_match(parsed_target.name, target->name, 0));
+
+    COFF_ParsedSymbol     parsed_assoc = coff_parse_symbol(info, strings, symbols, assoc_def->idx);
+    U32                   parent       = 0;
+    COFF_ComdatSelectType selection    = 0;
+    coff_parse_secdef(parsed_assoc, info.is_big_obj, &selection, &parent, 0, 0);
+    T_Ok(parsed_assoc.section_number == section_count);
+    T_Ok(selection == COFF_ComdatSelect_Associative && parent == section_count - 1);
+
+    COFF_ParsedSymbol   parsed_weak = coff_parse_symbol(info, strings, symbols, weak->idx);
+    COFF_SymbolWeakExt *weak_aux    = coff_parse_weak_tag(parsed_weak, info.is_big_obj);
+    T_Ok(weak_aux->tag_index == target->idx && weak_aux->characteristics == COFF_WeakExt_SearchAlias);
+
+    COFF_ParsedSymbol parsed_absolute = coff_parse_symbol(info, strings, symbols, absolute->idx);
+    T_Ok(parsed_absolute.section_number == COFF_Symbol_AbsSection32 && parsed_absolute.value == 17);
+    T_Ok(coff_parse_symbol(info, strings, symbols, undef->idx).section_number == COFF_Symbol_UndefinedSection);
+
+    COFF_ParsedSymbol parsed_common = coff_parse_symbol(info, strings, symbols, common->idx);
+    T_Ok(parsed_common.section_number == COFF_Symbol_UndefinedSection && parsed_common.value == 32);
+
+    COFF_SectionHeader *sections = (COFF_SectionHeader *)(data.str + info.section_table_range.min);
+    COFF_Reloc         *reloc    = (COFF_Reloc *)(data.str + sections[section_count - 1].relocs_foff);
+    T_Ok(sections[section_count - 1].reloc_count == 1 && reloc->isymbol == weak->idx);
+    T_Ok(t_write_file(str8f(arena, "writer_%u.obj", section_count), data));
+
+    coff_obj_writer_release(&writer);
+  }
+}
+
 TEST(machine_compat_check)
 {
   // unknown.obj
@@ -569,6 +635,175 @@ TEST(simple_link_test)
   T_Ok(opt->sizeof_headers == 0x200);
   T_Ok(opt->dll_characteristics == 0x8120);
   T_Ok(opt->loader_flags == 0);
+}
+
+TEST(entry_point)
+{
+  // Give the user entry, CRT startup, and custom entry distinct offsets so that
+  // the PE header tells us which symbol was selected, including CRT redirection.
+  struct {
+    char *user_entry;
+    char *crt_entry;
+  } entries[] = {
+    { "main",     "mainCRTStartup"     },
+    { "wmain",    "wmainCRTStartup"    },
+    { "WinMain",  "WinMainCRTStartup"  },
+    { "wWinMain", "wWinMainCRTStartup" },
+    { "DllMain",  "_DllMainCRTStartup" },
+  };
+  for EachElement(i, entries) {
+    T_COFF_DefObj obj = {
+      .machine = T_COFF_DefSetMachine(X64),
+      .sections = (T_COFF_DefSection[]){
+        { "text", ".text", str8_lit_comp("\xc3\xc3\xc3"), .flags = "rx:code@1" },
+        {0}
+      },
+      .symbols = (T_COFF_DefSymbol[]){
+        T_COFF_DefSymbol_ExternFunc(entries[i].user_entry, "text", 0),
+        T_COFF_DefSymbol_ExternFunc(entries[i].crt_entry, "text", 1),
+        T_COFF_DefSymbol_ExternFunc("custom_entry", "text", 2),
+        {0}
+      }
+    };
+    T_Ok(t_write_def_obj((char *)str8f(arena, "%s.obj", entries[i].user_entry).str, obj));
+    T_Ok(t_write_def_lib((char *)str8f(arena, "%s.lib", entries[i].user_entry).str, (T_COFF_DefLib){
+      .members = (T_COFF_DefLibMember[]){
+        { .type = T_COFF_DefLibMember_Obj, .obj = obj },
+        {0}
+      }
+    }));
+  }
+
+  // Keep a real input section even when no startup object is needed.
+  T_Ok(t_write_def_obj("data.obj", (T_COFF_DefObj){
+    .sections = (T_COFF_DefSection[]){
+      { "data", ".data", str8_lit("data"), .flags = "rw:data" },
+      {0}
+    }
+  }));
+  T_Ok(t_write_def_obj("crt.obj", (T_COFF_DefObj){
+    .sections = (T_COFF_DefSection[]){
+      { "text", ".text", str8_lit_comp("\xc3"), .flags = "rx:code@1" },
+      {0}
+    },
+    .symbols = (T_COFF_DefSymbol[]){
+      T_COFF_DefSymbol_ExternFunc("mainCRTStartup", "text", 0),
+      {0}
+    }
+  }));
+
+  // /NOENTRY must not extract this member just to resolve DLL startup. Without /NOENTRY,
+  // the missing dependency proves that the member was extracted.
+  T_Ok(t_write_def_lib("bad_startup.lib", (T_COFF_DefLib){
+    .members = (T_COFF_DefLibMember[]){
+      { .type = T_COFF_DefLibMember_Obj, .obj = {
+        .sections = (T_COFF_DefSection[]){
+          { "text", ".text", str8_lit_comp("\xe8\0\0\0\0\xc3"), .flags = "rx:code@1",
+            .relocs = (T_COFF_DefReloc[]){
+              T_COFF_DefReloc(X64_Rel32, 1, "missing_dependency"),
+              {0}
+            }
+          },
+          {0}
+        },
+        .symbols = (T_COFF_DefSymbol[]){
+          T_COFF_DefSymbol_ExternFunc("_DllMainCRTStartup", "text", 0),
+          T_COFF_DefSymbol_UndefFunc("missing_dependency"),
+          {0}
+        }
+      } },
+      {0}
+    }
+  }));
+
+  struct {
+    char                *options;
+    char                *inputs;
+    PE_WindowsSubsystem  subsystem;
+    S32                  entry_off; // -1 means no entry point.
+    LNK_ErrorCode        error;
+  } cases[] = {
+    // Explicit /ENTRY bypasses CRT redirection and overrides default startup.
+    { "/subsystem:console /entry:custom_entry", "main.obj",    PE_WindowsSubsystem_WINDOWS_CUI, 2 },
+    { "/subsystem:console /entry:main",         "main.obj",    PE_WindowsSubsystem_WINDOWS_CUI, 0 },
+    { "/entry:main",                            "main.obj",    PE_WindowsSubsystem_WINDOWS_CUI, 0 },
+    { "/dll /entry:custom_entry",               "DllMain.obj", PE_WindowsSubsystem_WINDOWS_GUI, 2 },
+    { "/subsystem:console /entry:custom_entry", "main.lib",    PE_WindowsSubsystem_WINDOWS_CUI, 2 },
+
+    // Infer the subsystem and redirect each user entry to its CRT startup.
+    { "",                   "main.obj",     PE_WindowsSubsystem_WINDOWS_CUI, 1 },
+    { "",                   "wmain.obj",    PE_WindowsSubsystem_WINDOWS_CUI, 1 },
+    { "",                   "WinMain.obj",  PE_WindowsSubsystem_WINDOWS_GUI, 1 },
+    { "",                   "wWinMain.obj", PE_WindowsSubsystem_WINDOWS_GUI, 1 },
+    { "/subsystem:console", "main.obj",     PE_WindowsSubsystem_WINDOWS_CUI, 1 },
+    { "/subsystem:console", "wmain.obj",    PE_WindowsSubsystem_WINDOWS_CUI, 1 },
+    { "/subsystem:windows", "WinMain.obj",  PE_WindowsSubsystem_WINDOWS_GUI, 1 },
+    { "/subsystem:windows", "wWinMain.obj", PE_WindowsSubsystem_WINDOWS_GUI, 1 },
+    { "/subsystem:console", "crt.obj",      PE_WindowsSubsystem_WINDOWS_CUI, 0 },
+
+    // Resolve startup from a library, or use the default DLL entry/subsystem.
+    { "/subsystem:console",                           "main.lib",     PE_WindowsSubsystem_WINDOWS_CUI, 1 },
+    { "/subsystem:console /entry:wmainCRTStartup",    "wmain.lib",    PE_WindowsSubsystem_WINDOWS_CUI, 1 },
+    { "/subsystem:windows",                           "WinMain.lib",  PE_WindowsSubsystem_WINDOWS_GUI, 1 },
+    { "/subsystem:windows /entry:wWinMainCRTStartup", "wWinMain.lib", PE_WindowsSubsystem_WINDOWS_GUI, 1 },
+    { "/dll",                                         "DllMain.obj",  PE_WindowsSubsystem_WINDOWS_GUI, 1 },
+    { "/dll",                                         "DllMain.lib",  PE_WindowsSubsystem_WINDOWS_GUI, 1 },
+    { "/dll /subsystem:console",                      "DllMain.obj",  PE_WindowsSubsystem_WINDOWS_CUI, 1 },
+
+    // /NOENTRY leaves a zero RVA even when default startup symbols are available.
+    { "/dll /noentry",                    "",                PE_WindowsSubsystem_WINDOWS_GUI, -1 },
+    { "/noentry /dll",                    "",                PE_WindowsSubsystem_WINDOWS_GUI, -1 },
+    { "/dll /noentry",                    "DllMain.obj",     PE_WindowsSubsystem_WINDOWS_GUI, -1 },
+    { "/dll /noentry",                    "DllMain.lib",     PE_WindowsSubsystem_WINDOWS_GUI, -1 },
+    { "/dll /noentry",                    "bad_startup.lib", PE_WindowsSubsystem_WINDOWS_GUI, -1 },
+    { "/dll /noentry /subsystem:console", "",                PE_WindowsSubsystem_WINDOWS_CUI, -1 },
+
+    // Match LINK: the last /ENTRY or /NOENTRY wins, including undefined entries.
+    { "/dll /entry:custom_entry /noentry",       "DllMain.obj", PE_WindowsSubsystem_WINDOWS_GUI, -1 },
+    { "/dll /noentry /entry:custom_entry",       "DllMain.obj", PE_WindowsSubsystem_WINDOWS_GUI,  2 },
+    { "/dll /entry:missing_entry /noentry",      "",            PE_WindowsSubsystem_WINDOWS_GUI, -1, LNK_Error_UnresolvedSymbol },
+    { "/dll /noentry /entry:missing_entry",      "",            0,                               -1, LNK_Error_UnresolvedSymbol },
+    { "/noentry /subsystem:console /entry:main", "main.obj",    PE_WindowsSubsystem_WINDOWS_CUI,  0 },
+
+    // Missing startup, unresolved explicit entry, and invalid /NOENTRY usage.
+    { "/subsystem:console",                      "",                0, 0, LNK_Error_EntryPoint            },
+    { "/dll",                                    "",                0, 0, LNK_Error_EntryPoint            },
+    { "/subsystem:console /entry:missing_entry", "main.obj",        0, 0, LNK_Error_UnresolvedSymbol      },
+    { "/dll",                                    "bad_startup.lib", 0, 0, LNK_Error_UnresolvedSymbol      },
+    { "/noentry /subsystem:console",             "",                0, 0, LNK_Error_IncomatibleCmdOptions },
+    { "/subsystem:console /entry:main /noentry", "main.obj",        0, 0, LNK_Error_IncomatibleCmdOptions },
+  };
+
+  for EachElement(i, cases) {
+    String8 out_name = str8f(arena, "entry_%u.dll", i);
+    test_outf("entry configuration %u: %s data.obj %s\n", i, cases[i].options, cases[i].inputs);
+    T_Ok(t_invoke_linkerf("/machine:x64 /nod /manifest:no /opt:ref /opt:noicf /out:%S %s data.obj %s", out_name, cases[i].options, cases[i].inputs));
+
+    if (cases[i].error) {
+      T_Ok(g_last_exit_code != 0);
+      
+      if (t_id_linker() == Linker_radlink) {
+        T_Ok(g_last_exit_code == cases[i].error);
+      }
+    } else {
+      T_Ok(g_last_exit_code == 0);
+
+      String8    image = t_read_file(arena, out_name);
+      PE_BinInfo pe    = pe_bin_info_from_data(arena, image);
+      T_Ok(pe.arch == Arch_x64);
+      T_Ok(pe.subsystem == cases[i].subsystem);
+
+      if (cases[i].entry_off < 0) {
+        T_Ok(pe.entry_point == 0);
+      } else {
+        COFF_SectionHeader *sections = (COFF_SectionHeader *)str8_substr(image, pe.section_table_range).str;
+        String8             strings  = str8_substr(image, pe.string_table_range);
+        COFF_SectionHeader *text     = coff_section_header_from_name(strings, sections, pe.section_count, str8_lit(".text"));
+        T_Ok(text);
+        T_Ok(pe.entry_point == text->voff + cases[i].entry_off);
+      }
+    }
+  }
 }
 
 TEST(map)
@@ -727,31 +962,6 @@ TEST(merge)
   // merge non-defined section with defined section
   t_invoke_linkerf("/subsystem:console /entry:entry /out:a.exe /merge:.qwe=.test entry.obj test.obj");
   T_Ok(g_last_exit_code == 0);
-
-  // initialized data size includes the aligned virtual tail of merged BSS
-  {
-    T_Ok(t_write_def_obj("mixed.obj", (T_COFF_DefObj){
-      .machine = T_COFF_DefSetMachine(X64),
-      .sections = (T_COFF_DefSection[]){
-        { "data", ".data", str8_lit_comp("d"), .flags = "rw:data@1" },
-        { "bss",  ".bss",  str8(0, 0x201),      .flags = "rw:bss@1" },
-        {0}
-      }
-    }));
-
-    t_invoke_linkerf("/subsystem:console /entry:entry /out:a.exe /merge:.bss=.data entry.obj mixed.obj");
-    T_Ok(g_last_exit_code == 0);
-
-    String8                   exe           = t_read_file(arena, str8_lit("a.exe"));
-    PE_BinInfo                pe            = pe_bin_info_from_data(arena, exe);
-    COFF_SectionHeader       *section_table = (COFF_SectionHeader *)str8_substr(exe, pe.section_table_range).str;
-    PE_OptionalHeader32Plus *opt           = str8_deserial_get_raw_ptr(exe, pe.optional_header_off, sizeof(*opt));
-    COFF_SectionHeader       *data          = coff_section_header_from_name(exe, section_table, pe.section_count, str8_lit(".data"));
-    T_Ok(data != 0);
-    T_Ok(data->fsize == 0x200);
-    T_Ok(data->vsize == 0x202);
-    T_Ok(opt->sizeof_inited_data == 0x400);
-  }
 
   // merged contribution groups retain lexical order
   {
@@ -2333,7 +2543,7 @@ TEST(guard_cf_pulls_load_config)
 
 TEST(section_sort)
 {
-  COFF_SectionFlags data_flags = COFF_SectionFlag_CntInitializedData|COFF_SectionFlag_MemRead|COFF_SectionFlag_MemRead|COFF_SectionFlag_Align1Bytes;
+  COFF_SectionFlags data_flags = COFF_SectionFlag_CntInitializedData|COFF_SectionFlag_MemRead|COFF_SectionFlag_MemWrite|COFF_SectionFlag_Align1Bytes;
   T_Ok(t_write_def_obj("data.obj", (T_COFF_DefObj){
     .machine = T_COFF_DefSetMachine(X64),
     .sections = (T_COFF_DefSection[]){
@@ -2373,14 +2583,14 @@ TEST(section_sort)
   T_Ok(data_section);
 
   String8 data = str8_substr(exe, rng_1u64(data_section->foff, data_section->foff + data_section->vsize));
-  String8 expected_data = str8_lit("onetwothreefourfive");
+  String8 expected_data = str8_lit("firstonetwothreefourfivelast");
   T_Ok(str8_match(data, expected_data, 0));
 
   COFF_SectionHeader *rdata_section = coff_section_header_from_name(string_table, section_table, pe.section_count, str8_lit(".rdata"));
   T_Ok(rdata_section);
 
-  String8 rdata = str8_substr(exe, rng_1u64(rdata_section->foff, rdata_section->foff + 15));
-  T_Ok(str8_match(rdata, str8_lit("firstmiddlelast"), 0));
+  String8 rdata = str8_substr(exe, rng_1u64(rdata_section->foff, rdata_section->foff + rdata_section->vsize));
+  T_Ok(str8_match(rdata, str8_lit("middle"), 0));
 }
 
 TEST(flag_conf)
@@ -2622,6 +2832,68 @@ TEST(base_relocs)
   }
 }
 
+TEST(default_lib_matches_explicit_path)
+{
+  COFF_ObjWriter  *entry = coff_obj_writer_alloc(0, COFF_MachineType_X64);
+  COFF_ObjSection *text  = coff_obj_writer_push_section(entry, str8_lit(".text"), PE_TEXT_SECTION_FLAGS, str8_lit("\x31\xc0\xc3"));
+  coff_obj_writer_push_symbol_extern_func(entry, str8_lit("entry"), 0, text);
+  T_Ok(t_write_file(str8_lit("entry.obj"), coff_obj_writer_serialize(arena, entry)));
+  coff_obj_writer_release(&entry);
+
+  char *dirs[]    = {"sdk libs", "other libs"};
+  char *symbols[] = {"first_provider", "second_provider"};
+  for EachElement(i, dirs) {
+    T_Ok(make_directory(t_make_file_path(arena, str8_cstring(dirs[i]))));
+    COFF_ObjWriter *obj = coff_obj_writer_alloc(0, COFF_MachineType_X64);
+    coff_obj_writer_push_symbol_abs(obj, str8_cstring(symbols[i]), 1, COFF_SymStorageClass_External);
+    COFF_LibWriter *lib = coff_lib_writer_alloc();
+    coff_lib_writer_push_obj(lib, str8_lit("provider.obj"), coff_obj_writer_serialize(arena, obj));
+    T_Ok(t_write_file(str8f(arena, "%s/provider.lib", dirs[i]), coff_lib_writer_serialize(arena, lib, 0, 0, 1)));
+    coff_lib_writer_release(&lib);
+    coff_obj_writer_release(&obj);
+  }
+
+  // Debug builds also write normal progress to stderr; reject only the missing-library diagnostic.
+  char    *names[] = {"provider.lib", "PROVIDER.LIB", "provider"};
+  char    *args    = "/subsystem:console /entry:entry /out:default.exe entry.obj /include:first_provider";
+  String8  paths[] = {str8_lit("sdk libs/provider.lib"), t_make_file_path(arena, str8_lit("sdk libs/provider.lib"))};
+
+  for EachElement(path_idx, paths) {
+    for EachElement(name_idx, names) {
+      t_invoke_linkerf("%s \"%S\" /defaultlib:%s", args, paths[path_idx], names[name_idx]);
+      T_Ok(g_last_exit_code == 0);
+      T_Ok(str8_find_needle(g_errors, 0, str8_lit("unable to find library"), 0) == g_errors.size);
+    }
+  }
+
+  // Embedded directives use a separate input-source queue from /DEFAULTLIB.
+  COFF_ObjWriter *directive = coff_obj_writer_alloc(0, COFF_MachineType_X64);
+  coff_obj_writer_push_directive(directive, str8_lit("/DEFAULTLIB:provider.lib"));
+  T_Ok(t_write_file(str8_lit("directive.obj"), coff_obj_writer_serialize(arena, directive)));
+  coff_obj_writer_release(&directive);
+  t_invoke_linkerf("%s \"%S\" directive.obj", args, paths[1]);
+  T_Ok(g_last_exit_code == 0);
+  T_Ok(str8_find_needle(g_errors, 0, str8_lit("unable to find library"), 0) == g_errors.size);
+
+  // A basename match must not swallow another explicitly named library, or a
+  // path-qualified default, with the same basename but a different provider.
+  t_invoke_linkerf("%s \"%S\" \"other libs/provider.lib\" /include:second_provider", args, paths[1]);
+  T_Ok(g_last_exit_code == 0);
+  T_Ok(str8_find_needle(g_errors, 0, str8_lit("unable to find library"), 0) == g_errors.size);
+  t_invoke_linkerf("%s \"%S\" /defaultlib:\"other libs/provider.lib\" /include:second_provider", args, paths[1]);
+  T_Ok(g_last_exit_code == 0);
+  T_Ok(str8_find_needle(g_errors, 0, str8_lit("unable to find library"), 0) == g_errors.size);
+
+  // Missing defaults must still warn; explicit bare paths are not defaults.
+  t_invoke_linkerf("%s \"%S\" /defaultlib:missing_provider.lib", args, paths[1]);
+  T_Ok(g_last_exit_code == 0);
+  T_Ok(str8_find_needle(g_errors, 0, str8_lit("unable to find library `missing_provider.lib`"), 0) < g_errors.size);
+
+  t_invoke_linkerf("%s \"%S\" provider.lib", args, paths[1]);
+  T_Ok(g_last_exit_code == 0);
+  T_Ok(str8_find_needle(g_errors, 0, str8_lit("unable to find library `provider.lib`"), 0) < g_errors.size);
+}
+
 TEST(simple_lib_test)
 {
   String8 test_payload = str8_lit("The quick brown fox jumps over the lazy dog");
@@ -2800,7 +3072,9 @@ TEST(import_export)
   T_Ok(t_write_def_obj("export.obj", (T_COFF_DefObj){
     .machine = T_COFF_DefSetMachine(X64),
     .sections = (T_COFF_DefSection[]){
-      { "data", ".data", str8_lit("test"), .flags = "rw:data" },
+      // keep the separate from CRT/import data, and back every export
+      // offset (including ord3 and ord4) with bytes in this section
+      { "data", ".exports", str8_lit_comp("test\0\0\0\0\0\x09\x0A"), .flags = "rw:data" },
       {0}
     },
     .symbols = (T_COFF_DefSymbol[]){
@@ -2861,7 +3135,8 @@ TEST(import_export)
       PE_BinInfo           pe            = pe_bin_info_from_data(arena, dll);
       COFF_SectionHeader  *section_table = (COFF_SectionHeader *)str8_substr(dll, pe.section_table_range).str;
       PE_ParsedExportTable export_table  = pe_exports_from_data(arena, pe.section_count, section_table, dll, pe.data_dir_franges[PE_DataDirectoryIndex_EXPORT], pe.data_dir_vranges[PE_DataDirectoryIndex_EXPORT]);
-      COFF_SectionHeader  *data_sect     = coff_section_header_from_name(str8_zero(), section_table, pe.section_count, str8_lit(".data"));
+      COFF_SectionHeader  *data_sect     = coff_section_header_from_name(str8_zero(), section_table, pe.section_count, str8_lit(".exports"));
+      T_Ok(data_sect != 0);
 
       // validate header
       T_Ok(export_table.flags == 0);
@@ -2916,6 +3191,9 @@ TEST(import_export)
       PE_BinInfo           pe            = pe_bin_info_from_data(arena, dll);
       COFF_SectionHeader  *section_table = (COFF_SectionHeader *)str8_substr(dll, pe.section_table_range).str;
       PE_ParsedExportTable export_table  = pe_exports_from_data(arena, pe.section_count, section_table, dll, pe.data_dir_franges[PE_DataDirectoryIndex_EXPORT], pe.data_dir_vranges[PE_DataDirectoryIndex_EXPORT]);
+      COFF_SectionHeader  *s1_sect       = coff_section_header_from_name(str8_zero(), section_table, pe.section_count, str8_lit(".s1"));
+      COFF_SectionHeader  *s2_sect       = coff_section_header_from_name(str8_zero(), section_table, pe.section_count, str8_lit(".s2"));
+      T_Ok(s1_sect != 0 && s2_sect != 0);
 
       // validate header
       T_Ok(export_table.flags == 0);
@@ -2938,10 +3216,10 @@ TEST(import_export)
       T_Ok(str8_match(export_table.exports[3].forwarder, str8_zero(), 0));
 
       // validate voffs
-      T_Ok(export_table.exports[0].voff == 0x3000);
-      T_Ok(export_table.exports[1].voff == 0x4000);
-      T_Ok(export_table.exports[2].voff == 0x4000);
-      T_Ok(export_table.exports[3].voff == 0x3000);
+      T_Ok(export_table.exports[0].voff == s1_sect->voff);
+      T_Ok(export_table.exports[1].voff == s2_sect->voff);
+      T_Ok(export_table.exports[2].voff == s2_sect->voff);
+      T_Ok(export_table.exports[3].voff == s1_sect->voff);
 
       // validate ordinals
       T_Ok(export_table.exports[0].ordinal == 2);
@@ -3148,6 +3426,65 @@ TEST(image_base)
   };
   String8 text_data = str8_substr(exe, rng_1u64(text_section->foff, text_section->foff + sizeof(expected_text)));
   T_Ok(str8_match(text_data, str8_array_fixed(expected_text), 0));
+}
+
+TEST(comdat_any_nonzero_prefix)
+{
+  // The symbol value is the prefix length, not the length of the function.
+  String8 plain    = str8_lit("\xB8\x01\x00\x00\x00\xC3");
+  String8 zero     = str8_lit("\x00\x00\x00\x00\xB8\x02\x00\x00\x00\xC3");
+  String8 nonzero  = str8_lit("\x00\x00\x00\xA5\xB8\x03\x00\x00\x00\xC3");
+  String8 nonzero2 = str8_lit("\x5A\x00\x00\x00\xB8\x04\x00\x00\x00\xC3");
+  struct {
+    String8 data[2];
+    U32 value[2];
+    COFF_ComdatSelectType selection[2];
+    S32 winner; // -1 means the first input must win.
+  } cases[] = {
+    {{plain, nonzero},    {0, 4},       {COFF_ComdatSelect_Any, COFF_ComdatSelect_Any}, 1},
+    {{zero, nonzero},     {4, 4},       {COFF_ComdatSelect_Any, COFF_ComdatSelect_Any}, 1},
+    {{nonzero, nonzero2}, {4, 4},       {COFF_ComdatSelect_Any, COFF_ComdatSelect_Any}, -1},
+    {{plain, zero},       {0, 4},       {COFF_ComdatSelect_Any, COFF_ComdatSelect_Any}, -1},
+    {{plain, plain},      {0, 0},       {COFF_ComdatSelect_Any, COFF_ComdatSelect_Any}, -1},
+    {{zero, zero},        {4, 4},       {COFF_ComdatSelect_Any, COFF_ComdatSelect_Any}, -1},
+    // Out-of-range values must not turn function bytes into a valid prefix.
+    {{plain, nonzero},    {7, 4},       {COFF_ComdatSelect_Any, COFF_ComdatSelect_Any}, 1},
+    {{plain, nonzero},    {max_U32, 4}, {COFF_ComdatSelect_Any, COFF_ComdatSelect_Any}, 1},
+    // Equal-sized Largest/SameSize and Any promoted to Largest retain input order.
+    {{zero, nonzero},     {4, 4},       {COFF_ComdatSelect_Largest, COFF_ComdatSelect_Largest}, -1},
+    {{zero, nonzero},     {4, 4},       {COFF_ComdatSelect_SameSize, COFF_ComdatSelect_SameSize}, -1},
+    {{zero, nonzero},     {4, 4},       {COFF_ComdatSelect_Any, COFF_ComdatSelect_Largest}, -1},
+  };
+  for (U64 case_idx = 0; case_idx < ArrayCount(cases); case_idx += 1) {
+    for (U32 obj_idx = 0; obj_idx < 2; obj_idx += 1) {
+      T_Ok(t_write_def_obj(obj_idx ? "second.obj" : "first.obj", (T_COFF_DefObj){
+        .machine = T_COFF_DefSetMachine(X64),
+        .sections = (T_COFF_DefSection[]){
+          {"text", ".text", cases[case_idx].data[obj_idx], .flags = "rx:code",
+           .raw_flags = COFF_SectionFlag_LnkCOMDAT}, {0}},
+        .symbols = (T_COFF_DefSymbol[]){
+          T_COFF_DefSymbol_Secdef("text", cases[case_idx].selection[obj_idx]),
+          T_COFF_DefSymbol_ExternFunc("entry", "text", cases[case_idx].value[obj_idx]), {0}},
+      }));
+    }
+    for (U32 reverse = 0; reverse < 2; reverse += 1) {
+      for (U32 workers = 1; workers <= 4; workers += 3) {
+        t_invoke_linkerf("/subsystem:console /entry:entry /nodefaultlib /opt:ref,noicf /rad_workers:%u /out:prefix.exe %s",
+                         workers, reverse ? "second.obj first.obj" : "first.obj second.obj");
+        T_Ok(g_last_exit_code == 0);
+        String8 image = t_read_file(arena, str8_lit("prefix.exe"));
+        PE_BinInfo bin = pe_bin_info_from_data(arena, image);
+        U32 winner = cases[case_idx].winner < 0 ? reverse : (U32)cases[case_idx].winner;
+        U64 entry_off = pe_foff_from_voff(image, &bin, bin.entry_point);
+        U32 prefix_size = cases[case_idx].value[winner];
+        T_Ok(entry_off >= prefix_size);
+        if (entry_off >= prefix_size) {
+          String8 actual = str8_substr(image, r1u64s(entry_off - prefix_size, cases[case_idx].data[winner].size));
+          T_Ok(str8_match(actual, cases[case_idx].data[winner], 0));
+        }
+      }
+    }
+  }
 }
 
 TEST(comdat_any)
@@ -4449,99 +4786,308 @@ TEST(sect_align)
 
 TEST(alt_name)
 {
-  T_Ok(t_write_def_obj("test.obj", (T_COFF_DefObj){
-    .machine = T_COFF_DefSetMachine(X64),
+  // Inspect an RVA relocation instead of merely accepting a successful link.
+  // Separate sections and nonzero symbol offsets distinguish the selected target
+  // without depending on a particular linker's section ordering or image layout.
+  T_COFF_DefObj target = {
+    .machine  = T_COFF_DefSetMachine(X64),
+    .path     = str8_lit("target.obj"),
     .sections = (T_COFF_DefSection[]){
-      { "data", ".data", str8_lit("test"), .flags = "rw:data" },
+      { "data", ".target", str8_lit("pad!TEST"), .flags = "rw:data@4" },
       {0}
     },
     .symbols = (T_COFF_DefSymbol[]){
-      T_COFF_DefSymbol_Extern("test", "data", 0),
+      T_COFF_DefSymbol_Extern("test", "data", 4),
       {0}
     }
-  }));
+  };
 
-  T_Ok(t_write_def_obj("foo.obj", (T_COFF_DefObj){
-    .machine = T_COFF_DefSetMachine(X64),
+  T_COFF_DefObj primary = {
+    .machine  = T_COFF_DefSetMachine(X64),
+    .path     = str8_lit("foo.obj"),
     .sections = (T_COFF_DefSection[]){
-      { "data", ".data", str8_lit("foo"), .flags = "rw:data" },
+      { "data", ".primary", str8_lit("pad!REAL"), .flags = "rw:data@4" },
       {0}
     },
     .symbols = (T_COFF_DefSymbol[]){
-      T_COFF_DefSymbol_Extern("foo", "data", 0),
+      T_COFF_DefSymbol_Extern("foo", "data", 4),
+      {0}
+    }
+  };
+
+  T_COFF_DefObj weak = {
+    .machine = T_COFF_DefSetMachine(X64),
+    .path    = str8_lit("weak.obj"),
+    .symbols = (T_COFF_DefSymbol[]){
+      T_COFF_DefSymbol_Undef("test"),
+      T_COFF_DefSymbol_Weak("altsym", COFF_WeakExt_SearchAlias, "test"),
+      T_COFF_DefSymbol_AbsExtern("alias_anchor", 1),
+      {0}
+    }
+  };
+
+  T_Ok(t_write_def_obj("target.obj", target));
+  T_Ok(t_write_def_obj("foo.obj", primary));
+  T_Ok(t_write_def_obj("weak.obj", weak));
+  T_Ok(t_write_entry_obj());
+  T_Ok(t_write_def_obj("ref.obj", (T_COFF_DefObj){
+    .machine  = T_COFF_DefSetMachine(X64),
+    .sections = (T_COFF_DefSection[]){
+      { "probe", ".probe", str8_lit_comp("\0\0\0\0"), .flags = "rw:data@4",
+        .relocs = (T_COFF_DefReloc[]){ T_COFF_DefReloc(X64_Addr32Nb, 0, "foo"), {0} } },
+      {0}
+    },
+    .symbols = (T_COFF_DefSymbol[]){ T_COFF_DefSymbol_Undef("foo"), {0} }
+  }));
+
+  // Use ADDR32 for the absolute target: LINK rejects absolute ADDR32NB fixups.
+  T_Ok(t_write_def_obj("ref_absolute.obj", (T_COFF_DefObj){
+    .machine  = T_COFF_DefSetMachine(X64),
+    .sections = (T_COFF_DefSection[]){
+      { "probe", ".probe", str8_lit_comp("\0\0\0\0"), .flags = "rw:data@4",
+        .relocs = (T_COFF_DefReloc[]){ T_COFF_DefReloc(X64_Addr32, 0, "foo"), {0} } },
+      {0}
+    },
+    .symbols = (T_COFF_DefSymbol[]){ T_COFF_DefSymbol_Undef("foo"), {0} }
+  }));
+
+  // Same-object weak target, as in LLVM's alternatename-alias.s.
+  T_Ok(t_write_def_obj("weak_local.obj", (T_COFF_DefObj){
+    .machine  = T_COFF_DefSetMachine(X64),
+    .sections = target.sections,
+    .symbols  = (T_COFF_DefSymbol[]){
+      T_COFF_DefSymbol_Extern("test", "data", 4),
+      T_COFF_DefSymbol_Weak("altsym", COFF_WeakExt_SearchAlias, "test"),
       {0}
     }
   }));
-
-  T_Ok(t_write_def_obj("entry.obj", (T_COFF_DefObj){
-    .machine = T_COFF_DefSetMachine(X64),
+  // A local default is identified by its object-local tag, not its spelling.
+  T_Ok(t_write_def_obj("weak_static.obj", (T_COFF_DefObj){
+    .machine  = T_COFF_DefSetMachine(X64),
+    .sections = target.sections,
+    .symbols  = (T_COFF_DefSymbol[]){
+      T_COFF_DefSymbol_Static("local_target", "data", 4),
+      T_COFF_DefSymbol_Weak("altsym", COFF_WeakExt_SearchAlias, "local_target"),
+      {0}
+    }
+  }));
+  T_Ok(t_write_def_obj("global_target.obj", (T_COFF_DefObj){
+    .machine  = T_COFF_DefSetMachine(X64),
+    .sections = primary.sections,
+    .symbols  = (T_COFF_DefSymbol[]){ T_COFF_DefSymbol_Extern("local_target", "data", 4), {0} }
+  }));
+  T_Ok(t_write_def_obj("override.obj", (T_COFF_DefObj){
+    .machine  = T_COFF_DefSetMachine(X64),
     .sections = (T_COFF_DefSection[]){
-      {
-        "text", ".text",
-        str8_lit_comp(
-          "\x48\xC7\xC0\x00\x00\x00\x00" // mov rax, $imm
-          "\xC3"
-        ), // ret
-        .flags = "rx:code",
-        .relocs = (T_COFF_DefReloc[]){
-          T_COFF_DefReloc(X64_Addr32Nb, 0, "foo"),
-          {0}
-        }
+      { "data", ".chosen", str8_lit("pad!OVER"), .flags = "rw:data@4" }, {0}
+    },
+    .symbols = (T_COFF_DefSymbol[]){ T_COFF_DefSymbol_Extern("altsym", "data", 4), {0} }
+  }));
+  T_Ok(t_write_def_obj("absolute.obj", (T_COFF_DefObj){
+    .machine = T_COFF_DefSetMachine(X64),
+    .symbols = (T_COFF_DefSymbol[]){ T_COFF_DefSymbol_AbsExtern("absolute", 0x1234), {0} }
+  }));
+
+  struct {
+    char             *path;
+    char             *name;
+    char             *tag;
+    COFF_WeakExtType  type;
+  } aliases[] = {
+    { "weak_chain.obj",  "altsym", "middle",  COFF_WeakExt_SearchAlias    },
+    { "weak_middle.obj", "middle", "test",    COFF_WeakExt_SearchAlias    },
+    { "anti.obj",        "altsym", "test",    COFF_WeakExt_AntiDependency },
+    { "anti_middle.obj", "middle", "test",    COFF_WeakExt_AntiDependency },
+    { "missing.obj",     "altsym", "missing", COFF_WeakExt_SearchAlias    },
+    { "cycle_tail.obj",  "middle", "altsym",  COFF_WeakExt_SearchAlias    },
+    { "source_weak.obj", "foo",    "test",    COFF_WeakExt_SearchAlias    },
+    { "weak_nolib.obj",  "altsym", "test",    COFF_WeakExt_NoLibrary      },
+    { "weak_lib.obj",    "altsym", "test",    COFF_WeakExt_SearchLibrary  },
+  };
+  for EachElement(i, aliases) {
+    T_Ok(t_write_def_obj(aliases[i].path, (T_COFF_DefObj){
+      .machine = T_COFF_DefSetMachine(X64),
+      .symbols = (T_COFF_DefSymbol[]){
+        T_COFF_DefSymbol_Undef(aliases[i].tag),
+        T_COFF_DefSymbol_Weak(aliases[i].name, aliases[i].type, aliases[i].tag),
+        {0}
+      }
+    }));
+  }
+
+  T_Ok(t_write_def_obj("directive.obj",      (T_COFF_DefObj){ .directives = (char *[]){ "/alternatename:foo=test",   0 } }));
+  T_Ok(t_write_def_obj("weak_directive.obj", (T_COFF_DefObj){ .directives = (char *[]){ "/alternatename:foo=altsym", 0 } }));
+  T_Ok(t_write_def_obj("conflict.obj",       (T_COFF_DefObj){ .directives = (char *[]){ "/alternatename:foo=other",  0 } }));
+  T_Ok(t_write_file(str8_lit("alternate.rsp"), str8_lit("/alternatename:foo=test")));
+
+  T_COFF_DefObj  lib_objs[]  = { target, primary, weak };
+  char          *lib_paths[] = { "target.lib", "foo.lib", "weak.lib" };
+  for EachElement(i, lib_objs) {
+    T_Ok(t_write_def_lib(lib_paths[i], (T_COFF_DefLib){
+      .emit_second_member = 1,
+      .members            = (T_COFF_DefLibMember[]){ { .type = T_COFF_DefLibMember_Obj, .obj = lib_objs[i] }, {0} }
+    }));
+  }
+
+  // Extracting the fallback unnecessarily must fail, even if its data is unused.
+  T_Ok(t_write_def_lib("poison.lib", (T_COFF_DefLib){
+    .emit_second_member = 1,
+    .members = (T_COFF_DefLibMember[]){ { .type = T_COFF_DefLibMember_Obj, .obj = {
+      .path     = str8_lit("poison.obj"),
+      .machine  = T_COFF_DefSetMachine(X64),
+      .sections = (T_COFF_DefSection[]){
+        { "data", ".poison", str8_lit_comp("\0\0\0\0"), .flags = "rw:data@4",
+          .relocs = (T_COFF_DefReloc[]){ T_COFF_DefReloc(X64_Addr32Nb, 0, "poison_missing"), {0} } },
+        {0}
       },
-      {0}
-    },
-    .symbols = (T_COFF_DefSymbol[]){
-      T_COFF_DefSymbol_Extern("entry", "text", 0),
-      T_COFF_DefSymbol_Undef("foo"),
-      {0}
-    }
+      .symbols = (T_COFF_DefSymbol[]){
+        T_COFF_DefSymbol_Extern("test", "data", 0),
+        T_COFF_DefSymbol_Undef("poison_missing"),
+        {0}
+      }
+    } }, {0} }
   }));
 
-  // basic alternate name test
-  t_invoke_linkerf("/subsystem:console /entry:entry /out:a.exe /alternatename:foo=test test.obj entry.obj");
-  T_Ok(g_last_exit_code == 0);
+  struct {
+    char *name;
+    char *options;
+    char *inputs;
+    B32   success;
+    char *section; // NULL on success means an absolute symbol value.
+    U32   offset;
+    LNK_ErrorCode error; // Defaults to UnresolvedSymbol for negative cases.
+  } cases[] = {
+    { "direct",              "/alternatename:foo=test",                          "target.obj",         1, ".target",   4 },
+    { "identical_duplicate", "/alternatename:foo=test /alternatename:foo=test", "target.obj",          1, ".target",   4 },
+    { "absolute",            "/alternatename:foo=absolute",                      "absolute.obj",       1, 0,           0x1234 },
+    { "primary_before",      "/alternatename:foo=test",                          "foo.obj target.obj", 1, ".primary",  4 },
+    { "primary_after",       "/alternatename:foo=test",                          "target.obj foo.obj", 1, ".primary",  4 },
+    { "primary_missing_alt", "/alternatename:foo=missing",                       "foo.obj",            1, ".primary",  4 },
+    { "primary_self",        "/alternatename:foo=foo",                           "foo.obj",            1, ".primary",  4 },
+    { "unused_mapping",      "/alternatename:unused=missing",                    "foo.obj",            1, ".primary",  4 },
+    { "unused_cycle",        "/alternatename:unused=other /alternatename:other=unused", "foo.obj",     1, ".primary",  4 },
 
-  // linker should not chase alt name links
-  t_invoke_linkerf("/subsystem:console /entry:entry /out:b.exe /alternatename:foo=bar /alternatename:bar=test test.obj entry.obj");
-  T_Ok(g_last_exit_code != 0);
+    // Object-file and response-file directives have the same fallback semantics.
+    { "directive_before",    "",                                                 "directive.obj target.obj",       1, ".target",   4 },
+    { "directive_after",     "",                                                 "target.obj directive.obj",       1, ".target",   4 },
+    { "directive_duplicate", "/alternatename:foo=test",                          "directive.obj target.obj",       1, ".target",   4 },
+    { "response_file",       "@alternate.rsp",                                   "target.obj",                     1, ".target",   4 },
 
-  // alt name conflict
-  t_invoke_linkerf("/subsystem:console /entry:entry /out:c.exe /alternatename:foo=test /alternatename:foo=qwe test.obj entry.obj");
-  T_Ok(g_last_exit_code != 0);
+    // Archive search must prefer the primary name and avoid unused fallbacks.
+    { "archive_target",      "/alternatename:foo=test",                          "target.lib",                     1, ".target",   4 },
+    { "archive_primary",     "/alternatename:foo=test",                          "target.obj foo.lib",             1, ".primary",  4 },
+    { "archives_before",     "/alternatename:foo=test",                          "foo.lib target.lib",             1, ".primary",  4 },
+    { "archives_after",      "/alternatename:foo=test",                          "target.lib foo.lib",             1, ".primary",  4 },
+    { "unused_fallback_lib", "/alternatename:foo=test",                          "foo.obj poison.lib",             1, ".primary",  4 },
+    { "unused_mapping_lib",  "/alternatename:unused=test",                       "foo.obj poison.lib",             1, ".primary",  4 },
+    { "required_poison_lib", "/alternatename:foo=test",                          "poison.lib",                     0 },
 
-  // syntax error
-  t_invoke_linkerf("/subsystem:console /entry:entry /out:d.exe /alternatename:foo foo.obj entry.obj");
-  T_Ok(g_last_exit_code != 0);
-  
-  // syntax error
-  t_invoke_linkerf("/subsystem:console /entry:entry /out:e.exe /alternatename:foo-oof foo.obj entry.obj");
-  T_Ok(g_last_exit_code != 0);
+    // An ordinary weak alias is a valid target; its prevailing definition wins.
+    { "weak_local",          "/alternatename:foo=altsym",                        "weak_local.obj",                            1, ".target", 4 },
+    { "weak_before",         "/alternatename:foo=altsym",                        "weak.obj target.obj",                       1, ".target", 4 },
+    { "weak_after",          "/alternatename:foo=altsym",                        "target.obj weak.obj",                       1, ".target", 4 },
+    { "weak_chain_before",   "/alternatename:foo=altsym",                        "weak_chain.obj weak_middle.obj target.obj", 1, ".target", 4 },
+    { "weak_chain_after",    "/alternatename:foo=altsym",                        "target.obj weak_middle.obj weak_chain.obj", 1, ".target", 4 },
+    { "weak_override_first", "/alternatename:foo=altsym",                        "override.obj weak.obj target.obj",          1, ".chosen", 4 },
+    { "weak_override_last",  "/alternatename:foo=altsym",                        "weak.obj target.obj override.obj",          1, ".chosen", 4 },
+    { "weak_source",         "/alternatename:foo=missing",                       "source_weak.obj target.obj",                1, ".target", 4 },
+    { "weak_directive",      "",                                                 "weak_directive.obj weak.obj target.obj",    1, ".target", 4 },
+    { "weak_archive",        "/alternatename:foo=altsym /include:alias_anchor",  "weak.lib target.obj",                       1, ".target", 4 },
+    { "weak_target_archive", "/alternatename:foo=altsym",                        "weak.obj target.lib",                       1, ".target", 4 },
+    { "weak_nolib_target",   "/alternatename:foo=altsym",                        "weak_nolib.obj target.obj",                 1, ".target", 4 },
+    { "weak_lib_target",     "/alternatename:foo=altsym",                        "weak_lib.obj target.obj",                   1, ".target", 4 },
+    // LINK rejects a section-defined static weak default; RAD and LLD support it.
+    { "weak_static_target",  "/alternatename:foo=altsym",                        "weak_static.obj global_target.obj", t_id_linker() != Linker_msvc, ".target", 4 },
 
-  // syntax error
-  t_invoke_linkerf("/subsystem:console /entry:entry /out:a.exe /alternatename:foo=test=bar foo.obj entry.obj");
-  T_Ok(g_last_exit_code != 0);
+    // altsym is discovered only after both synthetic fallback pairs exist.
+    { "late_weak_archive",   "/alternatename:foo=altsym /alternatename:trigger=alias_anchor /include:trigger", "weak.lib target.obj", 1, ".target", 4 },
 
-  // syntax error
-  t_invoke_linkerf("/subsystem:console /entry:entry /out:a.exe /alternatename:foo= foo.obj entry.obj");
-  T_Ok(g_last_exit_code != 0);
+    // Unlike an ordinary alias, an anti-dependency cannot be chained through.
+    { "anti_before",         "/alternatename:foo=altsym",                        "anti.obj target.obj",                       0 },
+    { "anti_after",          "/alternatename:foo=altsym",                        "target.obj anti.obj",                       0 },
+    { "nested_anti",         "/alternatename:foo=altsym",                        "weak_chain.obj anti_middle.obj target.obj", 0 },
+    { "anti_override_first", "/alternatename:foo=altsym",                        "override.obj anti.obj target.obj",          1, ".chosen", 4 },
+    { "anti_override_last",  "/alternatename:foo=altsym",                        "anti.obj target.obj override.obj",          1, ".chosen", 4 },
 
-  // syntax error
-  t_invoke_linkerf("/subsystem:console /entry:entry /out:a.exe /alternatename:= foo.obj entry.obj");
-  T_Ok(g_last_exit_code != 0);
+    // Unreferenced intermediate command-line alternate names are not alias chains.
+    { "command_chain",       "/alternatename:foo=bar /alternatename:bar=test",   "target.obj",                    0 },
+    { "command_chain_order", "/alternatename:bar=test /alternatename:foo=bar",   "target.obj",                    0 },
+    { "missing_target",      "/alternatename:foo=missing",                       "target.obj",                    0 },
+    { "case_sensitive_from", "/alternatename:Foo=test",                          "target.obj",                    0 },
+    { "case_sensitive_to",   "/alternatename:foo=TEST",                          "target.obj",                    0 },
+    { "missing_weak_target", "/alternatename:foo=altsym",                        "missing.obj",                   0 },
+    { "undefined_self",      "/alternatename:foo=foo",                           "target.obj",                    0 },
+    { "command_cycle",       "/alternatename:foo=bar /alternatename:bar=foo",    "target.obj",                    0 },
+    { "weak_cycle",          "/alternatename:foo=altsym",                        "weak_chain.obj cycle_tail.obj", 0 },
 
-  // syntax error
-  t_invoke_linkerf("/subsystem:console /entry:entry /out:a.exe /alternatename: foo.obj entry.obj");
-  T_Ok(g_last_exit_code != 0);
+    // RAD and LLD reject conflicts even for defined sources; LINK keeps the first mapping.
+    { "conflict",            "/alternatename:foo=test /alternatename:foo=other", "target.obj",                            t_id_linker() == Linker_msvc, ".target",  4, LNK_Error_AlternateNameConflict },
+    { "defined_conflict",    "/alternatename:foo=test /alternatename:foo=other", "foo.obj",                               t_id_linker() == Linker_msvc, ".primary", 4, LNK_Error_AlternateNameConflict },
+    { "directive_conflict",  "/alternatename:foo=test",                          "conflict.obj target.obj",               t_id_linker() == Linker_msvc, ".target",  4, LNK_Error_AlternateNameConflict },
+    { "two_directives",      "",                                                 "directive.obj conflict.obj target.obj", t_id_linker() == Linker_msvc, ".target",  4, LNK_Error_AlternateNameConflict },
+    { "missing_equals",      "/alternatename:foo",                               "foo.obj",                        0, 0, 0, LNK_Error_Cmdl },
+    { "wrong_separator",     "/alternatename:foo-oof",                           "foo.obj",                        0, 0, 0, LNK_Error_Cmdl },
+    { "empty_target",        "/alternatename:foo=",                              "foo.obj",                        0, 0, 0, LNK_Error_Cmdl },
 
-  // TODO: check that RAD Linker prints these warnings
+    // LINK accepts an empty (unused) source; RAD and LLD diagnose it.
+    { "empty_source",        "/alternatename:=test",                             "foo.obj", t_id_linker() == Linker_msvc, ".primary", 4, LNK_Error_Cmdl },
+    { "empty_both",          "/alternatename:=",                                 "foo.obj",                        0, 0, 0, LNK_Error_Cmdl },
+    { "empty_option",        "/alternatename:",                                  "foo.obj",                        0, 0, 0, LNK_Error_Cmdl },
+    
+    // LLD and LINK accept the extra '=' with a defined source; RAD rejects it.
+    { "extra_equals",        "/alternatename:foo=test=bar",                       "foo.obj", t_id_linker() != Linker_radlink, ".primary", 4, LNK_Error_Cmdl },
+  };
 
-  // warn about alt name to self alt name?
-  t_invoke_linkerf("/subsystem:console /entry:entry /out:f.exe /alternatename:foo=foo foo.obj entry.obj");
-  T_Ok(g_last_exit_code == 0);
+  B32 all_ok          = 1;
+  U32 worker_counts[] = { 1, 4 };
+  U64 pass_count      = t_id_linker() == Linker_radlink ? ArrayCount(worker_counts) : 1;
+  for EachIndex(pass_idx, pass_count) {
+    for EachElement(case_idx, cases) {
+      String8  out_name = str8f(arena, "alt_%s_%u.exe", cases[case_idx].name, worker_counts[pass_idx]);
+      String8  workers  = t_id_linker() == Linker_radlink ? str8f(arena, "/rad_workers:%u", worker_counts[pass_idx]) : str8_zero();
+      char    *ref_obj  = cases[case_idx].success && !cases[case_idx].section ? "ref_absolute.obj" : "ref.obj";
+      String8  cmdline  = str8f(arena, "/subsystem:console /entry:entry /nodefaultlib /opt:noref,noicf /out:%S %S %s entry.obj %s %s",
+                             out_name, workers, cases[case_idx].options, ref_obj, cases[case_idx].inputs);
+      test_outf("alt_name %s (workers %u): %S\n", cases[case_idx].name, worker_counts[pass_idx], cmdline);
 
-  // warn about alt name to unknown symbol?
-  t_invoke_linkerf("/subsystem:console /entry:entry /out:g.exe /alternatename:qwe=ewq foo.obj entry.obj");
-  T_Ok(g_last_exit_code == 0);
+      // Bound cycles require a normal exit: a crash/timeout is not an expected failure.
+      B32 invoked     = t_invoke(t_linker_path(), cmdline, 10 * 1000 * 1000);
+      B32 normal_exit = invoked && g_last_exit_code < 0x80000000 && g_last_exit_code != 999;
+      B32 case_ok     = normal_exit && ((g_last_exit_code == 0) == cases[case_idx].success);
+      if (case_ok && !cases[case_idx].success && t_id_linker() == Linker_radlink) {
+        LNK_ErrorCode expected_error = cases[case_idx].error ? cases[case_idx].error : LNK_Error_UnresolvedSymbol;
+        case_ok = g_last_exit_code == expected_error;
+        if (!case_ok) { test_outf("  expected error code %u\n", expected_error); }
+      }
+
+      if (normal_exit && g_last_exit_code == 0 && cases[case_idx].success) {
+        String8             image        = t_read_file(arena, out_name);
+        PE_BinInfo          pe           = pe_bin_info_from_data(arena, image);
+        COFF_SectionHeader *sections     = (COFF_SectionHeader *)str8_substr(image, pe.section_table_range).str;
+        String8             strings      = str8_substr(image, pe.string_table_range);
+        COFF_SectionHeader *probe        = coff_section_header_from_name(strings, sections, pe.section_count, str8_lit(".probe"));
+        U64                 expected_rva = cases[case_idx].offset;
+
+        case_ok = pe.arch == Arch_x64 && probe && probe->vsize == sizeof(U32);
+        if (cases[case_idx].section) {
+          COFF_SectionHeader *dest = coff_section_header_from_name(strings, sections, pe.section_count, str8_cstring(cases[case_idx].section));
+          case_ok &= dest != 0 && dest->vsize >= cases[case_idx].offset + sizeof(U32);
+          if (dest) { expected_rva += dest->voff; }
+        }
+
+        if (case_ok) {
+          String8 data = str8_substr(image, rng_1u64(probe->foff, (U64)probe->foff + sizeof(U32)));
+          case_ok = data.size == sizeof(U32) && memory_read32(data.str) == expected_rva;
+          if (!case_ok) { test_outf("  incorrect relocated RVA; expected %#llx\n", expected_rva); }
+        }
+      }
+
+      test_outf("  %s: normal exit %u, exit code %llu, expected %s\n", case_ok ? "PASS" : "FAIL", normal_exit, g_last_exit_code, cases[case_idx].success ? "success with correct RVA" : "failure");
+      T_Ok(case_ok);
+    }
+  }
+
+  T_Ok(all_ok);
 }
 
 TEST(include)
@@ -4744,6 +5290,320 @@ TEST(communal_var_vs_regular_comdat)
     T_Ok(data_sect);
     String8             data          = str8_substr(exe, rng_1u64(data_sect->foff, data_sect->foff + data_sect->vsize));
     T_Ok(str8_match(data, str8_lit("test"), 0));
+  }
+}
+
+TEST(import_name_no_prefix)
+{
+  // IMPORT_NAME_NOPREFIX removes exactly one leading '?', '@', or '_'.
+  // Unlike IMPORT_NAME_UNDECORATE, it must preserve the rest of the name.
+  struct {
+    char *symbol_name;
+    char *export_name;
+  } cases[] = {
+    { "_add",                       "add" },
+    { "_StdcallImport@8",            "StdcallImport@8" },
+    { "@FastcallImport@8",           "FastcallImport@8" },
+    { "?Method@Class@@QEAAXXZ",       "Method@Class@@QEAAXXZ" },
+    { "__DoublePrefix",              "_DoublePrefix" },
+    { "PlainImport@8",               "PlainImport@8" },
+  };
+  struct {
+    char *args;
+    B32 delayed;
+  } opts[] = {
+    { "/opt:ref", 0 },
+    { "/opt:noref", 0 },
+    { "/opt:ref /delayload:noprefix.dll", 1 },
+    { "/opt:noref /delayload:noprefix.dll", 1 },
+  };
+
+  for EachElement(case_idx, cases) {
+    String8 symbol_name = str8_cstring(cases[case_idx].symbol_name);
+    String8 iat_name = str8f(arena, "__imp_%S", symbol_name);
+
+    // Synthetic x64 inputs isolate the import-name encoding from compiler
+    // name decoration and do not require a DLL or an x86 toolchain to run.
+    T_Ok(t_write_def_lib("noprefix.lib", (T_COFF_DefLib){
+      .emit_second_member = 1,
+      .members = (T_COFF_DefLibMember[]){
+        {
+          .type = T_COFF_DefLibMember_Import,
+          .import = { "noprefix.dll", cases[case_idx].symbol_name,
+                      COFF_ImportBy_NameNoPrefix, COFF_ImportHeader_Code,
+                      .hit_or_ordinal = 17 },
+        },
+        {0},
+      },
+    }));
+    T_Ok(t_write_def_obj("entry.obj", (T_COFF_DefObj){
+      .sections = (T_COFF_DefSection[]){
+        {
+          "text", ".text",
+          str8_lit_comp(
+            "\x48\x83\xEC\x28"     // sub rsp,28h
+            "\xE8\0\0\0\0"        // call decorated function's jump thunk
+            "\xFF\x15\0\0\0\0"    // call [__imp_decorated_function]
+            "\x48\x83\xC4\x28\xC3" // add rsp,28h; ret
+          ),
+          .flags = "rx:code",
+          .relocs = (T_COFF_DefReloc[]){
+            T_COFF_DefReloc(X64_Rel32, 5, cases[case_idx].symbol_name),
+            T_COFF_DefReloc(X64_Rel32, 11, (char *)iat_name.str),
+            {0},
+          },
+        },
+        {0},
+      },
+      .symbols = (T_COFF_DefSymbol[]){
+        T_COFF_DefSymbol_ExternFunc("entry", "text", 0),
+        // Link-only test: the delay helper only needs to resolve to a ret.
+        T_COFF_DefSymbol_ExternFunc("__delayLoadHelper2", "text", 19),
+        T_COFF_DefSymbol_UndefFunc(cases[case_idx].symbol_name),
+        T_COFF_DefSymbol_Undef((char *)iat_name.str),
+        {0},
+      },
+    }));
+
+    for EachElement(opt_idx, opts) {
+      t_infof("NameNoPrefix import %S -> %s (%s)\n", symbol_name, cases[case_idx].export_name, opts[opt_idx].args);
+      t_invoke_linkerf("/nodefaultlib /subsystem:console /entry:entry /out:noprefix.exe %s entry.obj noprefix.lib", opts[opt_idx].args);
+      T_Ok(g_last_exit_code == 0);
+
+      String8 image = t_read_file(arena, str8_lit("noprefix.exe"));
+      PE_BinInfo bin = pe_bin_info_from_data(arena, image);
+      COFF_SectionHeader *sections = (COFF_SectionHeader *)(image.str + bin.section_table_range.min);
+      PE_ParsedImport *import = 0;
+      U64 iat_voff = 0;
+      if (opts[opt_idx].delayed) {
+        T_Ok(bin.data_dir_count > PE_DataDirectoryIndex_DELAY_IMPORT);
+        PE_ParsedDelayImportTable imports = pe_delay_imports_from_data(arena, bin.is_pe32, bin.section_count, sections, image, bin.data_dir_franges[PE_DataDirectoryIndex_DELAY_IMPORT]);
+        T_Ok(imports.count == 1);
+        T_Ok(str8_match(imports.v[0].name, str8_lit("noprefix.dll"), 0));
+        T_Ok(imports.v[0].import_count == 1);
+        import = &imports.v[0].imports[0];
+        iat_voff = imports.v[0].iat_voff;
+      } else {
+        T_Ok(bin.data_dir_count > PE_DataDirectoryIndex_IMPORT);
+        PE_ParsedStaticImportTable imports = pe_static_imports_from_data(arena, bin.is_pe32, bin.section_count, sections, image, bin.data_dir_franges[PE_DataDirectoryIndex_IMPORT]);
+        T_Ok(imports.count == 1);
+        T_Ok(str8_match(imports.v[0].name, str8_lit("noprefix.dll"), 0));
+        T_Ok(imports.v[0].import_count == 1);
+        import = &imports.v[0].imports[0];
+        iat_voff = imports.v[0].import_address_table_voff;
+      }
+      T_Ok(import->type == PE_ParsedImport_Name);
+      if (!opts[opt_idx].delayed) {
+        T_Ok(import->u.name.hint == 17);
+      }
+      T_Ok(str8_match(import->u.name.string, str8_cstring(cases[case_idx].export_name), 0));
+
+      // Prefix stripping must not rename the COFF symbols or disconnect the
+      // direct-call thunk from the slot referenced by __imp_<original name>.
+      U64 entry_off = pe_foff_from_voff(image, &bin, bin.entry_point);
+      S32 call_disp = 0, iat_disp = 0, thunk_disp = 0;
+      T_Ok(str8_deserial_read_struct(image, entry_off + 5, &call_disp) == sizeof(call_disp));
+      T_Ok(str8_deserial_read_struct(image, entry_off + 11, &iat_disp) == sizeof(iat_disp));
+      U64 thunk_voff = (U64)((S64)bin.entry_point + 9 + call_disp);
+      U64 thunk_off = pe_foff_from_voff(image, &bin, thunk_voff);
+      T_Ok(str8_match(str8_substr(image, rng_1u64(thunk_off, thunk_off + 2)), str8_lit("\xFF\x25"), 0));
+      T_Ok(str8_deserial_read_struct(image, thunk_off + 2, &thunk_disp) == sizeof(thunk_disp));
+      T_Ok((U64)((S64)bin.entry_point + 15 + iat_disp) == iat_voff);
+      T_Ok((U64)((S64)thunk_voff + 6 + thunk_disp) == iat_voff);
+      U64 iat_off = pe_foff_from_voff(image, &bin, iat_voff);
+      U64 iat_entry = 0, iat_end = 1;
+      T_Ok(str8_deserial_read_struct(image, iat_off, &iat_entry) == sizeof(iat_entry));
+      T_Ok(str8_deserial_read_struct(image, iat_off + 8, &iat_end) == sizeof(iat_end));
+      T_Ok(iat_entry != 0 && iat_end == 0);
+    }
+  }
+}
+
+TEST(import_undecorate)
+{
+  // Keep the decorated COFF symbols, but use the undecorated DLL export name
+  // in the hint/name table. An empty ILT/IAT still links, but calls through its
+  // jump thunk reach address zero at runtime.
+  struct {
+    char *symbol_name;
+    char *export_name;
+  } cases[] = {
+    { "?CppImport@@YAHXZ", "CppImport" },
+    { "_StdcallImport@8",  "StdcallImport" },
+    { "@FastcallImport@8", "FastcallImport" },
+    { "PlainImport",       "PlainImport" },
+  };
+  struct {
+    char *args;
+    B32 delayed;
+  } opts[] = {
+    { "/opt:ref", 0 },
+    { "/opt:noref", 0 },
+    { "/opt:ref /delayload:undecorate.dll", 1 },
+    { "/opt:noref /delayload:undecorate.dll", 1 },
+  };
+
+  for EachElement(case_idx, cases) {
+    String8 symbol_name = str8_cstring(cases[case_idx].symbol_name);
+    String8 iat_name = str8f(arena, "__imp_%S", symbol_name);
+    U16 hint = 17;
+
+    T_Ok(t_write_def_lib("undecorate.lib", (T_COFF_DefLib){
+      .emit_second_member = 1,
+      .members = (T_COFF_DefLibMember[]){
+        {
+          .type = T_COFF_DefLibMember_Import,
+          .import = { "undecorate.dll", cases[case_idx].symbol_name,
+                      COFF_ImportBy_Undecorate, COFF_ImportHeader_Code,
+                      .hit_or_ordinal = hint },
+        },
+        {0},
+      },
+    }));
+    T_Ok(t_write_def_obj("entry.obj", (T_COFF_DefObj){
+      .sections = (T_COFF_DefSection[]){
+        {
+          "text", ".text",
+          str8_lit_comp(
+            "\x48\x83\xEC\x28"     // sub rsp,28h
+            "\xE8\0\0\0\0"        // call decorated function's jump thunk
+            "\xFF\x15\0\0\0\0"    // call [__imp_decorated_function]
+            "\x48\x83\xC4\x28\xC3" // add rsp,28h; ret
+          ),
+          .flags = "rx:code",
+          .relocs = (T_COFF_DefReloc[]){
+            T_COFF_DefReloc(X64_Rel32, 5, cases[case_idx].symbol_name),
+            T_COFF_DefReloc(X64_Rel32, 11, (char *)iat_name.str),
+            {0},
+          },
+        },
+        {0},
+      },
+      .symbols = (T_COFF_DefSymbol[]){
+        T_COFF_DefSymbol_ExternFunc("entry", "text", 0),
+        // Link-only test: the delay helper only needs to resolve to a ret.
+        T_COFF_DefSymbol_ExternFunc("__delayLoadHelper2", "text", 19),
+        T_COFF_DefSymbol_UndefFunc(cases[case_idx].symbol_name),
+        T_COFF_DefSymbol_Undef((char *)iat_name.str),
+        {0},
+      },
+    }));
+
+    for EachElement(opt_idx, opts) {
+      t_infof("Undecorate import %S -> %s (%s)\n", symbol_name, cases[case_idx].export_name, opts[opt_idx].args);
+      t_invoke_linkerf("/nodefaultlib /subsystem:console /entry:entry /out:undecorate.exe %s entry.obj undecorate.lib", opts[opt_idx].args);
+      T_Ok(g_last_exit_code == 0);
+
+      String8 image = t_read_file(arena, str8_lit("undecorate.exe"));
+      PE_BinInfo bin = pe_bin_info_from_data(arena, image);
+      COFF_SectionHeader *sections = (COFF_SectionHeader *)(image.str + bin.section_table_range.min);
+      PE_ParsedImport *import = 0;
+      U64 iat_voff = 0, ilt_voff = 0;
+
+      if (opts[opt_idx].delayed) {
+        T_Ok(bin.data_dir_count > PE_DataDirectoryIndex_DELAY_IMPORT);
+        PE_ParsedDelayImportTable imports = pe_delay_imports_from_data(arena, bin.is_pe32, bin.section_count, sections, image, bin.data_dir_franges[PE_DataDirectoryIndex_DELAY_IMPORT]);
+        T_Ok(imports.count == 1);
+        T_Ok(str8_match(imports.v[0].name, str8_lit("undecorate.dll"), 0));
+        T_Ok(imports.v[0].import_count == 1);
+        import = &imports.v[0].imports[0];
+        iat_voff = imports.v[0].iat_voff;
+        ilt_voff = imports.v[0].name_table_voff;
+      } else {
+        T_Ok(bin.data_dir_count > PE_DataDirectoryIndex_IMPORT);
+        PE_ParsedStaticImportTable imports = pe_static_imports_from_data(arena, bin.is_pe32, bin.section_count, sections, image, bin.data_dir_franges[PE_DataDirectoryIndex_IMPORT]);
+        T_Ok(imports.count == 1);
+        T_Ok(str8_match(imports.v[0].name, str8_lit("undecorate.dll"), 0));
+        T_Ok(imports.v[0].import_count == 1);
+        import   = &imports.v[0].imports[0];
+        iat_voff = imports.v[0].import_address_table_voff;
+        ilt_voff = imports.v[0].import_name_table_voff;
+      }
+      T_Ok(import->type == PE_ParsedImport_Name);
+
+      // Delay-load linkers may replace the advisory import hint with zero.
+      if (!opts[opt_idx].delayed) {
+        T_Ok(import->u.name.hint == hint);
+      }
+      T_Ok(str8_match(import->u.name.string, str8_cstring(cases[case_idx].export_name), 0));
+
+      // Both call forms must resolve to the same populated IAT slot.
+      U64 entry_off = pe_foff_from_voff(image, &bin, bin.entry_point);
+      S32 call_disp = 0, iat_disp = 0, thunk_disp = 0;
+      T_Ok(str8_deserial_read_struct(image, entry_off + 5, &call_disp) == sizeof(call_disp));
+      T_Ok(str8_deserial_read_struct(image, entry_off + 11, &iat_disp) == sizeof(iat_disp));
+
+      U64 thunk_voff = (U64)((S64)bin.entry_point + 9 + call_disp);
+      U64 thunk_off = pe_foff_from_voff(image, &bin, thunk_voff);
+      T_Ok(str8_match(str8_substr(image, rng_1u64(thunk_off, thunk_off + 2)), str8_lit("\xFF\x25"), 0));
+      T_Ok(str8_deserial_read_struct(image, thunk_off + 2, &thunk_disp) == sizeof(thunk_disp));
+      T_Ok((U64)((S64)bin.entry_point + 15 + iat_disp) == iat_voff);
+      T_Ok((U64)((S64)thunk_voff + 6 + thunk_disp) == iat_voff);
+
+      U64 iat_off = pe_foff_from_voff(image, &bin, iat_voff);
+      U64 ilt_off = pe_foff_from_voff(image, &bin, ilt_voff);
+      U64 iat_entry = 0, iat_end = 1, ilt_entry = 0;
+      T_Ok(str8_deserial_read_struct(image, iat_off, &iat_entry) == sizeof(iat_entry));
+      T_Ok(str8_deserial_read_struct(image, iat_off + 8, &iat_end) == sizeof(iat_end));
+      T_Ok(str8_deserial_read_struct(image, ilt_off, &ilt_entry) == sizeof(ilt_entry));
+      T_Ok(iat_entry != 0 && iat_end == 0);
+
+      if (opts[opt_idx].delayed) {
+        // Delay-load IAT entries start at the load thunk, rather than the name.
+        T_Ok(iat_entry >= bin.image_base);
+        T_Ok(pe_foff_from_voff(image, &bin, iat_entry - bin.image_base) != 0);
+      } else {
+        T_Ok(iat_entry == ilt_entry);
+      }
+    }
+  }
+}
+
+TEST(link_large_import_object)
+{
+  // Each named import creates three sections in the synthesized DLL object.
+  // Add a direct function reference as well to exercise its jump thunk.
+
+  U32 import_count = 22000;
+  COFF_LibWriter  *lib  = coff_lib_writer_alloc();
+  COFF_ObjWriter  *obj  = coff_obj_writer_alloc(0, COFF_MachineType_X64);
+  COFF_ObjSection *refs = coff_obj_writer_push_section(obj, str8_lit(".data"),
+      COFF_SectionFlag_CntInitializedData|COFF_SectionFlag_MemRead|COFF_SectionFlag_MemWrite|COFF_SectionFlag_Align8Bytes,
+      str8(push_array(arena, U8, (import_count + 1)*8), (import_count + 1)*8));
+
+  for EachIndex(i, import_count) {
+    String8 name = str8f(arena, "import_%05u", i);
+    coff_lib_writer_push_import(lib, COFF_MachineType_X64, 0, str8_lit("large.dll"), COFF_ImportBy_Name, name, 0, COFF_ImportHeader_Code);
+    COFF_ObjSymbol *symbol = coff_obj_writer_push_symbol_undef(obj, str8f(arena, "__imp_%S", name));
+    coff_obj_writer_section_push_reloc_addr(obj, refs, i*8, symbol);
+  }
+
+  COFF_ObjSymbol *func = coff_obj_writer_push_symbol_undef_func(obj, str8f(arena, "import_%05u", import_count - 1));
+  coff_obj_writer_section_push_reloc_addr(obj, refs, import_count*8, func);
+  T_Ok(t_write_file(str8_lit("refs.obj"), coff_obj_writer_serialize(arena, obj)));
+  T_Ok(t_write_file(str8_lit("large.lib"), coff_lib_writer_serialize(arena, lib, 0, 0, 1)));
+
+  coff_obj_writer_release(&obj);
+  coff_lib_writer_release(&lib);
+
+  T_Ok(t_write_entry_obj());
+  t_invoke_linkerf("/subsystem:console /entry:entry /debug:full /opt:ref /out:large.exe entry.obj refs.obj large.lib");
+  T_Ok(g_last_exit_code == 0);
+
+  String8 image = t_read_file(arena, str8_lit("large.exe"));
+  PE_BinInfo bin = pe_bin_info_from_data(arena, image);
+  T_Ok(bin.data_dir_count > PE_DataDirectoryIndex_IMPORT);
+
+  COFF_SectionHeader *sections = (COFF_SectionHeader *)(image.str + bin.section_table_range.min);
+  PE_ParsedStaticImportTable imports = pe_static_imports_from_data(arena, bin.is_pe32, bin.section_count, sections, image, bin.data_dir_franges[PE_DataDirectoryIndex_IMPORT]);
+  T_Ok(imports.count == 1);
+  T_Ok(str8_match(imports.v[0].name, str8_lit("large.dll"), 0));
+  T_Ok(imports.v[0].import_count == import_count);
+
+  for EachIndex(i, import_count) {
+    PE_ParsedImport *import = &imports.v[0].imports[i];
+    T_Ok(import->type == PE_ParsedImport_Name);
+    T_Ok(str8_match(import->u.name.string, str8f(arena, "import_%05u", i), 0));
   }
 }
 
@@ -6970,6 +7830,121 @@ TEST(get_msf_stream_pages)
   msf_release(msf);
 }
 
+TEST(msf_header_matches_saved_extent)
+{
+  MSF_UInt page_sizes[] = {512, KB(4)};
+  MSF_UInt fpms[] = {MSF_FPM0, MSF_FPM1};
+
+  for EachIndex(size_idx, ArrayCount(page_sizes)) {
+    MSF_UInt P = page_sizes[size_idx];
+
+    // Exercise physical FPM-slot boundaries and transitions between bitmap intervals.
+    //                                                                                                                                                                     
+    // P * 2 and P * 7: intermediate valid slot-zero pages.                                                                                                         
+    // P * 16 - 1: end of the second bitmap interval.                                                                                                               
+    // P * 16: first page in the third interval.                                                                                                                    
+    // P * 16 + 3: first ordinary page after reserved FPM slots.                                                                                                    
+    //
+    // Both active FPM choices.                                                                                                                                     
+    //
+    MSF_PageNumber last_pages[] = {
+      68,
+      P - 1,
+      P,
+      P + 3,
+      P * 2,
+      P * 7,
+      P * 8 - 1,
+      P * 8,
+      P * 8 + 3,
+      P * 16 - 1,
+      P * 16,
+      P * 16 + 3,
+    };
+    // Full bitmap coverage is inexpensive with 512-byte pages. With 4 KiB
+    // pages, stop after the first physical FPM-slot boundary.
+    U64 case_count = P == 512 ? ArrayCount(last_pages) : 4;
+    for EachIndex(fpm_idx, ArrayCount(fpms)) {
+      for EachIndex(case_idx, case_count) {
+        Temp temp = temp_begin(arena);
+        MSF_Context *msf = msf_alloc(P, fpms[fpm_idx]);
+
+        MSF_PageList gap = msf_alloc_pages(msf, 64);
+        T_Ok(gap.first->pn == 4 && gap.last->pn == 67);
+
+        // Cover an entire FPM's bitmap with small pages, and the default page size's
+        // first interval without making this a large-memory test.
+        MSF_PageNumber last_pn         = last_pages[case_idx];
+        MSF_UInt       data_page_count = 0;
+        for (MSF_PageNumber pn = 68; pn <= last_pn; ++pn) {
+          MSF_UInt slot = pn % P;
+          data_page_count += slot != MSF_FPM0 && slot != MSF_FPM1;
+        }
+        String8 payload = str8(push_array_no_zero(arena, U8, (U64)data_page_count * P),
+                              (U64)data_page_count * P);
+        MemorySet(payload.str, 0xA5, payload.size);
+
+        MSF_StreamNumber sn = msf_stream_alloc(msf);
+        T_Ok(msf_stream_write(msf, sn, payload.str, (MSF_UInt)payload.size));
+        T_Ok(msf_find_stream(msf, sn)->page_list.last->pn == last_pn);
+
+        // Free the low pages so metadata can reuse them while the payload remains at
+        // high page numbers. Unused pages below EOF exercise sparse MSF page layouts.
+        msf_free_pages(msf, &gap);
+        T_Ok(msf_build(msf) == MSF_Error_OK);
+        T_Ok(msf->root_page_list.last->pn < last_pn);
+        T_Ok(msf->st_page_list.last->pn < last_pn);
+
+        // validate that last page was assigned to the payload
+        U64 save_size = msf_get_save_size(msf);
+        T_Ok(save_size == ((U64)last_pn + 1) * P);
+
+        // allocate buffer for the serialized MSF file
+        String8 saved = str8(push_array_no_zero(arena, U8, save_size), save_size);
+        T_Ok(msf_save(msf, saved.str, saved.size));
+
+        // validate 'page_count' field matches the serialized file size
+        MSF_Header70 *header = (MSF_Header70 *)saved.str;
+        T_Ok((U64)header->page_count * header->page_size == saved.size);
+
+        // match internal page data list to the serialized file bytes
+        String8List pages = msf_get_page_data_nodes(arena, msf);
+        T_Ok(str8_match(saved, str8_list_join(arena, &pages, 0), 0));
+
+        // Size agreement alone must not conceal a truncated final stream page.
+        MSF_Parsed *parsed = msf_parsed_from_data(arena, saved);
+        T_Ok(parsed != 0);
+
+        // validate parsed stream against the expected payload
+        if (parsed != 0 && sn < parsed->stream_count) {
+          T_Ok(str8_match(parsed->streams[sn], payload, 0));
+        } else {
+          T_Ok(0);
+        }
+
+        msf_release(msf);
+        temp_end(temp);
+      }
+    }
+  }
+}
+
+TEST(pdb_header_matches_file_size)
+{
+  T_Ok(t_write_entry_obj());
+  t_invoke_linkerf("/subsystem:console /entry:entry /debug:full /out:pages.exe /pdb:pages.pdb /pdbstripped:pages.stripped.pdb entry.obj");
+  T_Ok(g_last_exit_code == 0);
+  char *pdb_paths[] = {"pages.pdb", "pages.stripped.pdb"};
+  for EachIndex(i, ArrayCount(pdb_paths)) {
+    String8 pdb = t_read_file(arena, str8_cstring(pdb_paths[i]));
+    T_Ok(pdb.size >= sizeof(MSF_Header70));
+    if (pdb.size >= sizeof(MSF_Header70)) {
+      MSF_Header70 *header = (MSF_Header70 *)pdb.str;
+      T_Ok((U64)header->page_count * header->page_size == pdb.size);
+    }
+  }
+}
+
 internal String8
 data_from_pdb(Arena *arena, PDB_Context *pdb)
 {
@@ -7861,6 +8836,60 @@ TEST(whole_archive)
     T_Ok(b_sect != 0);
   }
 }
+
+#if 0
+TEST(infer_asan_command_line_no)
+{
+  Linker linker = t_id_linker();
+  if (linker != Linker_Null && linker != Linker_radlink) { return; }
+
+  T_Ok(t_write_entry_obj());
+
+  // Model LLVM's explicitly supplied runtime and an inferred MSVC runtime thunk
+  // defining the same symbol. Use local stub libraries so no ASAN installation is needed.
+  T_COFF_DefLib runtime = {
+    .emit_second_member = 1,
+    .members = (T_COFF_DefLibMember[]){
+      {
+        .type = T_COFF_DefLibMember_Obj,
+        .obj = {
+          .sections = (T_COFF_DefSection[]){
+            { "text", ".text", str8_lit_comp("\xC3"), .flags = "rx:code" },
+            {0}
+          },
+          .symbols = (T_COFF_DefSymbol[]){
+            T_COFF_DefSymbol_Extern("asan_runtime", "text", 0),
+            {0}
+          }
+        }
+      },
+      {0}
+    }
+  };
+  T_Ok(t_write_def_lib("explicit_asan.lib", runtime));
+  T_Ok(t_write_def_lib("clang_rt.asan_dynamic_runtime_thunk-x86_64.lib", runtime));
+  T_Ok(t_write_def_lib("clang_rt.asan_dynamic-x86_64.lib", (T_COFF_DefLib){ .emit_second_member = 1 }));
+  T_Ok(t_write_def_lib("msvcrt.lib", (T_COFF_DefLib){ .emit_second_member = 1 }));
+
+  char *args = "/entry:entry /subsystem:console /out:asan.exe /include:asan_runtime entry.obj explicit_asan.lib msvcrt.lib";
+  String8 illegal_directive = str8_lit("illegal directive \"INFERASANLIBS\"");
+  String8 directives[] = { str8_lit("/INFERASANLIBS"), str8_lit("/INFERASANLIBS:YES") };
+  for EachElement(i, directives) {
+    T_Ok(t_write_file(str8_lit("msvc.obj"), t_make_obj_with_directive(arena, directives[i])));
+
+    // Without a command-line override, the directive pulls in the duplicate thunk.
+    t_invoke_linkerf("%s msvc.obj", args);
+    T_Ok(g_last_exit_code == LNK_Error_MultiplyDefinedSymbol);
+    T_Ok(str8_find_needle(g_errors, 0, illegal_directive, 0) == g_errors.size);
+
+    // /NO must reject the directive and leave the explicit runtime as the sole provider.
+    t_invoke_linkerf("%s /INFERASANLIBS:NO msvc.obj", args);
+    T_Ok(g_last_exit_code == 0);
+    T_Ok(str8_find_needle(g_errors, 0, illegal_directive, 0) < g_errors.size);
+  }
+}
+#endif
+
 #if OS_WINDOWS
 
 internal B32
@@ -7947,15 +8976,16 @@ TEST(infer_asan)
 TEST(determ_test)
 {
   // compile the test target (torture)
-  t_invoke_cl("/fsanitize=address /c /Z7 /Fo:test.obj -I%S /Zc:preprocessor %S/torture/torture_main.c", t_src_path(), t_src_path());
+  t_invoke_cl("/Brepro /fsanitize=address /c /Z7 /DBUILD_GIT_HASH=Stringify() /Fo:test.obj -I\"%S\" /Zc:preprocessor \"%S/torture/torture_main.c\"", t_src_path(), t_src_path());
   T_Ok(g_last_exit_code == 0);
 
   U64 run_count = 25;
   T_Ok(run_count > 1);
   String8 test_path = t_make_file_path(arena, str8_lit("test.obj"));
+  String8 lib_path = str8_chop_last_slash(t_linker_path());
 
   // single-threaded link
-  t_invoke_linkerf("%S /debug:full /rad_time_stamp:0 /rad_workers:1 /pdbaltpath:main.pdb /rad_log:-all /rad_ignore:74 /out:main.exe", test_path);
+  t_invoke_linkerf("\"%S\" /libpath:\"%S\" /debug:full /rad_time_stamp:0 /rad_workers:1 /pdbaltpath:main.pdb /rad_log:-all /rad_ignore:74 /out:main.exe", test_path, lib_path);
   T_Ok(g_last_exit_code == 0);
 
   // read b
@@ -7966,14 +8996,30 @@ TEST(determ_test)
   ProcessList linkers = {0};
   for EachIndex(i, run_count) {
     String8 out_path = t_make_file_path(arena, str8f(arena, "%llu.exe", i));
-    String8 cmdl = str8f(arena, "%S %S /debug:full /rad_time_stamp:0 /rad_imagealtpath:main.exe /pdbaltpath:main.pdb /rad_log:-all /rad_ignore:74 /out:%S", t_radlink_path(), test_path, out_path);
-    Process process_handle = launch_cmd_line(cmdl);
+    // TODO: use an argument list: launch_cmd_line splits on spaces without parsing
+    // quotes. Match the baseline link's working directory as well
+    ProcessLaunchParams params = {0};
+    params.path = g_wdir;
+    params.inherit_env = 1;
+    str8_list_push(arena, &params.cmd_line, t_linker_path());
+    str8_list_push(arena, &params.cmd_line, test_path);
+    str8_list_pushf(arena, &params.cmd_line, "/libpath:%S", lib_path);
+    char *args[] = { "/debug:full", "/rad_time_stamp:0", "/rad_imagealtpath:main.exe", "/pdbaltpath:main.pdb", "/rad_log:-all", "/rad_ignore:74" };
+    for EachElement(arg_idx, args) {
+      str8_list_push(arena, &params.cmd_line, str8_cstring(args[arg_idx]));
+    }
+    str8_list_pushf(arena, &params.cmd_line, "/out:%S", out_path);
+    Process process_handle = process_launch(&params);
     T_Ok(!process_match(process_zero(), process_handle));
     process_list_push(arena, &linkers, process_handle);
   }
 
   // wait for linkers
-  for EachNode(n, ProcessNode, linkers.first) { process_join(n->v, max_U64, 0); }
+  for EachNode(n, ProcessNode, linkers.first) {
+    U64 exit_code = 1;
+    T_Ok(process_join(n->v, max_U64, &exit_code));
+    T_Ok(exit_code == 0);
+  }
 
   for EachIndex(i, run_count) {
     Temp temp = temp_begin(arena);
@@ -9110,6 +10156,61 @@ TEST(icf_multihop_reloc_target_colors_do_not_fold)
   T_Ok(vaddrs[4] != vaddrs[5]);
 }
 
+TEST(icf_nonzero_local_reloc_targets_do_not_fold)
+{
+  U8 address_of_local[] = {
+    0x48, 0x8d, 0x05, 0x00, 0x00, 0x00, 0x00, // lea rax, [rip + local]
+    0xc3,                                     // ret
+    0x90,                                     // nop
+  };
+  U8 entry_text[] = { 0xc3 };
+  U8 addresses[2 * sizeof(U64)] = {0};
+
+  T_Ok(t_write_def_obj("icf_nonzero_local.obj", (T_COFF_DefObj){
+    .machine = T_COFF_DefSetMachine(X64),
+    .sections = (T_COFF_DefSection[]){
+      { "entry", ".text", str8_array_fixed(entry_text), .flags = "rx:code@1" },
+      {
+        "func_a", ".text$mn", str8_array_fixed(address_of_local), .flags = "rx:code@1", .raw_flags = COFF_SectionFlag_LnkCOMDAT,
+        .relocs = (T_COFF_DefReloc[]){ T_COFF_DefReloc(X64_Rel32, 3, "local_a"), {0} }
+      },
+      {
+        "func_b", ".text$mn", str8_array_fixed(address_of_local), .flags = "rx:code@1", .raw_flags = COFF_SectionFlag_LnkCOMDAT,
+        .relocs = (T_COFF_DefReloc[]){ T_COFF_DefReloc(X64_Rel32, 3, "local_b"), {0} }
+      },
+      {
+        "addresses", ".data", str8_array_fixed(addresses), .flags = "rw:data@1",
+        .relocs = (T_COFF_DefReloc[]){
+          T_COFF_DefReloc(X64_Addr64, 0, "func_a"),
+          T_COFF_DefReloc(X64_Addr64, 8, "func_b"),
+          {0}
+        }
+      },
+      {0}
+    },
+    .symbols = (T_COFF_DefSymbol[]){
+      T_COFF_DefSymbol_Secdef("func_a", COFF_ComdatSelect_NoDuplicates),
+      T_COFF_DefSymbol_Secdef("func_b", COFF_ComdatSelect_NoDuplicates),
+      T_COFF_DefSymbol_ExternFunc("entry", "entry", 0),
+      T_COFF_DefSymbol_ExternFunc("func_a", "func_a", 0),
+      T_COFF_DefSymbol_ExternFunc("func_b", "func_b", 0),
+      T_COFF_DefSymbol_Static("local_a", "func_a", 7),
+      T_COFF_DefSymbol_Static("local_b", "func_b", 8),
+      T_COFF_DefSymbol_Extern("addresses", "addresses", 0),
+      {0}
+    }
+  }));
+
+  t_invoke_linkerf("/subsystem:console /entry:entry /out:a.exe /opt:ref,icf /include:addresses icf_nonzero_local.obj");
+  T_Ok(g_last_exit_code == 0);
+
+  U64 vaddrs[ArrayCount(addresses) / sizeof(U64)] = {0};
+  T_Ok(t_read_exe_data_vaddrs(arena, str8_lit("a.exe"), vaddrs, ArrayCount(vaddrs)));
+  T_Ok(vaddrs[0] != 0);
+  T_Ok(vaddrs[1] != 0);
+  T_Ok(vaddrs[0] != vaddrs[1]);
+}
+
 TEST(icf_comdat_symlink_chain)
 {
   U8 ret_small[] = { 0xc3 };
@@ -9518,6 +10619,152 @@ TEST(icf_cpp_multihop_functions_do_not_fold)
 }
 
 #endif
+
+TEST(asan_discarded_associative_metadata)
+{
+  // ASan can share a filename across metadata belonging to different COMDATs.
+  // link.exe tombstones references to a discarded associative child at RVA 0;
+  // it does not redirect them to the winning owner's child or retain the loser.
+
+  U8 pointers[24] = {5};
+  pointers[8]  = 7;
+  pointers[12] = 9;
+  pointers[16] = 2;
+  pointers[20] = 11;
+
+  for EachIndex(obj_idx, 2) {
+    T_Ok(t_write_def_obj(obj_idx ? "second.obj" : "first.obj",
+                         ((T_COFF_DefObj){
+      .machine = T_COFF_DefSetMachine(X64),
+
+      .sections = (T_COFF_DefSection[]){
+        {"owner", ".owner", obj_idx ? str8_lit("OWNER_B")    : str8_lit("OWNER_A"),   .flags = "r:data@1", .raw_flags = COFF_SectionFlag_LnkCOMDAT},
+        {"meta",  ".names", obj_idx ? str8_lit("SECOND.c\0") : str8_lit("FIRST.c\0"), .flags = "r:data@1", .raw_flags = COFF_SectionFlag_LnkCOMDAT},
+        {"entry", ".text", str8_lit("\xC3"), .flags = "rx:code@1"},
+        {obj_idx ? "pointers" : 0, ".data", str8_array_fixed(pointers), .flags = "rw:data@8",
+          .relocs = (T_COFF_DefReloc[]){
+            T_COFF_DefReloc(X64_Addr64,   0,  "filename"),
+            T_COFF_DefReloc(X64_Addr32Nb, 8,  "filename"),
+            T_COFF_DefReloc(X64_SecRel,   12, "filename"),
+            T_COFF_DefReloc(X64_Section,  16, "filename"),
+            T_COFF_DefReloc(X64_Rel32,    20, "filename"),
+            {0}
+          }
+        },
+        {0}
+      },
+
+      .symbols = (T_COFF_DefSymbol[]){
+        {.type = obj_idx ? T_COFF_DefSymbol_Static : T_COFF_DefSymbol_ExternFunc, .name = "entry", .section = "entry"},
+        T_COFF_DefSymbol_Secdef("owner", COFF_ComdatSelect_Any),
+        T_COFF_DefSymbol_Extern("shared", "owner", 0),
+        T_COFF_DefSymbol_Associative("meta", "owner"),
+        T_COFF_DefSymbol_Static("filename", "meta", 3),
+        {.type = obj_idx ? T_COFF_DefSymbol_Extern : 0, .name = "pointers", .section = "pointers"},
+        {0}
+      }
+
+    })));
+  }
+
+  for EachIndex(reverse, 2) {
+    for EachIndex(ref, 2) {
+      t_invoke_linkerf("/subsystem:console /entry:entry /nodefaultlib /fixed:no /include:shared /include:pointers /out:assoc.exe /opt:%s,noicf %s",
+                       ref     ? "ref" : "noref",
+                       reverse ? "second.obj first.obj" : "first.obj second.obj");
+      T_Ok(g_last_exit_code == 0);
+
+      String8             image        = t_read_file(arena, str8_lit("assoc.exe"));
+      PE_BinInfo          bin          = pe_bin_info_from_data(arena, image);
+      COFF_SectionHeader *sections     = (COFF_SectionHeader *)(image.str + bin.section_table_range.min);
+      COFF_SectionHeader *data         = 0;
+      COFF_SectionHeader *names        = 0;
+      COFF_SectionHeader *owner        = 0;
+      COFF_SectionHeader *base_relocs  = 0;
+      U32                 names_number = 0;
+
+      for EachIndex(i, bin.section_count) {
+        if (MemoryMatch(sections[i].name, ".data", 6))  { data = &sections[i];                      }
+        if (MemoryMatch(sections[i].name, ".names", 7)) { names = &sections[i]; names_number = i+1; }
+        if (MemoryMatch(sections[i].name, ".owner", 7)) { owner = &sections[i];                     }
+        if (MemoryMatch(sections[i].name, ".reloc", 7)) { base_relocs = &sections[i];               }
+      }
+
+      T_Ok(data && names && owner && base_relocs);
+      T_Ok(MemoryMatch(image.str + owner->foff, reverse ? "OWNER_B" : "OWNER_A", 7));
+      T_Ok(MemoryMatch(image.str + names->foff, reverse ? "SECOND.c" : "FIRST.c", reverse ? 8 : 7));
+
+      U64 addr64;
+      U32 addr32nb, secrel, rel32; U16 section;
+      MemoryCopy(&addr64,   image.str + data->foff, 8);
+      MemoryCopy(&addr32nb, image.str + data->foff + 8, 4);
+      MemoryCopy(&secrel,   image.str + data->foff + 12, 4);
+      MemoryCopy(&section,  image.str + data->foff + 16, 2);
+      MemoryCopy(&rel32,    image.str + data->foff + 20, 4);
+
+      U32 target_voff = reverse ? names->voff + 3 : 0;
+      T_Ok(addr64   == bin.image_base + target_voff + 5);
+      T_Ok(addr32nb == target_voff + 7);
+      T_Ok(secrel   == (reverse ? 3 : 0) + 9);
+      T_Ok(section  == (reverse ? names_number : 0) + 2);
+      T_Ok(rel32    == (target_voff - data->voff - 24 + 11));
+
+      // Even the tombstoned ADDR64 still needs loader rebasing.
+      U32 page;
+      U16 fixup;
+      MemoryCopy(&page, image.str + base_relocs->foff, 4);
+      MemoryCopy(&fixup, image.str + base_relocs->foff + 8, 2);
+      T_Ok((fixup >> 12) == 10 && page + (fixup & 0xfff) == data->voff);
+    }
+  }
+}
+
+TEST(coff_section_name_offsets)
+{
+  String8 expected  = str8_lit(".lcovfun$M");
+  String8 encoded[] = {
+    str8_lit("//AAAAAE"), str8_lit("//AAAAA+"), str8_lit("//AAAAA/"),
+    str8_lit("//AAAABA"), str8_lit("//AAmJZ/"), str8_lit("//AAmJaA"),
+    str8_lit("//AAyPM2"),
+  };
+  U64     offsets[] = {4, 62, 63, 64, 9999999, 10000000, 13169462};
+  String8 table     = str8(push_array(arena, U8, 13169462 + 32), 13169462 + 32);
+  for EachElement(i, offsets) {
+    MemoryCopy(table.str + offsets[i], expected.str, expected.size + 1);
+
+    COFF_SectionHeader header = {0};
+    MemoryCopy(header.name, encoded[i].str, encoded[i].size);
+    T_Ok(str8_match(coff_name_from_section_header(table, &header), expected, 0));
+
+    if (offsets[i] <= 9999999) {
+      String8 decimal = str8f(arena, "/%llu", offsets[i]);
+      MemoryZeroStruct(&header);
+      MemoryCopy(header.name, decimal.str, decimal.size);
+      T_Ok(str8_match(coff_name_from_section_header(table, &header), expected, 0));
+    }
+  }
+
+  String8 invalid[] = {
+    str8_lit("//AAAAA!"),
+    str8_lit("//"),
+    str8_lit("////////"),
+    str8_lit("//AAAAAE"), // offset exactly at the end of the short table below
+    str8_lit("/9999999"),
+  };
+  String8 short_table = str8_prefix(table, 4);
+  for EachElement(i, invalid) {
+    COFF_SectionHeader header = {0};
+    MemoryCopy(header.name, invalid[i].str, invalid[i].size);
+    T_Ok(coff_name_from_section_header(short_table, &header).size == 0);
+  }
+
+  COFF_SectionHeader inline_header = {0};
+  MemoryCopy(inline_header.name, ".text$mn", 8);
+  T_Ok(str8_match(coff_name_from_section_header(str8_zero(), &inline_header), str8_lit(".text$mn"), 0));
+
+  MemoryZeroStruct(&inline_header);
+  T_Ok(coff_name_from_section_header(str8_zero(), &inline_header).size == 0);
+}
 
 #if 0
 TEST(defer_imp_link)

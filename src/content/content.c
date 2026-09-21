@@ -272,7 +272,7 @@ c_submit_data(C_Key key, Arena **data_arena, String8 data)
     // rjf: key is new -> add this key to the associated root
     if(key_is_new)
     {
-      U64 root_hash = u64_hash_from_str8(str8_struct(&key.root));
+      U64 root_hash = key.root.u64[0];
       U64 root_slot_idx = root_hash%c_shared->root_slots_count;
       U64 root_stripe_idx = root_slot_idx%c_shared->root_stripes_count;
       C_RootSlot *root_slot = &c_shared->root_slots[root_slot_idx];

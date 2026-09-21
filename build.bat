@@ -27,6 +27,7 @@ cd /D "%~dp0"
 :: - `ubsan`: enable undefined-behavior sanitizer
 :: - `telemetry`: enable RAD telemetry profiling support
 :: - `spall`: enable spall profiling support
+:: - `oodle`: enable Oodle from local\oodle2*\win or an explicit OODLE_SDK_DIR
 
 :: --- Unpack Arguments -------------------------------------------------------
 for %%a in (%*) do set "%%~a=1"
@@ -152,6 +153,38 @@ if not exist build\blake3.lib if "%VSCMD_ARG_TGT_ARCH%" equ "x64" (
   %asm% blake3_avx512_x86-64_windows_msvc.obj ..\src\third_party\blake3\blake3_avx512_x86-64_windows_msvc.asm || exit /b 1
   %mklib% -out:blake3.lib blake3_*_msvc.obj                                                                   || exit /b 1
   popd
+)
+
+:: --- Set up Oodle SDK -------------------------------------------------------
+if "%oodle%"=="1" (
+  set "oodle_sdk_path=%OODLE_SDK_DIR%"
+  if not defined oodle_sdk_path (
+    for /d %%d in ("%~dp0local\oodle2*") do (
+      if exist "%%~fd\win\include\oodle2.h" (
+        if defined oodle_sdk_path (
+          echo Multiple Oodle SDKs found: "!oodle_sdk_path!" and "%%~fd\win"
+          echo Set OODLE_SDK_DIR to select the SDK root.
+          exit /b 1
+        )
+        set "oodle_sdk_path=%%~fd\win"
+      )
+    )
+  )
+  if not defined oodle_sdk_path (
+    echo Oodle SDK not found. Put an oodle2* SDK with a win subdirectory in "%~dp0local" or set OODLE_SDK_DIR.
+    exit /b 1
+  )
+  if exist "!oodle_sdk_path!\win\include\oodle2.h" set "oodle_sdk_path=!oodle_sdk_path!\win"
+  for %%d in ("!oodle_sdk_path!") do set "oodle_sdk_path=%%~fd"
+  if not exist "!oodle_sdk_path!\include\oodle2.h" (
+    echo Oodle SDK directory "!oodle_sdk_path!" must contain include\oodle2.h
+    exit /b 1
+  )
+  echo [Oodle SDK: !oodle_sdk_path!]
+  set "compile=!compile! -DOODLE_SDK=1 -I"!oodle_sdk_path!\include""
+  if exist "!oodle_sdk_path!\redist\oo2core_*_win64.dll" (
+    copy /y "!oodle_sdk_path!\redist\oo2core_*_win64.dll" "%~dp0build\" >nul || exit /b 1
+  )
 )
 
 :: --- Build Everything (@build_targets) --------------------------------------

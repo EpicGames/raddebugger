@@ -11,6 +11,7 @@ struct SystemInfo
   U64 page_size;
   U64 large_page_size;
   U64 allocation_granularity;
+  U64 physical_memory_size;
   String8 machine_name;
 };
 

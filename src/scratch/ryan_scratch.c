@@ -12,7 +12,6 @@
 
 //- rjf: [h]
 #include "base/base_inc.h"
-#include "x64/x64.h"
 #include "artifact_cache/artifact_cache.h"
 #include "rdi/rdi_local.h"
 #include "dbg_info/dbg_info.h"
@@ -21,7 +20,6 @@
 
 //- rjf: [c]
 #include "base/base_inc.c"
-#include "x64/x64.c"
 #include "artifact_cache/artifact_cache.c"
 #include "rdi/rdi_local.c"
 #include "dbg_info/dbg_info.c"

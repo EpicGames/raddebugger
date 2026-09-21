@@ -55,11 +55,41 @@ internal String8
 coff_name_from_section_header(String8 string_table, COFF_SectionHeader *header)
 {
   String8 name = str8_cstring_capped(header->name, header->name + sizeof(header->name));
-  if (name.str[0] == '/') {
-    String8 name_off_str = str8_skip(name, 1);
-    U64     name_off     = u64_from_str8(name_off_str, 10);
-    name = str8_cstring_capped(string_table.str + name_off, string_table.str+string_table.size);
+
+  if (name.size > 0 && name.str[0] == '/') {
+    U64 name_off = max_U64;
+
+    // LLVM/GNU Base64 offset encoding, most significant digit first
+    if (name.size > 1 && name.str[1] == '/') {
+      if (name.size > 2) {
+        name_off = 0;
+        for (U64 i = 2; i < name.size; ++i) {
+          U8  c     = name.str[i];
+          U64 digit = 0;
+          if      (char_is_upper(c))     { digit = c - 'A';      }
+          else if (char_is_lower(c))     { digit = c - 'a' + 26; }
+          else if (char_is_digit(c, 10)) { digit = c - '0' + 52; }
+          else if (c == '+')             { digit = 62;           }
+          else if (c == '/')             { digit = 63;           }
+          else {
+            name_off = max_U64;
+            break;
+          }
+          name_off = (name_off << 6) | digit;
+        }
+      }
+    } else {
+      // parse standard COFF long name encoding
+      name_off = u64_from_str8(str8_skip(name, 1), 10);
+    }
+
+    if (name_off < string_table.size) {
+      name = str8_cstring_capped(string_table.str + name_off, string_table.str+string_table.size);
+    } else {
+      name = str8_zero();
+    }
   }
+
   return name;
 }
 

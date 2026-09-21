@@ -113,7 +113,7 @@ typedef struct
 typedef struct
 {
   LNK_CodeViewInput *input;
-  String8Array      *raw_types; // [obj_count]
+  String8           *raw_types; // [obj_count]
   CV_DebugT         *out_types; // [obj_count]
 } LNK_ParseCvTypes;
 

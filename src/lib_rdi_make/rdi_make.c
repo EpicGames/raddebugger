@@ -442,7 +442,8 @@ rdim_sort_key_array(RDIM_Arena *arena, RDIM_SortKey *keys, RDI_U64 count)
           RDI_U64 j2_opl = range2->opl;
           for(;;)
           {
-            if(src[j1].key <= src[j2].key)
+            if(src[j1].key < src[j2].key ||
+               (src[j1].key == src[j2].key && src[j1].val == 0 && src[j2].val != 0))
             {
               rdim_memcpy(dst + jd, src + j1, sizeof(*src));
               j1 += 1;

@@ -1147,8 +1147,23 @@ cv_debug_t_from_data(Arena *arena, String8 data, U64 align)
 {
   CV_DebugT debug_t = { .data = data };
 
+  U64 parse_start_offset = 0;
+
+  // strip LF_PRECOMP from .debug$T to exclude it from leaf arrays
+  B8             has_pch = 0;
+  CV_PrecompInfo precomp = {0};
+  {
+    CV_Leaf leaf        = {0};
+    U64     leaf_size   = cv_read_leaf(data, 0, CV_LeafAlign, &leaf);
+    if (leaf.kind == CV_LeafKind_PRECOMP) {
+      debug_t.has_pch = 1;
+      debug_t.precomp = cv_precomp_info_from_leaf(leaf);
+      parse_start_offset = leaf_size;
+    }
+  }
+
   ProfBegin("Upfront parse for counts");
-  for (U64 cursor = 0, prev_cursor = 0, ti = CV_MinComplexTypeIndex; cursor < data.size; ti += 1) {
+  for (U64 cursor = parse_start_offset, prev_cursor = parse_start_offset, ti = CV_MinComplexTypeIndex; cursor < data.size; ti += 1) {
     CV_Leaf leaf = {0};
     TryRead(cv_read_leaf(data, cursor, align, &leaf), cursor, count_stop);
     debug_t.source_counts[cv_type_index_source_from_leaf_kind(leaf.kind)] += 1;
@@ -1160,20 +1175,15 @@ count_stop:
 
   ProfBegin("store leaf offsets");
   debug_t.offsets = push_array_no_zero(arena, U32, debug_t.count);
-  for (U64 cursor = 0, idx = 0; cursor < data.size && idx < debug_t.count; idx += 1) {
+  for (U64 cursor = parse_start_offset, idx = 0; cursor < data.size && idx < debug_t.count; idx += 1) {
     debug_t.offsets[idx] = cursor;
     TryRead(cv_read_leaf(data, cursor, align, &(CV_Leaf){0}), cursor, store_stop);
   }
 store_stop:
 
-  for EachElement(i, debug_t.ti_ranges) { debug_t.ti_ranges[i] = r1u64(CV_MinComplexTypeIndex, CV_MinComplexTypeIndex + debug_t.count); }
+  for EachElement(i, debug_t.ti_ranges) { debug_t.ti_ranges[i] = r1u64(CV_MinComplexTypeIndex, CV_MinComplexTypeIndex + debug_t.count + debug_t.precomp.leaf_count); }
 
-  // shift upper type index bound to include precompiled types
-  CV_Leaf leaf = cv_debug_t_get_leaf(&debug_t, 0);
-  if (leaf.kind == CV_LeafKind_PRECOMP) {
-    CV_PrecompInfo precomp_info = cv_precomp_info_from_leaf(leaf);
-    for EachElement(i, debug_t.ti_ranges) { debug_t.ti_ranges[i].max += precomp_info.leaf_count; }
-  }
+  for (U64 i = 1; i < CV_TypeIndexSource_COUNT; i += 1) { debug_t.pch_ti_range[i] = r1u64s(debug_t.precomp.start_index, debug_t.precomp.leaf_count); }
 
   ProfEnd();
   return debug_t;
@@ -1635,7 +1645,7 @@ cv_c13_voff_map_compar(const void *raw_a, const void *raw_b)
   return cmp;
 }
 
-force_inline int
+internal force_inline int
 cv_c13_voff_map_is_before(void *raw_a, void *raw_b)
 {
   return cv_c13_voff_map_compar(raw_a, raw_b) < 0;

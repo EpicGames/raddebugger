@@ -49,6 +49,11 @@ if   [[ "${release:-0}" == "1" ]]; then echo "[release mode]"; compile="$compile
 elif [[ "${debug:-1}"   == "1" ]]; then echo "[debug mode]";   compile="$compiler $cc_debug";
 fi
 
+oodle_flags=()
+compile() {
+  $compile "${oodle_flags[@]}" -Wl,--start-group "$@" blake3.a -latomic -Wl,--end-group
+}
+
 # --- Prep Directories --------------------------------------------------------
 mkdir -p build local
 
@@ -73,13 +78,50 @@ then
   $ar rs build/blake3.a build/blake3_*_unix.o
 fi
 
+# --- Set up Oodle SDK -------------------------------------------------------
+if [[ "${oodle:-0}" == "1" ]]; then
+  oodle_sdk_path="${OODLE_SDK_DIR:-}"
+  if [[ -z "$oodle_sdk_path" ]]; then
+    for sdk in "$PWD"/local/oodle2*; do
+      if [[ -f "$sdk/linux/include/oodle2.h" ]]; then
+        if [[ -n "$oodle_sdk_path" ]]; then
+          echo "Multiple Oodle SDKs found: $oodle_sdk_path and $sdk/linux" >&2
+          echo "Set OODLE_SDK_DIR to select the SDK root." >&2
+          exit 1
+        fi
+        oodle_sdk_path="$sdk/linux"
+      fi
+    done
+  fi
+  if [[ -z "$oodle_sdk_path" ]]; then
+    echo "Oodle SDK not found. Put an oodle2* SDK with a linux subdirectory in $PWD/local or set OODLE_SDK_DIR." >&2
+    exit 1
+  fi
+  if [[ -f "$oodle_sdk_path/linux/include/oodle2.h" ]]; then
+    oodle_sdk_path="$oodle_sdk_path/linux"
+  fi
+  if [[ ! -f "$oodle_sdk_path/include/oodle2.h" ]]; then
+    echo "Oodle SDK directory '$oodle_sdk_path' must contain include/oodle2.h" >&2
+    exit 1
+  fi
+  oodle_sdk_path="$(cd "$oodle_sdk_path" && pwd)"
+  echo "[Oodle SDK: $oodle_sdk_path]"
+  # Keep the include path as one argument, including when it contains spaces.
+  oodle_flags=(-DOODLE_SDK=1 "-I$oodle_sdk_path/include")
+  for library in "$oodle_sdk_path"/lib/liboo2corelinux64.so "$oodle_sdk_path"/lib/liboo2corelinux64.so.*; do
+    if [[ -f "$library" ]]; then
+      cp -- "$library" "$PWD/build/"
+    fi
+  done
+fi
+
 # --- Build Everything (@build_targets) ---------------------------------------
 cd build
-if [[ "${raddbg:-0}"               == "1" ]]; then didbuild=1 && $compile ../src/raddbg/raddbg_main.c $cc_icon $cc_link $cc_os_gfx $cc_render $cc_font_provider -o raddbg; fi
-if [[ "${raddbg_non_graphical:-0}" == "1" ]]; then didbuild=1 && $compile ../src/raddbg/raddbg_main.c -DWM_STUB=1 -DR_BACKEND=R_BACKEND_STUB $cc_link $cc_os_gfx $cc_render $cc_font_provider -o raddbg_non_graphical; fi
-if [[ "${radbin:-0}"               == "1" ]]; then didbuild=1 && $compile ../src/radbin/radbin_main.c   $cc_link -o radbin; fi
-if [[ "${radlink:-0}"              == "1" ]]; then didbuild=1 && $compile ../src/linker/lnk.c           $cc_link -o radlink blake3.a; fi
-if [[ "${torture:-0}"              == "1" ]]; then didbuild=1 && $compile ../src/torture/torture_main.c $cc_link $cc_os_gfx $cc_render $cc_font_provider -o torture; fi
+if [[ "${raddbg:-0}"               == "1" ]]; then didbuild=1 && compile ../src/raddbg/raddbg_main.c $cc_icon $cc_link $cc_os_gfx $cc_render $cc_font_provider -o raddbg; fi
+if [[ "${raddbg_non_graphical:-0}" == "1" ]]; then didbuild=1 && compile ../src/raddbg/raddbg_main.c -DWM_STUB=1 -DR_BACKEND=R_BACKEND_STUB $cc_link $cc_os_gfx $cc_render $cc_font_provider -o raddbg_non_graphical; fi
+if [[ "${radbin:-0}"               == "1" ]]; then didbuild=1 && compile ../src/radbin/radbin_main.c   $cc_link -o radbin; fi
+if [[ "${radlink:-0}"              == "1" ]]; then didbuild=1 && compile ../src/linker/lnk.c           $cc_link -o radlink; fi
+if [[ "${torture:-0}"              == "1" ]]; then didbuild=1 && compile ../src/torture/torture_main.c $cc_link $cc_os_gfx $cc_render $cc_font_provider -o torture; fi
 cd ..
 
 # --- Warn On No Builds -------------------------------------------------------

@@ -69,8 +69,10 @@ lnx_file_properties_from_stat(struct stat *s)
 }
 
 internal void
-lnx_safe_call_sig_handler(int x)
+lnx_safe_call_sig_handler(int sig, siginfo_t *info, void *context)
 {
+  if(lnx_dispatch_memory_read_fault(sig, info, context)) { return; }
+  
   LNX_SafeCallChain *chain = lnx_safe_call_chain;
   if(chain != 0 && chain->fail_handler != 0)
   {
@@ -238,8 +240,7 @@ reserve_memory(U64 size)
 internal B32
 commit_memory(void *ptr, U64 size)
 {
-  mprotect(ptr, size, PROT_READ|PROT_WRITE);
-  return 1;
+  return mprotect(ptr, size, PROT_READ|PROT_WRITE) == 0;
 }
 
 internal void
@@ -281,12 +282,29 @@ commit_memory_large(void *ptr, U64 size)
 internal SharedMemory
 shared_memory_alloc(U64 size, String8 name)
 {
-  Temp scratch = scratch_begin(0, 0);
-  String8 name_copy = push_str8_copy(scratch.arena, name);
-  int id = shm_open((char *)name_copy.str, O_RDWR|O_CREAT, 0666);
-  ftruncate(id, size);
-  SharedMemory result = {(U64)id};
-  scratch_end(scratch);
+  SharedMemory result = { max_U64 };
+  
+  if(size == 0 || size > max_S64) { return result; }
+  
+  int id;
+  if(name.size == 0)
+  {
+    id = memfd_create("rad-shared-memory", MFD_CLOEXEC);
+  }
+  else
+  {
+    Temp scratch = scratch_begin(0, 0);
+    String8 name_copy = push_str8_copy(scratch.arena, name);
+    id = shm_open((char *)name_copy.str, O_RDWR|O_CREAT|O_CLOEXEC, 0666);
+    scratch_end(scratch);
+  }
+  
+  if(id >= 0)
+  {
+    if(ftruncate(id, size) == 0) { result.u64[0] = (U64)id; }
+    else                         { close(id); }
+  }
+  
   return result;
 }
 
@@ -294,9 +312,9 @@ internal SharedMemory
 shared_memory_open(String8 name)
 {
   Temp scratch = scratch_begin(0, 0);
-  String8 name_copy = push_str8_copy(scratch.arena, name);
-  int id = shm_open((char *)name_copy.str, O_RDWR, 0);
-  SharedMemory result = {(U64)id};
+  char        *name_cstr = (char *)push_str8_copy(scratch.arena, name).str;
+  int          id        = shm_open(name_cstr, O_RDWR|O_CLOEXEC, 0);
+  SharedMemory result    = {id >= 0 ? (U64)id : max_U64};
   scratch_end(scratch);
   return result;
 }
@@ -304,15 +322,12 @@ shared_memory_open(String8 name)
 internal void
 shared_memory_close(SharedMemory handle)
 {
-  if(MemoryIsZeroStruct(&handle)){return;}
-  int id = (int)handle.u64[0];
-  close(id);
+  close((int)handle.u64[0]);
 }
 
 internal void *
 shared_memory_view_open(SharedMemory handle, Rng1U64 range)
 {
-  if(MemoryIsZeroStruct(&handle)){return 0;}
   int id = (int)handle.u64[0];
   void *base = mmap(0, dim_1u64(range), PROT_READ|PROT_WRITE, MAP_SHARED, id, range.min);
   if(base == MAP_FAILED)
@@ -325,7 +340,6 @@ shared_memory_view_open(SharedMemory handle, Rng1U64 range)
 internal void
 shared_memory_view_close(SharedMemory handle, void *ptr, Rng1U64 range)
 {
-  if(MemoryIsZeroStruct(&handle)){return;}
   munmap(ptr, dim_1u64(range));
 }
 
@@ -370,7 +384,7 @@ thread_launch(ThreadEntryPointFunctionType *f, void *p)
   entity->thread.ptr = p;
   {
     int pthread_result = pthread_create(&entity->thread.handle, 0, lnx_thread_entry_point, entity);
-    if(pthread_result == -1)
+    if(pthread_result != 0)
     {
       lnx_entity_release(entity);
       entity = 0;
@@ -760,7 +774,8 @@ safe_call(ThreadEntryPointFunctionType *func, ThreadEntryPointFunctionType *fail
   
   // rjf: set up sig handler info
   struct sigaction new_act = {0};
-  new_act.sa_handler = lnx_safe_call_sig_handler;
+  new_act.sa_sigaction = lnx_safe_call_sig_handler;
+  new_act.sa_flags = SA_SIGINFO;
   int signals_to_handle[] =
   {
     SIGILL, SIGFPE, SIGSEGV, SIGBUS, SIGTRAP,
@@ -781,6 +796,7 @@ safe_call(ThreadEntryPointFunctionType *func, ThreadEntryPointFunctionType *fail
   {
     sigaction(signals_to_handle[i], &og_act[i], 0);
   }
+  lnx_safe_call_chain = chain.next;
 }
 
 ////////////////////////////////
@@ -815,6 +831,7 @@ file_open(AccessFlags flags, String8 path)
     lnx_flags |= O_CREAT;
   }
   lnx_flags |= O_CLOEXEC;
+  if(flags & AccessFlag_CreateNew) { lnx_flags |= O_CREAT|O_EXCL; }
   int fd = open((char *)path_copy.str, lnx_flags, 0755);
   File handle = {0};
   if(fd != -1)
@@ -831,6 +848,51 @@ file_close(File file)
   if(file_match(file, file_zero())) { return; }
   int fd = (int)file.u64[0];
   close(fd);
+}
+
+internal FilePair
+file_pipe_make(B32 read_inherited, B32 write_inherited)
+{
+  FilePair result = {0};
+  int fds[2] = {0};
+  if(pipe(fds) == 0)
+  {
+    if(!read_inherited)  { fcntl(fds[0], F_SETFD, FD_CLOEXEC); }
+    if(!write_inherited) { fcntl(fds[1], F_SETFD, FD_CLOEXEC); }
+    result.read.u64[0] = fds[0];
+    result.write.u64[0] = fds[1];
+  }
+  return result;
+}
+
+internal U64
+file_pipe_read(File file, void *out_data, U64 size)
+{
+  ssize_t read_size = LNX_RETRY_ON_EINTR(read((int)file.u64[0], out_data, size));
+  return read_size > 0 ? (U64)read_size : 0;
+}
+
+internal U64
+file_pipe_write(File file, void *data, U64 size)
+{
+  ssize_t write_size = LNX_RETRY_ON_EINTR(write((int)file.u64[0], data, size));
+  return write_size > 0 ? (U64)write_size : 0;
+}
+
+internal U64
+file_pipe_bytes_available(File file)
+{
+  int size = 0;
+  B32 is_ok = !file_match(file, file_zero()) && ioctl((int)file.u64[0], FIONREAD, &size) == 0;
+  return is_ok && size > 0 ? (U64)size : 0;
+}
+
+internal B32
+file_pipe_is_end(File file)
+{
+  struct pollfd poll_fd = { .fd = (int)file.u64[0], .events = POLLIN|POLLHUP };
+  poll(&poll_fd, 1, 0);
+  return !!(poll_fd.revents & (POLLHUP|POLLERR|POLLNVAL));
 }
 
 internal U64
@@ -922,6 +984,265 @@ id_from_file(File file)
     id.v[1] = fd_stat.st_ino;
   }
   return id;
+}
+
+internal B32
+file_set_size(File file, U64 size)
+{
+  return size <= max_S64 && ftruncate((int)file.u64[0], (off_t)size) == 0;
+}
+
+internal B32
+file_flush(File file)
+{
+  return fsync((int)file.u64[0]) == 0;
+}
+
+internal B32
+replace_file_path(String8 dst, String8 src)
+{
+  Temp scratch = scratch_begin(0,0);
+  char *dst_cstr = (char *)push_str8_copy(scratch.arena, dst).str;
+  char *src_cstr = (char *)push_str8_copy(scratch.arena, src).str;
+  B32   result   = rename(src_cstr, dst_cstr) == 0;
+  scratch_end(scratch);
+  return result;
+}
+
+internal B32
+memory_placeholders_supported(void)
+{
+#if ARCH_X64 || ARCH_X86
+  return 1;
+#else
+  NotImplemented;
+  return 0;
+#endif
+}
+
+internal void *
+reserve_memory_placeholders(U64 size, U64 block_size)
+{
+  Assert(size > 0);
+  Assert(size == (size_t)size);
+  Assert(block_size > 0);
+  Assert((size % block_size) == 0);
+  Assert((block_size % get_system_info()->page_size) == 0);
+  return reserve_memory(size);
+}
+
+internal void
+release_memory_placeholders(void *ptr, U64 size, U64 block_size)
+{
+  if(size && block_size) { release_memory(ptr, size); }
+}
+
+internal B32
+unmap_memory_preserve_placeholder(void *ptr, U64 size)
+{
+  Assert(ptr != 0);
+  Assert(size > 0);
+  Assert(size == (size_t)size);
+  Assert((IntFromPtr(ptr) % get_system_info()->page_size) == 0);
+  Assert((size % get_system_info()->page_size) == 0);
+  return mmap(ptr, size, PROT_NONE, MAP_FIXED|MAP_PRIVATE|MAP_ANONYMOUS, -1, 0) == ptr;
+}
+
+internal void *
+shared_memory_view_replace_placeholder(SharedMemory handle, void *ptr, Rng1U64 range, AccessFlags flags)
+{
+  Assert(range.max > range.min);
+  Assert(range.max < max_S64);
+  Assert(dim_1u64(range) == (size_t)dim_1u64(range));
+  Assert((range.min % get_system_info()->page_size) == 0);
+  Assert((range.max % get_system_info()->page_size) == 0);
+  Assert((IntFromPtr(ptr) % get_system_info()->page_size) == 0);
+  Assert((flags == AccessFlag_Read) || (flags == (AccessFlag_Read|AccessFlag_Write)));
+  int   protection = flags == AccessFlag_Read ? PROT_READ : PROT_READ|PROT_WRITE;
+  void *result     = mmap(ptr, dim_1u64(range), protection, MAP_FIXED|MAP_SHARED, (int)handle.u64[0], range.min);
+  return result == MAP_FAILED ? 0 : result;
+}
+
+internal U64
+get_available_commit_memory(void)
+{
+  long pages = sysconf(_SC_AVPHYS_PAGES);
+  return pages > 0 ? (U64)pages*get_system_info()->page_size : get_system_info()->physical_memory_size;
+}
+
+internal B32
+split_memory_placeholder(void *ptr, U64 size, U64 first_size)
+{
+  return first_size > 0 && first_size <= size;
+}
+
+internal B32
+coalesce_memory_placeholders(void *ptr, U64 size)
+{
+  return 1;
+}
+
+internal void *
+file_map_view_replace_placeholder(FileMap map, void *ptr, Rng1U64 range)
+{
+  void *result = mmap(ptr, dim_1u64(range), PROT_READ, MAP_FIXED|MAP_PRIVATE, (int)map.u64[0], range.min);
+  return result == MAP_FAILED ? 0 : result;
+}
+
+internal void
+prefetch_memory_ranges(U64 count, Rng1U64 *ranges)
+{
+  U64 page = get_system_info()->page_size;
+  for EachIndex(i, count) {
+    U64 min = AlignDownPow2(ranges[i].min, page), max = AlignPow2(ranges[i].max, page);
+    if (max > min) { madvise(PtrFromInt(min), max-min, MADV_WILLNEED); }
+  }
+}
+
+internal void
+lnx_memory_fault_thread(void *unused)
+{
+  ThreadNameF("Memory Pager %u", (U32)IntFromPtr(unused));
+  for(;;)
+  {
+    LNX_MemoryFaultRequest *request = 0;
+    ssize_t count = LNX_RETRY_ON_EINTR(read(lnx_state.demand_memory.requests[0], &request, sizeof(request)));
+    
+    if(count == 0)               { break;    }
+    if(count != sizeof(request)) { _exit(1); }
+    if(request == 0)             { break;    }
+    
+    lnx_in_memory_fault_callback = 1;
+    B32 handled = lnx_state.demand_memory.fault(request->address, lnx_state.demand_memory.user_data);
+    lnx_in_memory_fault_callback = 0;
+    
+    U32 *completion = &request->result;
+    ins_atomic_u32_eval_assign(completion, handled ? 2 : 1);
+    syscall(SYS_futex, completion, FUTEX_WAKE_PRIVATE, 1, 0, 0, 0);
+  }
+}
+
+internal B32
+lnx_memory_fault_workers_stop(LNX_DemandMemory *memory)
+{
+  // Explicit stop records work even if a forked child still owns an inherited
+  // pipe descriptor. EOF-based shutdown could otherwise wait for that child.
+  LNX_MemoryFaultRequest *stop = 0;
+  while(memory->stops_sent < memory->worker_count)
+  {
+    if(LNX_RETRY_ON_EINTR(write(memory->requests[1], &stop, sizeof(stop))) != sizeof(stop)) { return 0; }
+    memory->stops_sent += 1;
+  }
+  while(memory->workers_joined < memory->worker_count)
+  {
+    if(!thread_join(memory->workers[memory->workers_joined], max_U64)) { return 0; }
+    memory->workers_joined += 1;
+  }
+  close(memory->requests[0]);
+  close(memory->requests[1]);
+  MemoryZeroStruct(memory);
+  return 1;
+}
+
+internal B32
+lnx_dispatch_memory_read_fault(int sig, siginfo_t *info, void *context)
+{
+  LNX_DemandMemory *memory = &lnx_state.demand_memory;
+  
+#if ARCH_X64 || ARCH_X86
+  if(sig != SIGSEGV || info == 0 || context == 0                   ||
+     (info->si_code != SEGV_ACCERR && info->si_code != SEGV_MAPERR) ||
+     lnx_in_memory_fault_callback                                   ||
+     ins_atomic_u32_eval(&memory->active) == 0)
+  {
+    return 0;
+  }
+  
+  ucontext_t *state = context;
+  if((state->uc_mcontext.gregs[REG_TRAPNO] != X64_ExceptionCode_PF) ||
+     (state->uc_mcontext.gregs[REG_ERR] & X64_PageFaultError_Write) ||
+     (state->uc_mcontext.gregs[REG_ERR] & X64_PageFaultError_InstructionFetch) ||
+     memory->owner_pid != getpid())
+  {
+    return 0;
+  }
+  
+  int                     saved_errno = errno;
+  LNX_MemoryFaultRequest  request     = { .address = info->si_addr };
+  LNX_MemoryFaultRequest *ptr         = &request;
+  ssize_t                 count       = LNX_RETRY_ON_EINTR(write(memory->requests[1], &ptr, sizeof(ptr)));
+  if(count != sizeof(ptr))
+  {
+    errno = saved_errno;
+    return 0;
+  }
+  
+  // wait for the page fault handler to complete
+  while(!ins_atomic_u32_eval(&request.result))
+  {
+    if(LNX_RETRY_ON_EINTR(syscall(SYS_futex, &request.result, FUTEX_WAIT_PRIVATE, 0, 0, 0, 0)) < 0 && errno != EAGAIN)
+    {
+      _exit(1);
+    }
+  }
+  
+  B32 handled = request.result == 2;
+  errno = saved_errno;
+  
+  return handled;
+#else
+  NotImplemented;
+  return 0;
+#endif
+}
+
+internal B32
+memory_read_fault_handler_set(MemoryReadFaultFunction *func, void *user_data)
+{
+  LNX_DemandMemory *memory = &lnx_state.demand_memory;
+  if(func)
+  {
+    if(memory_placeholders_supported() == 0 || memory->worker_count || ins_atomic_u32_eval(&memory->active))
+    {
+      return 0;
+    }
+    if(pipe2(memory->requests, O_CLOEXEC) != 0)
+    {
+      return 0;
+    }
+    
+    memory->fault     = func;
+    memory->user_data = user_data;
+    memory->owner_pid = getpid();
+    // Independent pager workers must remain runnable when all application
+    // workers are asleep in their SIGSEGV handlers. Fixed-size pointer writes
+    // fit PIPE_BUF; workers each consume one complete request from the pipe.
+    U32 worker_count = (U32)Clamp(2, get_system_info()->logical_processor_count, LNX_MEMORY_FAULT_WORKER_LIMIT);
+    for(U32 i = 0; i < worker_count; i += 1)
+    {
+      Thread worker = thread_launch(lnx_memory_fault_thread, PtrFromInt((U64)i));
+      if(MemoryIsZeroStruct(&worker))
+      {
+        // Drain and join already-launched workers on partial startup failure.
+        lnx_memory_fault_workers_stop(memory);
+        return 0;
+      }
+      memory->workers[memory->worker_count++] = worker;
+    }
+    
+    ins_atomic_u32_eval_assign(&memory->active, 1);
+  }
+  else if(memory->worker_count)
+  {
+    if(memory->owner_pid != getpid() || lnx_in_memory_fault_callback)
+    {
+      return 0;
+    }
+    
+    ins_atomic_u32_eval_assign(&memory->active, 0);
+    return lnx_memory_fault_workers_stop(memory);
+  }
+  return 1;
 }
 
 internal B32
@@ -1248,13 +1569,43 @@ process_launch(ProcessLaunchParams *params)
       int chdir_code = posix_spawn_file_actions_addchdir_np(&file_actions, (char *)push_cstr(scratch.arena, params->path).str);
       Assert(chdir_code == 0);
     }
-    int stdout_code = posix_spawn_file_actions_adddup2(&file_actions, (int)params->stdout_file.u64[0], STDOUT_FILENO);
-    int stderr_code = posix_spawn_file_actions_adddup2(&file_actions, (int)params->stderr_file.u64[0], STDERR_FILENO);
-    int stdin_code = posix_spawn_file_actions_adddup2(&file_actions, (int)params->stdin_file.u64[0], STDIN_FILENO);
+    if(!file_match(params->stdout_file, file_zero()))
+    {
+      int stdout_code = posix_spawn_file_actions_adddup2(&file_actions, (int)params->stdout_file.u64[0], STDOUT_FILENO);
+      Assert(stdout_code == 0);
+    }
+    if(!file_match(params->stderr_file, file_zero()))
+    {
+      int stderr_code = posix_spawn_file_actions_adddup2(&file_actions, (int)params->stderr_file.u64[0], STDERR_FILENO);
+      Assert(stderr_code == 0);
+    }
+    if(!file_match(params->stdin_file, file_zero()))
+    {
+      int stdin_code = posix_spawn_file_actions_adddup2(&file_actions, (int)params->stdin_file.u64[0], STDIN_FILENO);
+      Assert(stdin_code == 0);
+    }
+    File std_files[] = { params->stdout_file, params->stderr_file, params->stdin_file };
+    for EachIndex(i, ArrayCount(std_files))
+    {
+      int fd = (int)std_files[i].u64[0];
+      B32 is_unique = !file_match(std_files[i], file_zero());
+      for EachIndex(j, i) { is_unique &= !file_match(std_files[i], std_files[j]); }
+      if(is_unique && fd > STDERR_FILENO)
+      {
+        int close_code = posix_spawn_file_actions_addclose(&file_actions, fd);
+        Assert(close_code == 0);
+      }
+    }
     posix_spawnattr_t attr = {0};
     int attr_init_code = posix_spawnattr_init(&attr);
     if(attr_init_code == 0)
     {
+      if(params->new_console || params->process_group.u64[0] != 0)
+      {
+        posix_spawnattr_setflags(&attr, POSIX_SPAWN_SETPGROUP);
+        posix_spawnattr_setpgroup(&attr, 0);
+      }
+      
       // package argv
       char **argv = push_array(scratch.arena, char *, params->cmd_line.node_count + 1);
       {
@@ -1290,6 +1641,12 @@ process_launch(ProcessLaunchParams *params)
       if(spawn_code == 0)
       {
         handle.u64[0] = (U64)pid;
+        if(params->process_group.u64[0] != 0 && !process_group_add(params->process_group, handle))
+        {
+          kill(pid, SIGKILL);
+          waitpid(pid, 0, 0);
+          MemoryZeroStruct(&handle);
+        }
       }
       
       // clean up attributes
@@ -1307,6 +1664,27 @@ internal U64
 pid_from_process(Process process)
 {
   U64 result = process.u64[0];
+  return result;
+}
+
+internal B32
+process_poll(Process process, U64 *exit_code_out)
+{
+  if(process_match(process, process_zero())) { return 0; }
+  siginfo_t info = {0};
+  B32 result = waitid(P_PID, (pid_t)process.u64[0], &info, WEXITED|WNOHANG|WNOWAIT) == 0 && info.si_pid != 0;
+  if(result && exit_code_out != 0)
+  {
+    *exit_code_out = info.si_code == CLD_EXITED ? (U64)info.si_status : (U64)info.si_status + 128;
+  }
+  return result;
+}
+
+internal B32
+process_is_active(Process process)
+{
+  B32 result = !process_match(process, process_zero()) &&
+    !process_poll(process, 0) && kill((pid_t)process.u64[0], 0) == 0;
   return result;
 }
 
@@ -1359,6 +1737,51 @@ process_kill(Process process)
   return is_killed;
 }
 
+internal B32
+process_send_ctrl_c(Process process)
+{
+  B32 result = !process_match(process, process_zero()) && kill((pid_t)process.u64[0], SIGINT) == 0;
+  return result;
+}
+
+typedef struct LNX_ProcessGroup LNX_ProcessGroup;
+struct LNX_ProcessGroup
+{
+  pid_t pid;
+  B32 kill_on_close;
+};
+
+internal ProcessGroup
+process_group_make(B32 kill_on_close)
+{
+  LNX_ProcessGroup *group = malloc(sizeof(*group));
+  if(group != 0) { *group = (LNX_ProcessGroup){ .kill_on_close = kill_on_close }; }
+  return (ProcessGroup){ .u64[0] = (U64)group };
+}
+
+internal B32
+process_group_add(ProcessGroup group, Process process)
+{
+  LNX_ProcessGroup *lnx_group = (LNX_ProcessGroup *)group.u64[0];
+  if(lnx_group == 0 || lnx_group->pid != 0 || process_match(process, process_zero())) { return 0; }
+  lnx_group->pid = (pid_t)process.u64[0];
+  return 1;
+}
+
+internal void
+process_group_close(ProcessGroup group)
+{
+  LNX_ProcessGroup *lnx_group = (LNX_ProcessGroup *)group.u64[0];
+  if(lnx_group != 0)
+  {
+    if(lnx_group->kill_on_close && lnx_group->pid != 0)
+    {
+      kill(-lnx_group->pid, SIGKILL);
+    }
+    free(lnx_group);
+  }
+}
+
 ////////////////////////////////
 //~ rjf: @per_os_impl Dynamically-Loaded Libraries
 
@@ -1376,7 +1799,7 @@ library_open(String8 path)
 internal void
 library_close(Library lib)
 {
-  void *so = (void *)lib.u64;
+  void *so = (void *)lib.u64[0];
   dlclose(so);
 }
 
@@ -1384,7 +1807,7 @@ internal VoidProc *
 library_load_proc(Library lib, String8 name)
 {
   Temp scratch = scratch_begin(0, 0);
-  void *so = (void *)lib.u64;
+  void *so = (void *)lib.u64[0];
   char *name_cstr = (char *)str8_copy(scratch.arena, name).str;
   VoidProc *proc = (VoidProc *)dlsym(so, name_cstr);
   scratch_end(scratch);
@@ -1397,57 +1820,63 @@ library_load_proc(Library lib, String8 name)
 internal void
 lnx_signal_handler(int sig, siginfo_t *info, void *arg)
 {
-  local_persist volatile U32 first = 0;
-  if (ins_atomic_u32_eval_cond_assign(&first, 1, 0) != 0)
-  {
-    for(;;)
-    {
-      sleep(UINT32_MAX);
-    }
-  }
+  // page fault handler
+  if(lnx_dispatch_memory_read_fault(sig, info, arg)) { return; }
   
-  local_persist void *ips[4096];
-  int ips_count = backtrace(ips, ArrayCount(ips));
-  
-  fprintf(stderr, "A fatal signal was received: %s (%d). The process is terminating.\n", strsignal(sig), sig);
-  fprintf(stderr, "Create a new issue with this report at %s.\n\n", BUILD_ISSUES_LINK_STRING_LITERAL);
-  fprintf(stderr, "Callstack:\n");
-  for EachIndex(i, ips_count)
+  // crash handler
   {
-    Dl_info info = {0};
-    dladdr(ips[i], &info);
-    
-    char cmd[2048];
-    snprintf(cmd, sizeof(cmd), "llvm-symbolizer --relative-address -f -e %s %lu", info.dli_fname, (unsigned long)ips[i] - (unsigned long)info.dli_fbase);
-    FILE *f = popen(cmd, "r");
-    if(f)
+    local_persist volatile U32 first = 0;
+    if (ins_atomic_u32_eval_cond_assign(&first, 1, 0) != 0)
     {
-      char func_name[256], file_name[256];
-      if(fgets(func_name, sizeof(func_name), f) && fgets(file_name, sizeof(file_name), f))
+      for(;;)
       {
-        String8 func = str8_cstring(func_name);
-        if(func.size > 0) func.size -= 1;
-        String8 module = str8_skip_last_slash(str8_cstring(info.dli_fname));
-        String8 file   = str8_skip_last_slash(str8_cstring_capped(file_name, file_name + sizeof(file_name)));
-        if(file.size > 0) file.size -= 1;
-        
-        B32 no_func = str8_match(func, str8_lit("??"), StringMatchFlag_RightSideSloppy);
-        B32 no_file = str8_match(file, str8_lit("??"), StringMatchFlag_RightSideSloppy);
-        if(no_func) { func = str8_zero(); }
-        if(no_file) { file = str8_zero(); }
-        
-        fprintf(stderr, "%ld. [0x%016lx] %.*s%s%.*s %.*s\n", i+1, (unsigned long)ips[i], (int)module.size, module.str, (!no_func || !no_file) ? ", " : "", (int)func.size, func.str, (int)file.size, file.str);
+        sleep(UINT32_MAX);
       }
-      pclose(f);
     }
-    else
+    
+    local_persist void *ips[4096];
+    int ips_count = backtrace(ips, ArrayCount(ips));
+    
+    fprintf(stderr, "A fatal signal was received: %s (%d). The process is terminating.\n", strsignal(sig), sig);
+    fprintf(stderr, "Create a new issue with this report at %s.\n\n", BUILD_ISSUES_LINK_STRING_LITERAL);
+    fprintf(stderr, "Callstack:\n");
+    for EachIndex(i, ips_count)
     {
-      fprintf(stderr, "%ld. [0x%016lx] %s\n", i+1, (unsigned long)ips[i], info.dli_fname);
+      Dl_info info = {0};
+      dladdr(ips[i], &info);
+      
+      char cmd[2048];
+      snprintf(cmd, sizeof(cmd), "llvm-symbolizer --relative-address -f -e %s %lu", info.dli_fname, (unsigned long)ips[i] - (unsigned long)info.dli_fbase);
+      FILE *f = popen(cmd, "r");
+      if(f)
+      {
+        char func_name[256], file_name[256];
+        if(fgets(func_name, sizeof(func_name), f) && fgets(file_name, sizeof(file_name), f))
+        {
+          String8 func = str8_cstring(func_name);
+          if(func.size > 0) func.size -= 1;
+          String8 module = str8_skip_last_slash(str8_cstring(info.dli_fname));
+          String8 file   = str8_skip_last_slash(str8_cstring_capped(file_name, file_name + sizeof(file_name)));
+          if(file.size > 0) file.size -= 1;
+          
+          B32 no_func = str8_match(func, str8_lit("??"), StringMatchFlag_RightSideSloppy);
+          B32 no_file = str8_match(file, str8_lit("??"), StringMatchFlag_RightSideSloppy);
+          if(no_func) { func = str8_zero(); }
+          if(no_file) { file = str8_zero(); }
+          
+          fprintf(stderr, "%ld. [0x%016lx] %.*s%s%.*s %.*s\n", i+1, (unsigned long)ips[i], (int)module.size, module.str, (!no_func || !no_file) ? ", " : "", (int)func.size, func.str, (int)file.size, file.str);
+        }
+        pclose(f);
+      }
+      else
+      {
+        fprintf(stderr, "%ld. [0x%016lx] %s\n", i+1, (unsigned long)ips[i], info.dli_fname);
+      }
     }
+    fprintf(stderr, "\nVersion: %s%s\n\n", BUILD_VERSION_STRING_LITERAL, BUILD_GIT_HASH_STRING_LITERAL_APPEND);
+    
+    _exit(1);
   }
-  fprintf(stderr, "\nVersion: %s%s\n\n", BUILD_VERSION_STRING_LITERAL, BUILD_GIT_HASH_STRING_LITERAL_APPEND);
-  
-  _exit(1);
 }
 
 int
@@ -1470,11 +1899,16 @@ main(int argc, char **argv)
   {
     //- rjf: get statically-allocated system/process info
     {
+      U64 pages       = (U64)sysconf(_SC_PHYS_PAGES);
+      U64 page_size   = (U64)sysconf(_SC_PAGESIZE);
+      U64 commit_size = (U64)sysconf(_SC_AVPHYS_PAGES);
+      
       SystemInfo *info = &lnx_state.system_info;
       info->logical_processor_count = (U32)get_nprocs();
       info->page_size               = (U64)getpagesize();
       info->large_page_size         = MB(2);
       info->allocation_granularity  = info->page_size;
+      info->physical_memory_size    = pages * page_size;
     }
     {
       ProcessInfo *info = &lnx_state.process_info;

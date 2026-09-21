@@ -82,6 +82,7 @@ typedef enum
   LNK_CmdSwitch_Merge,
   LNK_CmdSwitch_Natvis,
   LNK_CmdSwitch_NoDefaultLib,
+  LNK_CmdSwitch_NoEntry,
   LNK_CmdSwitch_NoExp,
   LNK_CmdSwitch_NoImpLib,
   LNK_CmdSwitch_NxCompat,
@@ -425,6 +426,7 @@ typedef struct LNK_Config
   LNK_SwitchState             type_server;
   LNK_SwitchState             sort_imports;
   LNK_SwitchState             llvm_addrsig;
+  B32                         no_entry;
 } LNK_Config;
 
 // --- MSVC Error Codes --------------------------------------------------------

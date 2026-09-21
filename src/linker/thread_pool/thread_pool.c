@@ -1,10 +1,15 @@
 // Copyright (c) Epic Games Tools
 // Licensed under the MIT license (https://opensource.org/license/mit/)
 
-internal void
+internal B32
 tp_run_tasks(TP_Context *pool, TP_Worker *worker)
 {
   barrier_wait(pool->run_barrier);
+
+  // @pool_shutdown
+  if (!pool->is_live) {
+    return 0;
+  }
 
   for (;;) {
     S64 task_left = ins_atomic_u64_dec_eval(&pool->task_left);
@@ -24,6 +29,7 @@ tp_run_tasks(TP_Context *pool, TP_Worker *worker)
   }
 
   barrier_wait(pool->run_barrier);
+  return 1;
 }
 
 internal void
@@ -31,9 +37,7 @@ tp_worker_main(void *raw_worker)
 {
   TP_Worker  *worker = raw_worker;
   TP_Context *pool   = worker->pool;
-  for (; pool->is_live; ) {
-    tp_run_tasks(pool, worker);
-  }
+  while (tp_run_tasks(pool, worker)) {}
 }
 
 internal void
@@ -41,9 +45,11 @@ tp_worker_main_shared(void *raw_worker)
 {
   TP_Worker  *worker = raw_worker;
   TP_Context *pool   = worker->pool;
-  for (; pool->is_live; ) {
+  for (;;) {
     if (semaphore_take(pool->exec_semaphore, max_U64)) {
-      tp_run_tasks(pool, worker);
+      if (!tp_run_tasks(pool, worker)) {
+        break;
+      }
     }
   }
 }
@@ -101,16 +107,21 @@ tp_release(TP_Context *pool)
 
   B32 is_shared = pool->exec_semaphore.u64[0] != 0;
   if (is_shared) {
-    for EachIndex(i, pool->worker_count) {
-      semaphore_drop(pool->exec_semaphore);
-    }
+    semaphore_drop_count(pool->exec_semaphore, pool->worker_count - 1);
   }
+
+  // rendezvous with all workers at the task dispatch barrier so
+  // they observe @pool_shutdown and exit without running another batch
+  barrier_wait(pool->run_barrier);
+  
   for (U64 i = 1; i < pool->worker_count; i += 1) {
-    thread_detach(pool->worker_arr[i].handle);
+    thread_join(pool->worker_arr[i].handle, max_U64);
   }
+  
   if (is_shared) {
     semaphore_release(pool->exec_semaphore);
   }
+
   barrier_release(pool->run_barrier);
   barrier_release(pool->barrier);
 
@@ -182,6 +193,13 @@ tp_temp_end(TP_Temp temp)
 internal void
 tp_for_parallel(TP_Context *pool, TP_Arena *task_arena, U64 task_count, TP_TaskFunc *task_func, void *task_data)
 {
+  // fast path for single tasks to bypass syncs
+  if (task_count == 1) {
+    Arena *arena = task_arena ? task_arena->v[0] : 0;
+    task_func(arena, 0, 0, task_data, pool);
+    return;
+  }
+
   if (task_count) {
     // init run
     pool->task_arena = task_arena;

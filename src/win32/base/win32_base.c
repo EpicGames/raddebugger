@@ -6,15 +6,36 @@
 //
 // (We must dynamically link to them, since they can be missing in older SDKs)
 
-typedef HRESULT W32_SetThreadDescription_Type(HANDLE hThread, PCWSTR lpThreadDescription);
-global W32_SetThreadDescription_Type *w32_SetThreadDescription_func = 0;
-typedef BOOL W32_InitializeSynchronizationBarrier_Type(W32_SYNCHRONIZATION_BARRIER *lpBarrier, LONG lTotalThreads, LONG lSpinCount);
-global W32_InitializeSynchronizationBarrier_Type *w32_InitializeSynchronizationBarrier_func = 0;
-typedef BOOL W32_DeleteSynchronizationBarrier_Type(W32_SYNCHRONIZATION_BARRIER *lpBarrier);
-global W32_DeleteSynchronizationBarrier_Type *w32_DeleteSynchronizationBarrier_func = 0;
-typedef BOOL W32_EnterSynchronizationBarrier_Type(W32_SYNCHRONIZATION_BARRIER *lpBarrier, DWORD dwFlags);
-global W32_EnterSynchronizationBarrier_Type *w32_EnterSynchronizationBarrier_func = 0;
 global RIO_EXTENSION_FUNCTION_TABLE w32_rio_functions = {0};
+
+typedef HRESULT W32_SetThreadDescription_Type(HANDLE hThread, PCWSTR lpThreadDescription);
+typedef BOOL    W32_InitializeSynchronizationBarrier_Type(W32_SYNCHRONIZATION_BARRIER *lpBarrier, LONG lTotalThreads, LONG lSpinCount);
+typedef BOOL    W32_DeleteSynchronizationBarrier_Type(W32_SYNCHRONIZATION_BARRIER *lpBarrier);
+typedef BOOL    W32_EnterSynchronizationBarrier_Type(W32_SYNCHRONIZATION_BARRIER *lpBarrier, DWORD dwFlags);
+
+typedef struct { void *address; SIZE_T size; } W32_PrefetchRange;
+typedef BOOL WINAPI W32_PrefetchVirtualMemory_Type(HANDLE, ULONG_PTR, W32_PrefetchRange *, ULONG);
+
+#define W32_KERNEL32_EXT_XLIST        \
+  X(SetThreadDescription)             \
+  X(InitializeSynchronizationBarrier) \
+  X(DeleteSynchronizationBarrier)     \
+  X(EnterSynchronizationBarrier)      \
+  X(PrefetchVirtualMemory)
+
+typedef PVOID   W32_VirtualAlloc2_Type(HANDLE, PVOID, SIZE_T, ULONG, ULONG, MEM_EXTENDED_PARAMETER *, ULONG);
+typedef PVOID   W32_MapViewOfFile3_Type(HANDLE, HANDLE, PVOID, ULONG64, SIZE_T, ULONG, ULONG, MEM_EXTENDED_PARAMETER *, ULONG);
+typedef BOOL    W32_UnmapViewOfFile2_Type(HANDLE, PVOID, ULONG);
+
+#define W32_KERNELBASE_EXT_XLIST \
+  X(VirtualAlloc2)               \
+  X(MapViewOfFile3)              \
+  X(UnmapViewOfFile2)
+
+#define X(n) global W32_##n##_Type *w32_##n##_func;
+W32_KERNEL32_EXT_XLIST
+W32_KERNELBASE_EXT_XLIST
+#undef X
 
 ////////////////////////////////
 //~ rjf: File Info Conversion Helpers
@@ -304,6 +325,148 @@ release_memory(void *ptr, U64 size)
   VirtualFree(ptr, 0, MEM_RELEASE);
 }
 
+
+internal B32
+memory_placeholders_supported(void)
+{
+  return w32_VirtualAlloc2_func && w32_MapViewOfFile3_func && w32_UnmapViewOfFile2_func;
+}
+
+internal void *
+reserve_memory_placeholders(U64 size, U64 block_size)
+{
+  Assert(block_size > 0);
+  Assert(size > 0);
+  Assert(size % block_size == 0);
+  Assert((block_size % get_system_info()->allocation_granularity) == 0);
+
+  // reserve requested placeholder block
+  U8 *base = w32_VirtualAlloc2_func(GetCurrentProcess(), 0, size, MEM_RESERVE|MEM_RESERVE_PLACEHOLDER, PAGE_NOACCESS, 0, 0);
+  if (base == 0) { return 0; }
+
+  // split placeholder block into specified block sizes
+  for (U64 offset = 0; offset + block_size < size; offset += block_size)
+  {
+    if (VirtualFree(base + offset, block_size, MEM_RELEASE|MEM_PRESERVE_PLACEHOLDER) == 0)
+    {
+      if (offset == 0 || VirtualFree(base, size, MEM_RELEASE|MEM_COALESCE_PLACEHOLDERS))
+      {
+        VirtualFree(base, 0, MEM_RELEASE);
+      }
+      return 0;
+    }
+  }
+
+  return base;
+}
+
+internal void
+release_memory_placeholders(void *ptr, U64 size, U64 block_size)
+{
+  Assert(block_size > 0 && size > 0);
+  if (size > block_size && VirtualFree(ptr, size, MEM_RELEASE|MEM_COALESCE_PLACEHOLDERS) == 0) { return; }
+  VirtualFree(ptr, 0, MEM_RELEASE);
+}
+
+internal void *
+shared_memory_view_replace_placeholder(SharedMemory handle, void *ptr, Rng1U64 range, AccessFlags flags)
+{
+  Assert(flags == AccessFlag_Read || flags == (AccessFlag_Read|AccessFlag_Write));
+  DWORD protection = flags == AccessFlag_Read ? PAGE_READONLY : PAGE_READWRITE;
+  return w32_MapViewOfFile3_func((HANDLE)handle.u64[0], GetCurrentProcess(), ptr, range.min, dim_1u64(range), MEM_REPLACE_PLACEHOLDER, protection, 0, 0);
+}
+
+internal B32
+unmap_memory_preserve_placeholder(void *ptr, U64 size)
+{
+  return w32_UnmapViewOfFile2_func(GetCurrentProcess(), ptr, MEM_PRESERVE_PLACEHOLDER);
+}
+
+internal B32
+split_memory_placeholder(void *ptr, U64 size, U64 first_size)
+{
+  return first_size == size || (first_size && first_size < size && VirtualFree(ptr, first_size, MEM_RELEASE|MEM_PRESERVE_PLACEHOLDER));
+}
+
+internal B32
+coalesce_memory_placeholders(void *ptr, U64 size)
+{
+  return VirtualFree(ptr, size, MEM_RELEASE|MEM_COALESCE_PLACEHOLDERS) != 0;
+}
+
+internal void *
+file_map_view_replace_placeholder(FileMap map, void *ptr, Rng1U64 range)
+{
+  return w32_MapViewOfFile3_func((HANDLE)map.u64[0], GetCurrentProcess(), ptr, range.min, dim_1u64(range), MEM_REPLACE_PLACEHOLDER, PAGE_READONLY, 0, 0);
+}
+
+internal void
+prefetch_memory_ranges(U64 count, Rng1U64 *ranges)
+{
+  W32_PrefetchRange batch[256];
+  for (U64 first = 0; first < count; first += ArrayCount(batch)) {
+    U64 n = Min(ArrayCount(batch), count - first);
+    for EachIndex(i, n) {
+      batch[i].address = PtrFromInt(ranges[first+i].min);
+      batch[i].size    = dim_1u64(ranges[first+i]);
+    }
+    w32_PrefetchVirtualMemory_func(GetCurrentProcess(), n, batch, 0);
+  }
+}
+
+internal LONG CALLBACK
+w32_memory_read_fault(EXCEPTION_POINTERS *exception)
+{
+  EXCEPTION_RECORD *record = exception->ExceptionRecord;
+  if (record->ExceptionCode == EXCEPTION_ACCESS_VIOLATION &&
+      record->NumberParameters >= 2                       &&
+      record->ExceptionInformation[0] == 0                &&
+      w32_state.demand_memory.fault((void *)record->ExceptionInformation[1], w32_state.demand_memory.user_data))
+  {
+    return EXCEPTION_CONTINUE_EXECUTION;
+  }
+  return EXCEPTION_CONTINUE_SEARCH;
+}
+
+internal B32
+memory_read_fault_handler_set(MemoryReadFaultFunction *func, void *user_data)
+{
+  W32_DemandMemory *memory = &w32_state.demand_memory;
+
+  if(func)
+  {
+    if (memory->handler == 0)
+    {
+      memory->fault     = func;
+      memory->user_data = user_data;
+      memory->handler   = AddVectoredExceptionHandler(1, w32_memory_read_fault);
+      if(memory->handler == 0)
+      {
+        memory->fault = 0;
+        return 0;
+      }
+    }
+    else { Assert(0 && "handler is already registered"); return 0; }
+  }
+  else
+  {
+    if (memory->handler)
+    {
+      if(RemoveVectoredExceptionHandler(memory->handler) == 0)
+      {
+        return 0;
+      }
+      memory->handler   = 0;
+      memory->fault     = 0;
+      memory->user_data = 0;
+    }
+    else
+    { Assert(0 && "handler was not registered"); return 0; }
+  }
+
+  return 1;
+}
+
 //- rjf: large pages
 
 internal void *
@@ -333,7 +496,7 @@ shared_memory_alloc(U64 size, String8 name)
                                    PAGE_READWRITE,
                                    (U32)((size & 0xffffffff00000000) >> 32),
                                    (U32)((size & 0x00000000ffffffff)),
-                                   (WCHAR *)name16.str);
+                                   name.size ? (WCHAR *)name16.str : 0);
   SharedMemory result = {(U64)file};
   scratch_end(scratch);
   return result;
@@ -778,6 +941,7 @@ file_open(AccessFlags flags, String8 path)
   if(flags & AccessFlag_ShareWrite)  {share_mode |= FILE_SHARE_WRITE|FILE_SHARE_DELETE;}
   if(flags & AccessFlag_Write)       {creation_disposition = CREATE_ALWAYS;}
   if(flags & AccessFlag_Append)      {creation_disposition = OPEN_ALWAYS; access_flags |= FILE_APPEND_DATA; }
+  if(flags & AccessFlag_CreateNew)   {creation_disposition = CREATE_NEW;}
   if(flags & AccessFlag_Inherited)
   {
     security_attributes.bInheritHandle = 1;
@@ -803,6 +967,62 @@ file_close(File file)
   HANDLE handle = (HANDLE)file.u64[0];
   BOOL result = CloseHandle(handle);
   (void)result;
+}
+
+internal FilePair
+file_pipe_make(B32 read_inherited, B32 write_inherited)
+{
+  FilePair result = {0};
+  SECURITY_ATTRIBUTES attributes = { .nLength = sizeof(attributes), .bInheritHandle = TRUE };
+  HANDLE read = 0;
+  HANDLE write = 0;
+  if(CreatePipe(&read, &write, &attributes, 0) &&
+     (read_inherited || SetHandleInformation(read, HANDLE_FLAG_INHERIT, 0)) &&
+     (write_inherited || SetHandleInformation(write, HANDLE_FLAG_INHERIT, 0)))
+  {
+    result.read.u64[0] = (U64)read;
+    result.write.u64[0] = (U64)write;
+  }
+  else
+  {
+    if(read != 0)  { CloseHandle(read); }
+    if(write != 0) { CloseHandle(write); }
+  }
+  return result;
+}
+
+internal U64
+file_pipe_read(File file, void *out_data, U64 size)
+{
+  DWORD read = 0;
+  B32 is_ok = !file_match(file, file_zero()) &&
+    ReadFile((HANDLE)file.u64[0], out_data, safe_cast_u32(size), &read, 0);
+  return is_ok ? read : 0;
+}
+
+internal U64
+file_pipe_write(File file, void *data, U64 size)
+{
+  DWORD written = 0;
+  B32 is_ok = !file_match(file, file_zero()) &&
+    WriteFile((HANDLE)file.u64[0], data, safe_cast_u32(size), &written, 0);
+  return is_ok ? written : 0;
+}
+
+internal U64
+file_pipe_bytes_available(File file)
+{
+  DWORD available = 0;
+  B32 is_ok = !file_match(file, file_zero()) &&
+    PeekNamedPipe((HANDLE)file.u64[0], 0, 0, 0, &available, 0);
+  return is_ok ? available : 0;
+}
+
+internal B32
+file_pipe_is_end(File file)
+{
+  DWORD available = 0;
+  return !PeekNamedPipe((HANDLE)file.u64[0], 0, 0, 0, &available, 0);
 }
 
 internal U64
@@ -925,6 +1145,32 @@ file_reserve_size(File file, U64 size)
   
   BOOL is_reserved = SetFileInformationByHandle(handle, FileAllocationInfo, &alloc_info, sizeof(alloc_info));
   return is_reserved;
+}
+
+internal B32
+file_set_size(File file, U64 size)
+{
+  if (size > max_S64) { return 0; }
+  FILE_END_OF_FILE_INFO info = {0};
+  info.EndOfFile.QuadPart = size;
+  return SetFileInformationByHandle((HANDLE)file.u64[0], FileEndOfFileInfo, &info, sizeof(info));
+}
+
+internal B32
+file_flush(File file)
+{
+  return FlushFileBuffers((HANDLE)file.u64[0]);
+}
+
+internal B32
+replace_file_path(String8 dst, String8 src)
+{
+  Temp scratch = scratch_begin(0,0);
+  String16 dst16 = str16_from_8(scratch.arena, dst);
+  String16 src16 = str16_from_8(scratch.arena, src);
+  B32 result = MoveFileExW((WCHAR *)src16.str, (WCHAR *)dst16.str, MOVEFILE_REPLACE_EXISTING|MOVEFILE_WRITE_THROUGH);
+  scratch_end(scratch);
+  return result;
 }
 
 internal B32
@@ -1391,6 +1637,14 @@ process_launch(ProcessLaunchParams *params)
   {
     creation_flags |= CREATE_NO_WINDOW;
   }
+  if(params->new_console)
+  {
+    creation_flags |= CREATE_NEW_CONSOLE | CREATE_NEW_PROCESS_GROUP;
+  }
+  if(params->process_group.u64[0] != 0)
+  {
+    creation_flags |= CREATE_SUSPENDED;
+  }
   
   //- rjf: launch
   BOOL inherit_handles = 0;
@@ -1419,7 +1673,19 @@ process_launch(ProcessLaunchParams *params)
   PROCESS_INFORMATION process_info = {0};
   if(CreateProcessW(0, (WCHAR*)cmd16.str, 0, 0, inherit_handles, creation_flags, use_null_env_arg ? 0 : (WCHAR*)env16.str, (WCHAR*)dir16.str, &startup_info, &process_info))
   {
-    result.u64[0] = (U64)process_info.hProcess;
+    B32 group_is_ok = params->process_group.u64[0] == 0 ||
+      AssignProcessToJobObject((HANDLE)params->process_group.u64[0], process_info.hProcess);
+    B32 resume_is_ok = params->process_group.u64[0] == 0 || ResumeThread(process_info.hThread) != (DWORD)-1;
+    if(group_is_ok && resume_is_ok)
+    {
+      result.u64[0] = (U64)process_info.hProcess;
+    }
+    else
+    {
+      TerminateProcess(process_info.hProcess, 999);
+      WaitForSingleObject(process_info.hProcess, INFINITE);
+      CloseHandle(process_info.hProcess);
+    }
     CloseHandle(process_info.hThread);
   }
   
@@ -1433,6 +1699,25 @@ pid_from_process(Process process)
   HANDLE process_handle = (HANDLE)process.u64[0];
   U64 result = (U64)GetProcessId(process_handle);
   return result;
+}
+
+internal B32
+process_poll(Process process, U64 *exit_code_out)
+{
+  if(process_match(process, process_zero()) || WaitForSingleObject((HANDLE)process.u64[0], 0) != WAIT_OBJECT_0)
+  {
+    return 0;
+  }
+  DWORD exit_code = 0;
+  B32 result = GetExitCodeProcess((HANDLE)process.u64[0], &exit_code);
+  if(result && exit_code_out != 0) { *exit_code_out = exit_code; }
+  return result;
+}
+
+internal B32
+process_is_active(Process process)
+{
+  return !process_match(process, process_zero()) && !process_poll(process, 0);
 }
 
 internal B32
@@ -1470,6 +1755,59 @@ process_kill(Process process)
   HANDLE process_handle = (HANDLE)process.u64[0];
   BOOL was_terminated = TerminateProcess(process_handle, 999);
   return was_terminated;
+}
+
+internal B32
+process_send_ctrl_c(Process process)
+{
+  B32 result = 0;
+  if(process_match(process, process_zero())) { return 0; }
+  B32 had_console = GetConsoleCP() != 0;
+  if(had_console && !FreeConsole()) { return 0; }
+  if(AttachConsole(safe_cast_u32(pid_from_process(process)))) {
+    SetConsoleCtrlHandler(0, TRUE);
+    result = GenerateConsoleCtrlEvent(CTRL_C_EVENT, 0) != 0;
+    if(result) { Sleep(10); }
+  }
+  FreeConsole();
+  if(had_console) { AttachConsole(ATTACH_PARENT_PROCESS); }
+  SetConsoleCtrlHandler(0, FALSE);
+  return result;
+}
+
+internal ProcessGroup
+process_group_make(B32 kill_on_close)
+{
+  ProcessGroup result = {0};
+  HANDLE handle = CreateJobObjectW(0, 0);
+  if(handle != 0)
+  {
+    JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits = {0};
+    if(kill_on_close) { limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE; }
+    if(SetInformationJobObject(handle, JobObjectExtendedLimitInformation, &limits, sizeof(limits)))
+    {
+      result.u64[0] = (U64)handle;
+    }
+    else
+    {
+      CloseHandle(handle);
+    }
+  }
+  return result;
+}
+
+internal B32
+process_group_add(ProcessGroup group, Process process)
+{
+  B32 result = group.u64[0] != 0 && !process_match(process, process_zero()) &&
+    AssignProcessToJobObject((HANDLE)group.u64[0], (HANDLE)process.u64[0]);
+  return result;
+}
+
+internal void
+process_group_close(ProcessGroup group)
+{
+  if(group.u64[0] != 0) { CloseHandle((HANDLE)group.u64[0]); }
 }
 
 ////////////////////////////////
@@ -1791,17 +2129,24 @@ w32_entry_point_caller(int argc, WCHAR **wargv)
   //- rjf: dynamically load windows functions which are not guaranteed
   // in all SDKs
   {
-    HMODULE module = LoadLibraryA("kernel32.dll");
-    w32_SetThreadDescription_func = (W32_SetThreadDescription_Type *)GetProcAddress(module, "SetThreadDescription");
-    w32_InitializeSynchronizationBarrier_func = (W32_InitializeSynchronizationBarrier_Type *)GetProcAddress(module, "InitializeSynchronizationBarrier");
-    w32_DeleteSynchronizationBarrier_func = (W32_DeleteSynchronizationBarrier_Type *)GetProcAddress(module, "DeleteSynchronizationBarrier");
-    w32_EnterSynchronizationBarrier_func = (W32_EnterSynchronizationBarrier_Type *)GetProcAddress(module, "EnterSynchronizationBarrier");
+    #define X(n) w32_##n##_func = (void*)GetProcAddress(module, Stringify(n));
+    HMODULE module;
+
+    module = LoadLibraryA("kernel32.dll");
+    W32_KERNEL32_EXT_XLIST
+    FreeLibrary(module);
+
+    module = LoadLibraryA("kernelbase.dll");
+    W32_KERNELBASE_EXT_XLIST
+    FreeLibrary(module);
+
     if(w32_InitializeSynchronizationBarrier_func == 0)
     {
       w32_DeleteSynchronizationBarrier_func = 0;
-      w32_EnterSynchronizationBarrier_func = 0;
+      w32_EnterSynchronizationBarrier_func  = 0;
     }
-    FreeLibrary(module);
+
+    #undef X
   }
   
   //- rjf: try to allow large pages if we can
@@ -1852,11 +2197,16 @@ w32_entry_point_caller(int argc, WCHAR **wargv)
     }
   }
   {
+
+    MEMORYSTATUSEX memory = { .dwLength = sizeof(memory) };
+    GlobalMemoryStatusEx(&memory);
+
     SystemInfo *info = &w32_state.system_info;
     info->logical_processor_count = (U64)sysinfo.dwNumberOfProcessors;
     info->page_size               = sysinfo.dwPageSize;
     info->large_page_size         = GetLargePageMinimum();
     info->allocation_granularity  = sysinfo.dwAllocationGranularity;
+    info->physical_memory_size    = memory.ullTotalPhys;
   }
   {
     ProcessInfo *info = &w32_state.process_info;
