@@ -875,12 +875,14 @@ THREAD_POOL_TASK_FUNC(lnk_collect_obj_chunks_task)
 internal String8List *
 lnk_collect_obj_sections(TP_Context *tp, TP_Arena *arena, U64 objs_count, LNK_Obj **objs, String8 name, B32 collect_discarded)
 {
+  ProfBeginFunction();
   LNK_SectionCollector task = {0};
   task.objs              = objs;
   task.name              = name;
   task.collect_discarded = collect_discarded;
   task.out_lists         = push_array(arena->v[0], String8List, objs_count);
   tp_for_parallel(tp, arena, objs_count, lnk_collect_obj_chunks_task, &task);
+  ProfEnd();
   return task.out_lists;
 }
 

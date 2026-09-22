@@ -20,7 +20,7 @@
 ////////////////////////////////
 
 #include "base/base_inc.h"
-#include "x64/x64.h"
+#include "x64/x64_inc.h"
 #include "linker/hash_table.h"
 #include "linker/lf_hash_table.h"
 #include "linker/base_ext/base_bit_array.h"

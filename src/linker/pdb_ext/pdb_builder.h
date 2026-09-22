@@ -204,7 +204,6 @@ typedef struct PDB_GsiBuildResult
   U64                compressed_bucket_count;
   U32               *compressed_bucket_arr;
   U64                total_hash_size;
-  String8            symbol_data;
 } PDB_GsiBuildResult;
 
 typedef struct PDB_GsiSerializeSymbolsTask
@@ -364,8 +363,8 @@ internal PDB_SrcError      pdb_add_src(PDB_InfoContext *info, MSF_Context *msf, 
 internal PDB_GsiContext *   gsi_alloc(void);
 internal void               gsi_build(TP_Context *tp, PDB_GsiContext *gsi, MSF_Context *msf, MSF_StreamNumber gsi_sn, MSF_StreamNumber symbols_sn);
 internal void               gsi_release(PDB_GsiContext *gsi);
-internal void               gsi_write_build_result(TP_Context *tp, PDB_GsiBuildResult build, MSF_Context *msf, MSF_StreamNumber sn, MSF_StreamNumber symbols_sn);
-internal PDB_GsiBuildResult gsi_build_ex(TP_Context *tp, Arena *arena, PDB_GsiContext *gsi, U64 symbol_data_base, B32 export_symbol_ptr_arr, U64 msf_page_size);
+internal void               gsi_write_build_result(TP_Context *tp, PDB_GsiBuildResult build, MSF_Context *msf, MSF_StreamNumber sn);
+internal PDB_GsiBuildResult gsi_build_ex(TP_Context *tp, Arena *arena, PDB_GsiContext *gsi, MSF_Context *msf, MSF_StreamNumber symbols_sn, B32 is_pub32);
 internal U32                gsi_hash(PDB_GsiContext *gsi, String8 input);
 internal CV_SymbolNode *    gsi_push(PDB_GsiContext *gsi, CV_Symbol *symbol);
 internal void               gsi_push_many_arr(TP_Context *tp, PDB_GsiContext *gsi, U64 count, CV_SymbolNode **symbol_arr);
@@ -391,16 +390,7 @@ internal PDB_DbiContext *   dbi_alloc(COFF_MachineType machine, U32 age);
 internal void               dbi_build(TP_Context *tp, PDB_DbiContext *dbi, MSF_Context *msf, MSF_StreamNumber dbi_sn, CV_StringHashTable string_ht, B32 is_stripped);
 internal void               dbi_release(PDB_DbiContext *dbi);
 internal PDB_DbiModule *    dbi_push_module(PDB_DbiContext *dbi, String8 obj_path, String8 lib_path);
-internal String8            dbi_module_read_symbol_data(Arena *arena, MSF_Context *msf, PDB_DbiModule *mod);
-internal String8            dbi_module_read_c11_data(Arena *arena, MSF_Context *msf, PDB_DbiModule *mod);
-internal String8            dbi_module_read_c13_data(Arena *arena, MSF_Context *msf, PDB_DbiModule *mod);
 internal void               dbi_module_push_section_contrib(PDB_DbiContext *dbi, PDB_DbiModule *mod, ISectOff isect_off, U32 size,  U32 data_crc, U32 reloc_crc, COFF_SectionFlags flags);
-internal String8List *      dbi_open_file_info(Arena *arena, MSF_Context *msf, MSF_StreamNumber sn, PDB_DbiHeader *dbi_header);
-internal PDB_DbiModuleList  dbi_open_module_info(Arena *arena, MSF_Context *msf, MSF_StreamNumber sn, PDB_DbiHeader *dbi_header, String8List *file_info);
-internal PDB_DbiSCArray     dbi_open_sec_contrib(Arena *arena, MSF_Context *msf, MSF_StreamNumber sn, PDB_DbiHeader *dbi_header);
-internal PDB_StringTable    dbi_open_ec_names(Arena *arena, MSF_Context *msf, MSF_StreamNumber sn, PDB_DbiHeader *dbi_header);
-internal void               dbi_open_dbg_streams(MSF_StreamNumber *dbg_streams, MSF_Context *msf, MSF_StreamNumber sn, PDB_DbiHeader *dbi_header);
-internal PDB_DbiSectionList dbi_open_section_headers(Arena *arena, MSF_Context *msf, MSF_StreamNumber sn);
 internal void               dbi_build_section_header_stream(PDB_DbiContext *dbi, MSF_Context *msf, MSF_StreamNumber sn);
 
 ////////////////////////////////
@@ -450,7 +440,6 @@ internal U32                      pdb_strtab_hash(PDB_StringTable *strtab, Strin
 // Type Server
 
 internal PDB_TypeServer *        pdb_type_server_alloc(U64 bucket_count);
-internal PDB_TypeServer *        pdb_type_server_open_v80(MSF_Context *msf, MSF_StreamNumber sn, PDB_StringTable *strtab);
 internal void                    pdb_type_server_build(TP_Context *tp, PDB_TypeServer *ts, PDB_StringTable *strtab, MSF_Context *msf, MSF_StreamNumber sn);
 internal void                    pdb_type_server_release(PDB_TypeServer **serv_ptr);
 internal void                    pdb_type_server_push(PDB_TypeServer *ts, String8 raw_leaf);

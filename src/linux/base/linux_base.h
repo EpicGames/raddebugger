@@ -37,9 +37,9 @@
 
 // NOTE(rjf): this is required because we need to use architecture-specific code for "base"
 // OS functionality - we may want to reevaluate if such things should be in base - but for
-// now just pulling in the whole x64 layer, just for linux.
+// now just pulling in this portion ox 64, just for linux.
 #if ARCH_X64 || ARCH_X86
-# include "x64/x64.h"
+# include "x64/x64_exceptions.h"
 #endif
 
 pid_t gettid(void);

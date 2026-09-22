@@ -7779,7 +7779,7 @@ TEST(cyclic_type)
   T_Ok(is_cycle_detected);
 }
 
-TEST(get_msf_stream_pages)
+TEST(msf_contiguous_stream)
 {
   MSF_Context *msf = msf_alloc(MSF_DEFAULT_PAGE_SIZE, MSF_DEFAULT_FPM);
 
@@ -7792,41 +7792,104 @@ TEST(get_msf_stream_pages)
     MemorySet(test, 0xca, stream_size/2);
     MemorySet(test + stream_size/2, 0xbe, stream_size/2);
 
-    String8List stream_data = msf_data_from_sn(arena, msf, sn);
-    T_Ok(stream_data.total_size == stream_size);
-    T_Ok(stream_data.node_count == 12);
+    String8 stream_data = msf_stream_data(msf, sn);
+    T_Ok(stream_data.size == stream_size);
+    MemoryCopy(stream_data.str, test, stream_size);
 
-    String8Array a = str8_array_from_list(arena, &stream_data);
-    T_Ok(a.v[0].size  == 0xffd000);
-    T_Ok(a.v[1].size  == 0xffe000);
-    T_Ok(a.v[2].size  == 0xffe000);
-    T_Ok(a.v[3].size  == 0xffe000);
-    T_Ok(a.v[4].size  == 0xffe000);
-    T_Ok(a.v[5].size  == 0xffe000);
-    T_Ok(a.v[6].size  == 0xffe000);
-    T_Ok(a.v[7].size  == 0xffd000);
-    T_Ok(a.v[8].size  == 0x1000);
-    T_Ok(a.v[9].size  == 0xffe000);
-    T_Ok(a.v[10].size == 0x613000);
-    T_Ok(a.v[11].size == 1);
-
-    String8Node buf     = *stream_data.first;
-    U64         buf_pos = 0;
-    str8_buffer_write(&buf, &buf_pos, str8(test, stream_size));
-
-    String8 cmp = msf_stream_read_block(arena, msf, sn, stream_size);
+    // Physical pages alias the one contiguous construction allocation, even
+    // across reserved FPM slots and bitmap intervals.
+    MSF_Stream *stream = msf_find_stream(msf, sn);
+    U64 offset = 0;
+    for EachNode(page, MSF_PageNode, stream->page_list.first) {
+      T_Ok(msf_data_from_pn(msf, page->pn).str == stream_data.str + offset);
+      offset += msf->page_size;
+    }
+    MSF_PageNumber first_pn = stream->page_list.first->pn;
+    MSF_PageNumber last_pn = stream->page_list.last->pn;
+    U64 before_build = arena_pos(msf->arena);
+    String8 saved = {0};
+    T_Ok(msf_save_arena(arena, msf, &saved) == MSF_Error_Ok);
+    // Building adds metadata, not another 150 MiB payload allocation.
+    T_Ok(arena_pos(msf->arena) - before_build < MB(1));
+    T_Ok(stream->data == stream_data.str);
+    T_Ok(stream->page_list.first->pn == first_pn);
+    T_Ok(stream->page_list.last->pn == last_pn);
+    MSF_Parsed *parsed = msf_parsed_from_data(arena, saved);
+    T_Ok(parsed != 0);
+    String8 cmp = msf_data_from_stream(parsed, sn);
     T_Ok(cmp.size == stream_size);
     T_Ok(MemoryCompare(cmp.str, test, stream_size) == 0);
   }
 
   {
     MSF_StreamNumber sn = msf_stream_alloc_ex(msf, 1);
-    String8List stream_data = msf_data_from_sn(arena, msf, sn);
-    T_Ok(stream_data.node_count == 1);
-    T_Ok(stream_data.total_size == 1);
-    T_Ok(stream_data.first->string.size == 1);
+    String8 stream_data = msf_stream_data(msf, sn);
+    T_Ok(stream_data.size == 1);
   }
 
+  msf_release(msf);
+}
+
+TEST(msf_stream_growth_and_page_references)
+{
+  MSF_Context *msf = msf_alloc(512, MSF_FPM1);
+  U64 P = msf->page_size;
+  MSF_StreamNumber a = msf_stream_alloc_ex(msf, P + 3);
+  MSF_StreamNumber b = msf_stream_alloc_ex(msf, P);
+  MSF_StreamNumber empty = msf_stream_alloc(msf);
+  MSF_Stream *stream = msf_find_stream(msf, a);
+  MSF_PageNumber first_pn = stream->page_list.first->pn;
+  MSF_PageNumber second_pn = stream->page_list.last->pn;
+  MSF_PageNumber b_pn = msf_find_stream(msf, b)->page_list.first->pn;
+  MemorySet(stream->data, 0x5a, stream->size);
+
+  T_Ok(msf_stream_resize(msf, a, 3 * P + 7));
+  T_Ok(stream->page_list.first->pn == first_pn);
+  T_Ok(stream->page_list.first->next->pn == second_pn);
+  T_Ok(stream->page_list.first->next->next->pn != second_pn + 1);
+  String8 data = msf_stream_data(msf, a);
+  for EachIndex(i, P + 3) { T_Ok(data.str[i] == 0x5a); }
+  for (U64 i = P + 3; i < data.size; i += 1) { T_Ok(data.str[i] == 0); }
+
+  // Store a page reference before build and patch a field crossing the
+  // boundary between two nonadjacent physical output pages.
+  memory_write32(msf_stream_data(msf, b).str, first_pn);
+  U8 patch[] = {1, 2, 3, 4, 5, 6, 7, 8};
+  MemoryCopy(data.str + 2 * P - 3, patch, sizeof(patch));
+  String8 expected = push_str8_copy(arena, data);
+
+  // Reservation assigns identities but does not extend the logical stream.
+  T_Ok(msf_stream_reserve(msf, empty, 2 * P));
+  T_Ok(msf_stream_get_size(msf, empty) == 0);
+  String8 saved = {0};
+  T_Ok(msf_save_arena(arena, msf, &saved) == MSF_Error_Ok);
+  MSF_RawStreamTable *table = msf_raw_stream_table_from_data(arena, saved);
+  T_Ok(table->streams[a].u.page_indices_u32[0] == first_pn);
+  T_Ok(table->streams[a].u.page_indices_u32[1] == second_pn);
+  T_Ok(table->streams[empty].page_count == 0);
+  T_Ok(str8_match(msf_data_from_stream_number(arena, saved, table, a), expected, 0));
+  String8 b_data = msf_data_from_stream_number(arena, saved, table, b);
+  T_Ok(memory_read32(b_data.str) == first_pn);
+
+  // Removing a stream leaves a directory hole; later stream numbers remain
+  // stable, and its physical page can be reused without stale payload bytes.
+  T_Ok(msf_stream_free(msf, b));
+  MSF_StreamNumber c = msf_stream_alloc_ex(msf, 1);
+  T_Ok(c > empty);
+  T_Ok(msf_find_stream(msf, c)->page_list.first->pn == b_pn);
+  T_Ok(msf_stream_data(msf, c).str[0] == 0);
+  T_Ok(msf_stream_write_u8(msf, c, 0x71));
+  T_Ok(msf_stream_resize(msf, a, P + 1));
+  T_Ok(msf_save_arena(arena, msf, &saved) == MSF_Error_Ok);
+  table = msf_raw_stream_table_from_data(arena, saved);
+  T_Ok(table->stream_count == c + 1);
+  T_Ok(table->streams[b].size == 0);
+  T_Ok(table->streams[empty].size == 0);
+  T_Ok(str8_match(msf_data_from_stream_number(arena, saved, table, a), str8_prefix(expected, P + 1), 0));
+  T_Ok(msf_data_from_stream_number(arena, saved, table, c).str[0] == 0x71);
+  // The final partial page is padded, not populated with truncated bytes.
+  U8 *tail = saved.str + (U64)second_pn * P;
+  for (U64 i = 1; i < P; i += 1) { T_Ok(tail[i] == 0); }
   msf_release(msf);
 }
 
@@ -7891,9 +7954,9 @@ TEST(msf_header_matches_saved_extent)
         // Free the low pages so metadata can reuse them while the payload remains at
         // high page numbers. Unused pages below EOF exercise sparse MSF page layouts.
         msf_free_pages(msf, &gap);
-        T_Ok(msf_build(msf) == MSF_Error_OK);
-        T_Ok(msf->root_page_list.last->pn < last_pn);
-        T_Ok(msf->st_page_list.last->pn < last_pn);
+        T_Ok(msf_build(msf) == MSF_Error_Ok);
+        T_Ok(msf->root.page_list.last->pn < last_pn);
+        T_Ok(msf->stream_table.page_list.last->pn < last_pn);
 
         // validate that last page was assigned to the payload
         U64 save_size = msf_get_save_size(msf);
@@ -7906,6 +7969,31 @@ TEST(msf_header_matches_saved_extent)
         // validate 'page_count' field matches the serialized file size
         MSF_Header70 *header = (MSF_Header70 *)saved.str;
         T_Ok((U64)header->page_count * header->page_size == saved.size);
+
+        // Validate the serialized allocation bitmap, including free holes
+        // and the reserved slots at every physical FPM interval.
+        U8 *used = push_array(arena, U8, header->page_count);
+        used[0] = 1;
+        for (U64 pn = 0; pn < header->page_count; pn += 1) {
+          if (pn % P == MSF_FPM0 || pn % P == MSF_FPM1) { used[pn] = 1; }
+        }
+        for EachNode(page, MSF_PageNode, msf->root.page_list.first) { used[page->pn] = 1; }
+        for EachNode(page, MSF_PageNode, msf->stream_table.page_list.first) { used[page->pn] = 1; }
+        for EachNode(page, MSF_PageNode, msf_find_stream(msf, sn)->page_list.first) { used[page->pn] = 1; }
+        for (U64 pn = 0; pn < header->page_count; pn += 1) {
+          U64 fpm_pn = (pn / (P * 8)) * P + header->active_fpm;
+          U64 bit = pn % (P * 8);
+          U8 free_bit = (saved.str[fpm_pn * P + bit / 8] >> (bit % 8)) & 1;
+          T_Ok(free_bit == !used[pn]);
+        }
+        // CDB/DIA reject an otherwise readable PDB if the final bitmap
+        // marks future reserved FPM slots beyond EOF as allocated.
+        U64 last_fpm_pn = ((header->page_count - 1) / (P * 8)) * P + header->active_fpm;
+        U64 end_bit = ((U64)header->page_count - 1) % (P * 8) + 1;
+        for (U64 bit = end_bit; bit < P * 8; bit += 1) {
+          U8 free_bit = (saved.str[last_fpm_pn * P + bit / 8] >> (bit % 8)) & 1;
+          T_Ok(free_bit == 1);
+        }
 
         // match internal page data list to the serialized file bytes
         String8List pages = msf_get_page_data_nodes(arena, msf);
@@ -7952,7 +8040,7 @@ data_from_pdb(Arena *arena, PDB_Context *pdb)
   TP_Arena   *tp_arena = tp_arena_alloc(tp);
   pdb_build(tp, tp_arena, pdb, (CV_StringHashTable){0}, 1, 0, 0);
 
-  AssertAlways(msf_build(pdb->msf) == MSF_Error_OK);
+  AssertAlways(msf_build(pdb->msf) == MSF_Error_Ok);
   String8List raw_msf_list = msf_get_page_data_nodes(arena, pdb->msf);
   AssertAlways(t_write_file_list(str8_lit("test.pdb"), raw_msf_list));
 

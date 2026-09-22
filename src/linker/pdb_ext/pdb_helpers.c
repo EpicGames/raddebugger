@@ -25,25 +25,6 @@ pdb_read_bit_vector_string(String8 data, U64 offset, U32Array *bits_out)
   return read_size;
 }
 
-internal U64
-pdb_read_bit_vector_msf(Arena *arena, MSF_Context *msf, MSF_StreamNumber sn, U32Array *bits_out)
-{
-  // peek word count
-  MSF_UInt pos = msf_stream_get_pos(msf, sn);
-  U32 word_count = msf_stream_read_u32(msf, sn);
-  msf_stream_seek(msf, sn, pos);
-  
-  // read out header + packed words
-  U64 buffer_size = sizeof(word_count) + word_count * sizeof(U32);
-  U8 *buffer = push_array(arena, U8, buffer_size);
-  MSF_UInt read_size = msf_stream_read(msf, sn, buffer, buffer_size);
-  Assert(read_size == buffer_size);
-  
-  // parse words
-  U64 parse_size = pdb_read_bit_vector_string(str8(buffer, buffer_size), 0, bits_out);
-  return parse_size;
-}
-
 internal B32
 pdb_write_bit_vector(MSF_Context *msf, MSF_StreamNumber sn, B32 *flag_array, U64 flag_count)
 {
@@ -86,4 +67,3 @@ pdb_get_bit_vector_size(U32 bucket_count)
   
   return result;
 }
-

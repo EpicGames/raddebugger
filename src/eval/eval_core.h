@@ -1278,7 +1278,7 @@ internal E_DbgInfo *e_dbg_info_from_type_key(E_TypeKey type_key);
 //
 //                                  key
 //         ________________________________________________
-//        /            /             |                     \
+//       _/            /             |                     \_
 //     text ->   expression   ->  ir tree and type  ->  interpretation result
 //
 // Each one of these calls refers to one stage in this pipeline. The cache will

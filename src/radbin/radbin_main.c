@@ -12,7 +12,7 @@
 
 //- rjf: [h]
 #include "base/base_inc.h"
-#include "x64/x64.h"
+#include "x64/x64_inc.h"
 #include "linker/hash_table.h"
 #include "linker/base_ext/base_bit_array.h"
 #include "rdi/rdi_local.h"
@@ -47,7 +47,7 @@
 
 //- rjf: [c]
 #include "base/base_inc.c"
-#include "x64/x64.c"
+#include "x64/x64_inc.c"
 #include "linker/hash_table.c"
 #include "linker/base_ext/base_bit_array.c"
 #include "rdi/rdi_local.c"

@@ -90,6 +90,7 @@ typedef struct
   CV_DebugT    *debug_t_arr;
   CV_DebugH    *debug_h_arr;
   U64          *obj_to_ts;
+  U32Array     *is_leaf_discarded;
 
   String8List *debug_s_list_arr;
 

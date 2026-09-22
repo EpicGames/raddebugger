@@ -950,6 +950,7 @@ cv_get_leaf_type_index_offsets(Arena *arena, CV_LeafKind leaf_kind, String8 data
     case CV_LeafKind_NESTTYPEEX: {
       cv_symbol_type_index_info_push(arena, &list, CV_TypeIndexSource_TPI, OffsetOf(CV_LeafNestTypeEx, itype));
     } break;
+    case CV_LeafKind_ENDPRECOMP: {} break;
     default: {
       NotImplemented;
     } break;
