@@ -12217,6 +12217,13 @@ rd_frame(void)
           rd_request_frame();
           ws->menu_bar_focused = 0;
         }
+        if(event->kind == WM_EventKind_Scroll &&
+           (event->modifiers & WM_Modifier_Alt) &&
+           !(event->modifiers & WM_Modifier_Ctrl))
+        {
+          // alt+scroll -> accelerated scrolling, not a menu-bar focus gesture
+          ws->menu_bar_focus_press_started = 0;
+        }
       }
       
       //- rjf: try hotkey presses
