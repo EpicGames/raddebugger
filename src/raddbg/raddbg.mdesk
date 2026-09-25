@@ -244,6 +244,10 @@ RD_VocabTable:
       @display_name('Menu Animations') @description("Enables menu animations.")
         @expand_if("$.animations") @default(1) 'menu_animations': bool,
       
+      //- scrolling
+      @default(5.f) @display_name('Fast Scroll Sensitivity') @description("Multiplier for scroll speed when the Alt key is held.")
+        'fast_scroll_sensitivity': @range[1, 20] f32,
+      
       //- rjf: fonts
       @display_name('Use Alternative Font For UI') @description("Uses an alternative font for non-code UI elements.")
         @default(1) 'use_alternative_font_for_ui': bool,

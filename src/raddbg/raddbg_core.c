@@ -12217,6 +12217,13 @@ rd_frame(void)
           rd_request_frame();
           ws->menu_bar_focused = 0;
         }
+        if(event->kind == WM_EventKind_Scroll &&
+           (event->modifiers & WM_Modifier_Alt) &&
+           !(event->modifiers & WM_Modifier_Ctrl))
+        {
+          // alt+scroll -> accelerated scrolling, not a menu-bar focus gesture
+          ws->menu_bar_focus_press_started = 0;
+        }
       }
       
       //- rjf: try hotkey presses
@@ -17276,6 +17283,17 @@ rd_frame(void)
               ui_event.paths        = str8_list_copy(ui_build_arena(), &wm_event->strings);
               ui_event.pos          = wm_event->pos;
               ui_event.delta_2f32   = wm_event->delta;
+              if(kind == UI_EventKind_Scroll &&
+                 (ui_event.modifiers & WM_Modifier_Alt) &&
+                 !(ui_event.modifiers & WM_Modifier_Ctrl))
+              {
+                // alt+scroll -> accelerated scroll
+                F32 speed = rd_setting_f32_from_name(str8_lit("fast_scroll_sensitivity"));
+                if(speed <= 0.f) { speed = 1.f; }
+                ui_event.delta_2f32.x *= speed;
+                ui_event.delta_2f32.y *= speed;
+                ui_event.modifiers &= ~WM_Modifier_Alt;
+              }
               ui_event.timestamp_us = wm_event->timestamp_us;
               ui_event_list_push(scratch.arena, &ws->ui_events, &ui_event);
             }
