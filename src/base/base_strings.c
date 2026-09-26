@@ -2487,7 +2487,7 @@ try_guid_from_string(String8 string, Guid *guid_out)
         guid_out->data1 = (U32)data1;
         guid_out->data2 = (U16)data2;
         guid_out->data3 = (U16)data3;
-        U64 data4 = (data4_hi << 48) | data4_lo;
+        U64 data4 = from_be_u64((data4_hi << 48) | data4_lo);
         MemoryCopy(&guid_out->data4[0], &data4, sizeof(data4));
         is_parsed = 1;
       }
