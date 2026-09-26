@@ -102,6 +102,17 @@ TEST(count_digits)
   T_Ok(count_digits_u64(999999, 10) == 6);
 }
 
+TEST(guid_from_string)
+{
+  String8 string   = str8_lit("01234567-89AB-CDEF-0011-223344556677");
+  U8      data4[8] = { 0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77 };
+  Guid    guid     = {0};
+  T_Ok(try_guid_from_string(string, &guid));
+  T_Ok(guid.data1 == 0x01234567 && guid.data2 == 0x89AB && guid.data3 == 0xCDEF);
+  T_Ok(MemoryMatch(guid.data4, data4, sizeof(data4)));
+  T_Ok(str8_match(string_from_guid(arena, guid), string, 0));
+}
+
 TEST(match_wildcard)
 {
   // empty strings
