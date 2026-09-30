@@ -1327,13 +1327,29 @@ wm_get_events(Arena *arena, B32 wait)
               e->key = key;
               e->pos = v2f32((F32)evt.xbutton.x, (F32)evt.xbutton.y);
             }
-            else if(evt.xbutton.button == Button4 ||
-                    evt.xbutton.button == Button5)
+            // NOTE: X11 reports each wheel notch as a press & release of buttons 4-7
+            // (4/5: up/down, 6/7: left/right). only the press is a scroll step, and each
+            // step is sized like a Win32 WHEEL_DELTA (120), since UI code which scrolls by
+            // raw deltas (e.g. tab rows) otherwise barely moves.
+            else if(evt.type == ButtonPress &&
+                    (evt.xbutton.button == Button4 ||
+                     evt.xbutton.button == Button5 ||
+                     evt.xbutton.button == 6 ||
+                     evt.xbutton.button == 7))
             {
+              F32 wheel_delta = 120.f;
+              Vec2F32 delta = {0};
+              switch(evt.xbutton.button)
+              {
+                case Button4:{delta.y = -wheel_delta;}break;
+                case Button5:{delta.y = +wheel_delta;}break;
+                case 6:      {delta.x = -wheel_delta;}break;
+                case 7:      {delta.x = +wheel_delta;}break;
+              }
               WM_Event *e = wm_event_list_push_new(arena, &evts, WM_EventKind_Scroll);
               e->window.u64[0] = (U64)window;
               e->modifiers = modifiers;
-              e->delta = v2f32(0, evt.xbutton.button == Button4 ? -1.f : +1.f);
+              e->delta = delta;
               e->pos = v2f32((F32)evt.xbutton.x, (F32)evt.xbutton.y);
             }
           }
