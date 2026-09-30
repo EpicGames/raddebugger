@@ -79,7 +79,7 @@ w32_sock_listener_thread_entry_point(void *p)
         MemoryZeroStruct(&con->recv_overlapped);
         DLLPushBack(slot->first, slot->last, con);
         buf.len = sizeof(con->recv_buffer);
-        buf.buf = con->recv_buffer;
+        buf.buf = (char *)con->recv_buffer;
         recv_size = &con->recv_size;
         recv_overlapped = &con->recv_overlapped;
       }
@@ -121,7 +121,7 @@ w32_sock_listener_thread_entry_point(void *p)
         guarded_ring_write_or_wait(&g, sizeof(header), header, max_U64);
         guarded_ring_write_or_wait(&g, byte_count, con->recv_buffer, max_U64);
         MemoryZeroStruct(&con->recv_overlapped);
-        WSABUF buf = {sizeof(con->recv_buffer), con->recv_buffer};
+        WSABUF buf = {sizeof(con->recv_buffer), (char *)con->recv_buffer};
         DWORD flags = MSG_PUSH_IMMEDIATE;
         WSARecv(con->socket, &buf, 1, &con->recv_size, &flags, &con->recv_overlapped, 0);
         guarded_ring_close(&g);
@@ -310,7 +310,7 @@ sock_async_tick(void)
         MemoryZeroStruct(&con->recv_overlapped);
         
         // rjf: kick off receive on this socket
-        WSABUF buf = {sizeof(con->recv_buffer), con->recv_buffer};
+        WSABUF buf = {sizeof(con->recv_buffer), (char *)con->recv_buffer};
         DWORD flags = MSG_PUSH_IMMEDIATE;
         WSARecv(con->socket, &buf, 1, &con->recv_size, &flags, &con->recv_overlapped, 0);
       }
@@ -321,7 +321,7 @@ sock_async_tick(void)
     
     // rjf: got socket? -> send
     B32 send_failed = 0;
-    if(ep_socket != -1 && send(ep_socket, t->data.str, t->data.size, 0) == SOCKET_ERROR)
+    if(ep_socket != -1 && send(ep_socket, (char *)t->data.str, t->data.size, 0) == SOCKET_ERROR)
     {
       int error = WSAGetLastError();
       if(error == WSAECONNRESET)
