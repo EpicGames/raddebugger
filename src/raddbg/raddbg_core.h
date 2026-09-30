@@ -360,6 +360,31 @@ struct RD_WindowStateSlot
 ////////////////////////////////
 //~ rjf: Main Per-Process Graphical State
 
+typedef struct RD_BitmapTopology RD_BitmapTopology;
+struct RD_BitmapTopology
+{
+  Vec2S16 dim;
+  R_Tex2DFormat fmt;
+};
+
+typedef struct RD_BitmapCacheNode RD_BitmapCacheNode;
+struct RD_BitmapCacheNode
+{
+  RD_BitmapCacheNode *next;
+  RD_BitmapCacheNode *prev;
+  U64 last_touched_frame_idx;
+  U128 hash;
+  RD_BitmapTopology top;
+  R_Handle texture;
+};
+
+typedef struct RD_BitmapCacheSlot RD_BitmapCacheSlot;
+struct RD_BitmapCacheSlot
+{
+  RD_BitmapCacheNode *first;
+  RD_BitmapCacheNode *last;
+};
+
 typedef struct RD_LoadedDbgInfoNode RD_LoadedDbgInfoNode;
 struct RD_LoadedDbgInfoNode
 {
@@ -529,6 +554,11 @@ struct RD_State
   
   // rjf: icon texture
   R_Handle icon_texture;
+  
+  // rjf: bitmap cache
+  RD_BitmapCacheSlot *bitmap_cache_slots;
+  U64 bitmap_cache_slots_count;
+  RD_BitmapCacheNode *bitmap_cache_free_node;
   
   // rjf: fixed ui keys
   UI_Key drop_completion_key;

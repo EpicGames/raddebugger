@@ -4,17 +4,14 @@
 ////////////////////////////////
 //~ rjf: linux TODO notes
 //
-// initial alpha:
-// [ ] recycling semaphore files - or alt strat?
-// [ ] rendering
-//  [ ] bitmaps / geometry
-//
 // post initial alpha:
 // [ ] windowing
 //  [ ] wayland
 // [ ] support
 //  [ ] .eh_frame unwinding without .eh_frame_hdr
+// [ ] geometry rendering
 //
+// [x] recycling semaphore files - or alt strat?
 // [x] clipboard
 // [x] jai exes - busted call stacks / unwind info / paths?
 // [x] statically linked EXEs - busted unwinding
@@ -26,6 +23,8 @@
 // [x] control
 // [x] stale memory - things evaluating to stale values that are definitely not zero
 // [x] thread names
+// [x] rendering
+//  [x] bitmaps
 
 ////////////////////////////////
 //~ rjf: evaluation system pass TODO notes

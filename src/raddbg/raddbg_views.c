@@ -4789,13 +4789,6 @@ EV_EXPAND_RULE_INFO_FUNCTION_DEF(graph)
 ////////////////////////////////
 //~ rjf: bitmap @view_hook_impl
 
-typedef struct RD_BitmapTopology RD_BitmapTopology;
-struct RD_BitmapTopology
-{
-  Vec2S16 dim;
-  R_Tex2DFormat fmt;
-};
-
 typedef struct RD_BitmapBoxDrawData RD_BitmapBoxDrawData;
 struct RD_BitmapBoxDrawData
 {
@@ -4813,46 +4806,6 @@ struct RD_BitmapCanvasBoxDrawData
   Vec2F32 view_center_pos;
   F32 zoom;
 };
-
-internal AC_Artifact
-rd_bitmap_artifact_create(String8 key, B32 *cancel_signal, AC_Status *status_out, U64 *gen_out)
-{
-  Access *access = access_open();
-  
-  //- rjf: unpack key
-  U128 hash = {0};
-  RD_BitmapTopology top = {0};
-  {
-    U64 key_read_off = 0;
-    key_read_off += str8_deserial_read_struct(key, key_read_off, &hash);
-    key_read_off += str8_deserial_read_struct(key, key_read_off, &top);
-  }
-  String8 data = c_data_from_hash(access, hash);
-  
-  //- rjf: create texture
-  R_Handle texture = {0};
-  if(top.dim.x > 0 && top.dim.y > 0 &&
-     data.size >= (U64)top.dim.x*(U64)top.dim.y*(U64)r_tex2d_format_bytes_per_pixel_table[top.fmt])
-  {
-    texture = r_tex2d_alloc(R_ResourceKind_Static, v2s32(top.dim.x, top.dim.y), top.fmt, data.str);
-  }
-  
-  //- rjf: bundle as artifact
-  AC_Artifact artifact = {0};
-  StaticAssert(sizeof(artifact) >= sizeof(texture), tex_artifact_size_check);
-  MemoryCopy(&artifact, &texture, Min(sizeof(texture), sizeof(artifact)));
-  
-  access_close(access);
-  return artifact;
-}
-
-internal void
-rd_bitmap_artifact_destroy(AC_Artifact artifact)
-{
-  R_Handle texture = {0};
-  MemoryCopy(&texture, &artifact, Min(sizeof(texture), sizeof(artifact)));
-  r_tex2d_release(texture);
-}
 
 internal Vec2F32
 rd_bitmap_screen_from_canvas_pos(Vec2F32 view_center_pos, F32 zoom, Rng2F32 rect, Vec2F32 cvs)
@@ -4993,29 +4946,46 @@ RD_VIEW_UI_FUNCTION_DEF(bitmap)
   RD_BitmapTopology topology = {v2s16(dim.x, dim.y), fmt};
   U128 data_hash = {0};
   R_Handle texture = {0};
-  for EachIndex(rewind_idx, C_KEY_HASH_HISTORY_COUNT)
+  String8 data = {0};
   {
-    U128 hash = c_hash_from_key(texture_key, rewind_idx);
-#pragma pack(push, 1)
-    struct
+    data_hash = c_hash_from_key(texture_key, 0);
+    data = c_data_from_hash(access, data_hash);
+    U64 slot_idx = data_hash.u64[1]%rd_state->bitmap_cache_slots_count;
+    RD_BitmapCacheSlot *slot = &rd_state->bitmap_cache_slots[slot_idx];
+    B32 found = 0;
+    for(RD_BitmapCacheNode *n = slot->first; n != 0; n = n->next)
     {
-      U128 hash;
-      RD_BitmapTopology top;
+      if(u128_match(data_hash, n->hash) && MemoryMatchStruct(&topology, &n->top))
+      {
+        texture = n->texture;
+        found = 1;
+        n->last_touched_frame_idx = rd_state->frame_index;
+        break;
+      }
     }
-    key_data = {hash, topology};
-#pragma pack(pop)
-    String8 key = str8_struct(&key_data);
-    AC_Artifact artifact = ac_artifact_from_key(access, key, rd_bitmap_artifact_create, rd_bitmap_artifact_destroy, 0);
-    R_Handle texture_candidate = {0};
-    MemoryCopy(&texture_candidate, &artifact, Min(sizeof(texture_candidate), sizeof(artifact)));
-    if(!r_handle_match(texture_candidate, r_handle_zero()))
+    if(!found)
     {
-      data_hash = hash;
-      texture = texture_candidate;
-      break;
+      RD_BitmapCacheNode *node = rd_state->bitmap_cache_free_node;
+      if(node)
+      {
+        SLLStackPop(rd_state->bitmap_cache_free_node);
+      }
+      else
+      {
+        node = push_array(rd_state->arena, RD_BitmapCacheNode, 1);
+      }
+      DLLPushBack(slot->first, slot->last, node);
+      node->hash = data_hash;
+      node->top = topology;
+      node->last_touched_frame_idx = rd_state->frame_index;
+      MemoryZeroStruct(&node->texture);
+      if(topology.dim.x > 0 && topology.dim.y > 0 && data.size >= (U64)topology.dim.x*(U64)topology.dim.y*(U64)r_tex2d_format_bytes_per_pixel_table[topology.fmt])
+      {
+        node->texture = r_tex2d_alloc(R_ResourceKind_Static, v2s32(dim.x, dim.y), topology.fmt, data.str);
+      }
+      texture = node->texture;
     }
   }
-  String8 data = c_data_from_hash(access, data_hash);
   
   //////////////////////////////
   //- rjf: equip loading info

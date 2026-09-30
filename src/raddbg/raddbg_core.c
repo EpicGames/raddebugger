@@ -11508,7 +11508,7 @@ rd_init(CmdLine *cmdln)
     rd_cmd(RD_CmdKind_OpenCrashDump, .file_path = implicit_dmp_arg);
   }
   
-  // rjf: set up user / project paths
+  //- rjf: set up user / project paths
   {
     Temp scratch2 = scratch_begin(&scratch.arena, 1);
     
@@ -11563,7 +11563,7 @@ rd_init(CmdLine *cmdln)
     scratch_end(scratch2);
   }
   
-  // rjf: unpack icon image data
+  //- rjf: unpack icon image data
   {
     Temp scratch = scratch_begin(0, 0);
     String8 data = rd_icon_file_bytes;
@@ -11658,7 +11658,13 @@ rd_init(CmdLine *cmdln)
     scratch_end(scratch);
   }
   
-  // rjf: check initial installation status
+  //- rjf: set up bitmap cache
+  {
+    rd_state->bitmap_cache_slots_count = 64;
+    rd_state->bitmap_cache_slots = push_array(arena, RD_BitmapCacheSlot, rd_state->bitmap_cache_slots_count);
+  }
+  
+  //- rjf: check initial installation status
   rd_state->installed = sh_install_or_uninstall_self(0, 0);
   
   ProfEnd();
@@ -18580,6 +18586,26 @@ rd_frame(void)
           DLLRemove_NPZ(&rd_nil_window_state, rd_state->first_window_state, rd_state->last_window_state, ws, order_next, order_prev);
           DLLRemove_NP(rd_state->window_state_slots[slot_idx].first, rd_state->window_state_slots[slot_idx].last, ws, hash_next, hash_prev);
           SLLStackPush_N(rd_state->free_window_state, ws, order_next);
+        }
+      }
+    }
+  }
+  
+  //////////////////////////////
+  //- rjf: garbage collect untouched bitmaps
+  //
+  {
+    for EachIndex(slot_idx, rd_state->bitmap_cache_slots_count)
+    {
+      RD_BitmapCacheSlot *slot = &rd_state->bitmap_cache_slots[slot_idx];
+      for(RD_BitmapCacheNode *n = rd_state->bitmap_cache_slots[slot_idx].first, *next = 0; n != 0; n = next)
+      {
+        next = n->next;
+        if(n->last_touched_frame_idx + 100 < rd_state->frame_index)
+        {
+          r_tex2d_release(n->texture);
+          DLLRemove(slot->first, slot->last, n);
+          SLLStackPush(rd_state->bitmap_cache_free_node, n);
         }
       }
     }
