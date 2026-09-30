@@ -439,15 +439,26 @@ d2r_convert(Arena *arena, D2R_ConvertParams *params)
         DW2_LineTableFile *f = &hdr->files.v[file_idx];
         if(f->file_name.size != 0)
         {
-          DW2_LineTableFile *dir = &hdr->dirs.v[f->dir_idx];
+          // NOTE: per the DWARF spec, absolute file names ignore their directory (and
+          // so the unit's directory too); relative directories are relative to the
+          // unit's directory.
+          String8 dir_name = {0};
+          if(f->dir_idx < hdr->dirs.count)
+          {
+            dir_name = hdr->dirs.v[f->dir_idx].file_name;
+          }
           String8 root_dir = {0};
-          if(path_style_from_str8(dir->file_name) == PathStyle_Relative)
+          if(path_style_from_str8(f->file_name) != PathStyle_Relative)
+          {
+            dir_name = str8_zero();
+          }
+          else if(path_style_from_str8(dir_name) == PathStyle_Relative)
           {
             root_dir = ctx->unit_dir;
           }
           String8 full_file_path = str8f(scratch2.arena, "%S%s%S%s%S",
                                          root_dir, root_dir.size != 0 ? "/" : "",
-                                         dir->file_name, dir->file_name.size != 0 ? "/" : "",
+                                         dir_name, dir_name.size != 0 ? "/" : "",
                                          f->file_name);
           full_file_path = path_normalized_from_string(scratch2.arena, full_file_path);
           U64 hash = u64_hash_from_str8(full_file_path);

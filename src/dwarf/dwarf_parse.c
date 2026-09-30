@@ -706,7 +706,7 @@ dw2_parse_ctx_equip_unit_root_tag(DW2_ParseCtx *ctx_out, DW2_Tag *tag, DW2_Offse
   ctx_out->unit_base_addr = low_pc_attrib->val.addr;
   ctx_out->language = lang_attrib->val.u128.u64[0];
   ctx_out->unit_dir = comp_dir_attrib->val.string;
-  ctx_out->unit_file = comp_dir_attrib->val.string;
+  ctx_out->unit_file = name_attrib->val.string;
   
   // rjf: find offset tables
   Rng1U64Array rnglists_tables_ranges_array = {offset_tables->rnglists_tables_ranges, offset_tables->rnglists_tables_count};
