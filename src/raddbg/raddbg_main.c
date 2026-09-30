@@ -641,33 +641,40 @@ entry_point(CmdLine *cmd_line)
   U64 jit_pid = 0;
   U64 jit_code = 0;
   U64 jit_addr = 0;
+  U64 ipc_port = 7423;
   {
-    if(cmd_line_has_flag(cmd_line, str8_lit("ipc")))
+    if(cmd_line_has_flag(cmd_line, s("ipc")))
     {
       exec_mode = ExecMode_IPCSender;
     }
-    else if(cmd_line_has_flag(cmd_line, str8_lit("bin")))
+    else if(cmd_line_has_flag(cmd_line, s("bin")))
     {
       exec_mode = ExecMode_BinaryUtility;
     }
-    else if(cmd_line_has_flag(cmd_line, str8_lit("?")) ||
-            cmd_line_has_flag(cmd_line, str8_lit("help")))
+    else if(cmd_line_has_flag(cmd_line, s("?")) ||
+            cmd_line_has_flag(cmd_line, s("help")))
     {
       exec_mode = ExecMode_Help;
     }
-    auto_run = cmd_line_has_flag(cmd_line, str8_lit("auto_run"));
-    auto_step = cmd_line_has_flag(cmd_line, str8_lit("auto_step"));
-    String8 jit_pid_string = cmd_line_string(cmd_line, str8_lit("jit_pid"));
-    String8 jit_code_string = cmd_line_string(cmd_line, str8_lit("jit_code"));
-    String8 jit_addr_string = cmd_line_string(cmd_line, str8_lit("jit_addr"));
+    auto_run = cmd_line_has_flag(cmd_line, s("auto_run"));
+    auto_step = cmd_line_has_flag(cmd_line, s("auto_step"));
+    String8 jit_pid_string = cmd_line_string(cmd_line, s("jit_pid"));
+    String8 jit_code_string = cmd_line_string(cmd_line, s("jit_code"));
+    String8 jit_addr_string = cmd_line_string(cmd_line, s("jit_addr"));
     try_u64_from_str8_c_rules(jit_pid_string, &jit_pid);
     try_u64_from_str8_c_rules(jit_code_string, &jit_code);
     try_u64_from_str8_c_rules(jit_addr_string, &jit_addr);
+    String8 ipc_port_string = cmd_line_string(cmd_line, s("ipc_port"));
+    U64 ipc_port_try = 0;
+    if(try_u64_from_str8_c_rules(ipc_port_string, &ipc_port_try))
+    {
+      ipc_port = ipc_port_try;
+    }
     jit_attach = (jit_addr != 0);
   }
   
   // init log
-  g_logs_folder = cmd_line_string(cmd_line, str8_lit("logs"));
+  g_logs_folder = cmd_line_string(cmd_line, s("logs"));
   if(g_logs_folder.size == 0)
   {
     String8 user_program_logs_data_path = get_process_info()->user_program_logs_data_path;
@@ -767,7 +774,7 @@ entry_point(CmdLine *cmd_line)
       }
       
       //- rjf: set up socket session for ICP
-      SOCK_Session icp_sock_session = sock_session_open(7423, wakeup_hook_ctrl);
+      SOCK_Session icp_sock_session = sock_session_open((U16)ipc_port, wakeup_hook_ctrl);
       
       //- rjf: main application loop
       {
