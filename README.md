@@ -85,6 +85,10 @@ A benchmark of the linker's performance is below:
 
 # Project Development Setup / Local Build Instructions
 
+The project is actively developed both on [Windows x64](#windows-x64) and
+[Linux x64](#linux-x64) development machines. Click on whichever you'd like to
+use.
+
 ## Windows x64
 
 ### 1. Installing the Required Tools (MSVC & Windows SDK)
