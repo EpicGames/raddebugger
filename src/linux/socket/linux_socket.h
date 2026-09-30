@@ -34,6 +34,8 @@ struct LNX_SOCK_ConnectionSlot
 typedef struct LNX_SOCK_Session LNX_SOCK_Session;
 struct LNX_SOCK_Session
 {
+  LNX_SOCK_Session *next;
+  LNX_SOCK_Session *prev;
   Arena *arena;
   GuardedRing *u2s_ring;
   GuardedRing *s2u_ring;
@@ -49,6 +51,9 @@ typedef struct LNX_SOCK_State LNX_SOCK_State;
 struct LNX_SOCK_State
 {
   Arena *arena;
+  RWMutex session_rw_mutex;
+  LNX_SOCK_Session *first_session;
+  LNX_SOCK_Session *last_session;
 };
 
 ////////////////////////////////

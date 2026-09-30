@@ -202,12 +202,7 @@ sock_async_tick(void)
               t->session = s;
               t->endpoint = endpoint;
               t->data = str8(data, data_size);
-              switch(protocol)
-              {
-                default:{}break;
-                case SOCK_Protocol_TCP:{SLLQueuePush(first_tcp_send, last_tcp_send, t);}break;
-                case SOCK_Protocol_UDP:{SLLQueuePush(first_tcp_send, last_tcp_send, t);}break;
-              }
+              SLLQueuePush(first_tcp_send, last_tcp_send, t);
             }
           }
           guarded_ring_close(&g);
@@ -435,8 +430,7 @@ sock_session_open(U16 listener_port, SOCK_WakeupFunctionType *wakeup_hook)
 internal void
 sock_session_close(SOCK_Session session)
 {
-  W32_SOCK_Session *s = (W32_SOCK_Session *)session.u64[0];
-  arena_release(s->arena);
+  // TODO(rjf)
 }
 
 ////////////////////////////////

@@ -113,6 +113,7 @@ lnx_sock_listener_thread_entry_point(void *p)
       else RWMutexScope(stripe->rw_mutex, 1)
       {
         close(con->socket);
+        LNX_RETRY_ON_EINTR(epoll_ctl(session->epoll_fd, EPOLL_CTL_DEL, con->socket, 0));
         DLLRemove(slot->first, slot->last, con);
         con->next = stripe->free;
         stripe->free = con;
@@ -130,12 +131,197 @@ sock_init(void)
   Arena *arena = arena_alloc();
   lnx_sock_state = push_array(arena, LNX_SOCK_State, 1);
   lnx_sock_state->arena = arena;
+  lnx_sock_state->session_rw_mutex = rw_mutex_alloc();
 }
 
 internal void
 sock_async_tick(void)
 {
+  Temp scratch = scratch_begin(0, 0);
   
+  //////////////////////////////
+  //- rjf: gather send tasks
+  //
+  typedef struct SendTask SendTask;
+  struct SendTask
+  {
+    SendTask *next;
+    LNX_SOCK_Session *session;
+    SOCK_Endpoint endpoint;
+    String8 data;
+  };
+  SendTask *first_tcp_send = 0;
+  SendTask *last_tcp_send = 0;
+  if(lane_idx() == 0)
+  {
+    for(;;)
+    {
+      B32 got_more = 0;
+      RWMutexScope(lnx_sock_state->session_rw_mutex, 0)
+      {
+        for EachNode(s, LNX_SOCK_Session, lnx_sock_state->first_session)
+        {
+          RingGuard g = guarded_ring_open(s->u2s_ring);
+          {
+            U64 header[5] = {0};
+            if(guarded_ring_try_read(&g, sizeof(header), header))
+            {
+              got_more = 1;
+              SOCK_Protocol protocol = (SOCK_Protocol)header[0];
+              U16 port = (U16)header[1];
+              SOCK_Endpoint endpoint = {0};
+              endpoint.address_u64[0] = header[2];
+              endpoint.address_u64[1] = header[3];
+              endpoint.port = port;
+              U64 data_size = header[4];
+              U8 *data = push_array(scratch.arena, U8, data_size);
+              guarded_ring_read_or_wait(&g, data_size, data, max_U64);
+              SendTask *t = push_array(scratch.arena, SendTask, 1);
+              t->session = s;
+              t->endpoint = endpoint;
+              t->data = str8(data, data_size);
+              SLLQueuePush(first_tcp_send, last_tcp_send, t);
+            }
+          }
+          guarded_ring_close(&g);
+        }
+      }
+      if(!got_more)
+      {
+        break;
+      }
+    }
+  }
+  lane_sync();
+  
+  //////////////////////////////
+  //- rjf: do TCP sends
+  //
+  for(SendTask *t = first_tcp_send; t != 0; t = t->next)
+  {
+    LNX_SOCK_Session *session = t->session;
+    
+    // rjf: unpack endpoint
+    U64 hash = u64_hash_from_str8(str8_struct(&t->endpoint));
+    U64 slot_idx = hash%session->connection_slots_count;
+    LNX_SOCK_ConnectionSlot *slot = &session->connection_slots[slot_idx];
+    Stripe *stripe = stripe_from_slot_idx(&session->connection_stripes, slot_idx);
+    
+    // rjf: get existing socket for this endpoint
+    int ep_socket = -1;
+    RWMutexScope(stripe->rw_mutex, 0)
+    {
+      for(LNX_SOCK_Connection *c = slot->first; c != 0; c = c->next)
+      {
+        if(MemoryMatchStruct(&c->endpoint, &t->endpoint))
+        {
+          ep_socket = c->socket;
+          break;
+        }
+      }
+    }
+    
+    // rjf: didn't get a socket? -> open socket
+    if(ep_socket == -1) RWMutexScope(stripe->rw_mutex, 1)
+    {
+      // rjf: try to get socket again, now that we have the write lock
+      LNX_SOCK_Connection *con = 0;
+      for(LNX_SOCK_Connection *c = slot->first; c != 0; c = c->next)
+      {
+        if(MemoryMatchStruct(&c->endpoint, &t->endpoint))
+        {
+          con = c;
+          break;
+        }
+      }
+      
+      // rjf: no socket still? -> create
+      if(con == 0)
+      {
+        // rjf: convert endpoint -> sockaddr
+        struct sockaddr_storage endpoint_sockaddr = {0};
+        int endpoint_sockaddr_size = 0;
+        {
+          switch(t->endpoint.kind)
+          {
+            default:{}break;
+            case SOCK_EndpointKind_IPv4:
+            {
+              struct sockaddr_in *dst = (struct sockaddr_in *)(&endpoint_sockaddr);
+              endpoint_sockaddr_size = sizeof(*dst);
+              dst->sin_family = AF_INET;
+              dst->sin_port = htons(t->endpoint.port);
+              MemoryCopy(&dst->sin_addr, &t->endpoint.address_u32[0], sizeof(U32));
+            }break;
+            case SOCK_EndpointKind_IPv6:
+            {
+              struct sockaddr_in6 *dst = (struct sockaddr_in6 *)(&endpoint_sockaddr);
+              endpoint_sockaddr_size = sizeof(*dst);
+              dst->sin6_family = AF_INET6;
+              dst->sin6_port = htons(t->endpoint.port);
+              MemoryCopy(&dst->sin6_addr, &t->endpoint.address_u128[0], sizeof(U128));
+            }break;
+          }
+        }
+        
+        // rjf: create
+        int new_socket = socket(AF_INET, SOCK_STREAM, 0);
+        connect(new_socket, (struct sockaddr *)&endpoint_sockaddr, endpoint_sockaddr_size);
+        
+        // rjf: store in cache
+        con = (LNX_SOCK_Connection *)stripe->free;
+        if(con != 0)
+        {
+          stripe->free = con->next;
+        }
+        else
+        {
+          con = push_array(stripe->arena, LNX_SOCK_Connection, 1);
+        }
+        con->endpoint = t->endpoint;
+        con->protocol = SOCK_Protocol_TCP;
+        con->socket = new_socket;
+        DLLPushBack(slot->first, slot->last, con);
+        
+        // rjf: hook up to session epoll
+        struct epoll_event evt = {0};
+        evt.events = EPOLLIN;
+        evt.data.u64 = (U64)con;
+        LNX_RETRY_ON_EINTR(epoll_ctl(session->epoll_fd, EPOLL_CTL_ADD, new_socket, &evt));
+      }
+      
+      // rjf: get socket from cache
+      ep_socket = con->socket;
+    }
+    
+    // rjf: got socket? -> send
+    B32 send_failed = 0;
+    if(ep_socket != -1 && send(ep_socket, t->data.str, t->data.size, 0) == -1)
+    {
+      send_failed = 1;
+    }
+    
+    // rjf: got a socket, but send failed? -> connection closed
+    if(ep_socket != -1 && send_failed)
+    {
+      RWMutexScope(stripe->rw_mutex, 1)
+      {
+        for(LNX_SOCK_Connection *c = slot->first; c != 0; c = c->next)
+        {
+          if(MemoryMatchStruct(&c->endpoint, &t->endpoint))
+          {
+            close(c->socket);
+            LNX_RETRY_ON_EINTR(epoll_ctl(session->epoll_fd, EPOLL_CTL_DEL, c->socket, 0));
+            DLLRemove(slot->first, slot->last, c);
+            c->next = stripe->free;
+            stripe->free = c;
+          }
+        }
+      }
+    }
+  }
+  
+  scratch_end(scratch);
 }
 
 ////////////////////////////////
@@ -176,6 +362,12 @@ sock_session_open(U16 listener_port, SOCK_WakeupFunctionType *wakeup_hook)
   //- rjf: launch listener thread
   session->listener_thread = thread_launch(lnx_sock_listener_thread_entry_point, session);
   
+  //- rjf: link into top-level storage
+  RWMutexScope(lnx_sock_state->session_rw_mutex, 1)
+  {
+    DLLPushBack(lnx_sock_state->first_session, lnx_sock_state->last_session, session);
+  }
+  
   //- rjf: bundle as handle
   SOCK_Session s = {(U64)session};
   return s;
@@ -184,7 +376,7 @@ sock_session_open(U16 listener_port, SOCK_WakeupFunctionType *wakeup_hook)
 internal void
 sock_session_close(SOCK_Session session)
 {
-  
+  // TODO(rjf)
 }
 
 ////////////////////////////////
