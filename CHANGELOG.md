@@ -60,6 +60,10 @@
   incorrectly. (#946)
 - Fixed many other minor bugs and instabilities.
 
+## Linker Changes
+- Improved memory usage and performance.
+- Fixes.
+
 # v0.9.28-alpha
 
 ## Debugger Changes
