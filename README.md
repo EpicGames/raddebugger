@@ -83,20 +83,19 @@ A benchmark of the linker's performance is below:
 
 ---
 
-# Project Development Setup Instructions
+# Project Development Setup / Local Build Instructions
 
-**NOTE: Currently, only x64 Windows development is supported for the project.**
+## Windows x64
 
-## 1. Installing the Required Tools (MSVC & Windows SDK)
+### 1. Installing the Required Tools (MSVC & Windows SDK)
 
-In order to work with the codebase, you'll need the [Microsoft C/C++ Build Tools
-v15 (2017) or later](https://aka.ms/vs/17/release/vs_BuildTools.exe), for both
-the Windows SDK and the MSVC compiler and linker.
+First, you'll need the [Microsoft C/C++ Build Tools v15 (2017) or later](https://aka.ms/vs/17/release/vs_BuildTools.exe),
+for the Windows SDK, and the MSVC compiler and linker.
 
 If the Windows SDK is installed (e.g. via installation of the Microsoft C/C++
 Build Tools), you may also build with [Clang](https://releases.llvm.org/).
 
-## 2. Build Environment Setup
+### 2. Build Environment Setup
 
 Building the codebase can be done in a terminal which is equipped with the
 ability to call either MSVC or Clang from command line.
@@ -167,6 +166,142 @@ Linker, or the `radbin` CLI binary file utility:
 ```
 build radlink release
 build radbin release
+```
+
+## Linux x64
+
+### 1. Installing the Required Tools (GCC or Clang, Libraries)
+
+First, you'll need either GCC or Clang, if you don't already have them. They
+can be obtained by running one of the following commands, depending on your
+toolchain of choice and distribution:
+
+#### GCC on Ubuntu / Debian / Mint
+```
+sudo apt update && sudo apt install build-essential
+```
+
+#### Clang on Ubuntu / Debian / Mint
+```
+sudo apt update && sudo apt install clang llvm
+```
+
+#### GCC on Arch / Manjaro
+```
+sudo pacman -S base-devel
+```
+
+#### Clang on Arch / Manjaro
+```
+sudo pacman -S clang llvm
+```
+
+If you've installed the Clang and LLVM tooling required, you can run:
+
+```
+clang --version && llvm-ar --version
+```
+
+You should see output similar to the following:
+
+```
+Ubuntu clang version 18.1.3 (1ubuntu1)
+Target: x86_64-pc-linux-gnu
+Thread model: posix
+InstalledDir: /usr/bin
+Ubuntu LLVM version 18.1.3
+  Optimized build.
+```
+
+If you've installed the GCC tooling required, you can run:
+
+```
+gcc --version && gcc-ar --version
+```
+
+You should see output similar to the following:
+
+```
+gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0
+Copyright (C) 2023 Free Software Foundation, Inc.
+This is free software; see the source for copying conditions.  There is NO
+warranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+
+GNU ar (GNU Binutils for Ubuntu) 2.42
+Copyright (C) 2024 Free Software Foundation, Inc.
+This program is free software; you may redistribute it under the terms of
+the GNU General Public License version 3 or (at your option) any later version.
+This program has absolutely no warranty.
+```
+
+### 2. Installing Dependencies
+
+The debugger project relies on a few dynamically linked libraries being present
+on the system:
+
+- `libfreetype`
+- `libx11`
+- `libxext`
+- `libxfixes`
+- `libgl`
+- `libegl`
+
+You'll need the development packages for them in order to build. These can be
+installed using one of the following commands, depending on your distribution:
+
+#### Ubuntu / Debian / Mint 
+
+```
+sudo apt install -y libfreetype6-dev libx11-dev libxext-dev libxfixes-dev libgl-dev libegl-dev
+```
+
+#### Arch / Manjaro
+
+```
+sudo pacman -S --needed freetype2 libx11 libxext libxfixes libglvnd
+```
+
+### 3. Building
+
+To build, `cd` to the root directory of the codebase, and run the `build.sh`
+script:
+
+```
+./build.sh
+```
+
+You should see something similar to the following output:
+
+```
+[clang compile]
+[debug mode]
+[building metagen]
+searching /mnt/c/devel/raddebugger/src... 562 files found
+parsing metadesk... 23 metadesk files parsed
+gathering tables... 138 tables found
+generating layer code...
+```
+
+If everything worked correctly, there will be a `build` folder in the root
+level of the codebase, and it will contain a freshly-built `raddbg` binary.
+
+This `raddbg` will have been built in **debug mode**, which is not built with
+optimizations, and may perform worse. To produce a **release mode executable**,
+run `build.sh` with a `release` argument:
+
+```
+./build.sh release
+```
+
+This build will take significantly longer.
+
+By default, `build.sh` only builds the debugger if no arguments (or just
+`release`) are passed, but additional arguments can be passed to build the RAD
+Linker, or the `radbin` CLI binary file utility:
+
+```
+./build.sh radlink release
+./build.sh radbin release
 ```
 
 ---
