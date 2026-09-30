@@ -1263,6 +1263,12 @@ d2r_convert(Arena *arena, D2R_ConvertParams *params)
                 (n->v.attrib_kind != DW_AttribKind_Name &&
                  n->v.attrib_kind != DW_AttribKind_DeclFile &&
                  n->v.attrib_kind != DW_AttribKind_DeclLine &&
+                 n->v.attrib_kind != DW_AttribKind_DeclColumn &&
+                 n->v.attrib_kind != DW_AttribKind_CallAllCalls &&
+                 n->v.attrib_kind != DW_AttribKind_CallAllSourceCalls &&
+                 n->v.attrib_kind != DW_AttribKind_CallAllTailCalls &&
+                 n->v.attrib_kind != (DW_AttribKind)DW_GNU_AttribKind_AllCallSites &&
+                 n->v.attrib_kind != (DW_AttribKind)DW_GNU_AttribKind_AllTailCallsSites &&
                  n->v.attrib_kind != DW_AttribKind_Prototyped &&
                  n->v.attrib_kind != DW_AttribKind_External &&
                  n->v.attrib_kind != DW_AttribKind_FrameBase &&
@@ -1270,8 +1276,40 @@ d2r_convert(Arena *arena, D2R_ConvertParams *params)
                  n->v.attrib_kind != DW_AttribKind_LowPc &&
                  n->v.attrib_kind != DW_AttribKind_HighPc)))
             {
-              hash = u64_hash_from_seed_str8(hash, str8_struct(&n->v.val.kind));
-              if(n->v.val.string.size != 0)
+              // NOTE: hash the attribute kind & its decoded value, *not* the form. the
+              // same type is often encoded with different forms in different units (e.g.
+              // DW_FORM_implicit_const vs. DW_FORM_data1, DW_FORM_strp vs.
+              // DW_FORM_string), and those must still hash identically to be deduplicated.
+              hash = u64_hash_from_seed_str8(hash, str8_struct(&n->v.attrib_kind));
+
+              // NOTE: some decoded values are unit-specific, so hash what they refer to:
+              //  - DW_AT_decl_file is an index into this unit's line table file list -> hash the path
+              //  - block1/2/4 values decode to .debug_info offsets -> hash the block bytes
+              String8 unit_independent_data = {0};
+              if(n->v.attrib_kind == DW_AttribKind_DeclFile)
+              {
+                U64 file_idx = n->v.val.u128.u64[0];
+                if(file_idx < unit_line_table_headers[unit_idx].files.count &&
+                   unit_src_file_maps[unit_idx].v[file_idx] != 0)
+                {
+                  unit_independent_data = unit_src_file_maps[unit_idx].v[file_idx]->path;
+                }
+              }
+              else if(n->v.val.kind == DW_FormKind_Block1 ||
+                      n->v.val.kind == DW_FormKind_Block2 ||
+                      n->v.val.kind == DW_FormKind_Block4)
+              {
+                U64 size_bytes = (n->v.val.kind == DW_FormKind_Block1 ? 1 :
+                                  n->v.val.kind == DW_FormKind_Block2 ? 2 : 4);
+                U64 block_off = n->v.val.u128.u64[1] + size_bytes;
+                U64 block_size = n->v.val.u128.u64[0];
+                unit_independent_data = str8_substr(raw->sec[DW_SectionKind_Info].data, r1u64(block_off, block_off + block_size));
+              }
+              if(unit_independent_data.size != 0)
+              {
+                hash = u64_hash_from_seed_str8(hash, unit_independent_data);
+              }
+              else if(n->v.val.string.size != 0)
               {
                 hash = u64_hash_from_seed_str8(hash, n->v.val.string);
               }
