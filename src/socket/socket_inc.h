@@ -7,6 +7,8 @@
 #include "socket.h"
 #if OS_WINDOWS
 # include "win32/socket/win32_socket.h"
+#elif OS_LINUX
+# include "linux/socket/linux_socket.h"
 #else
 # include "socket_stub.h"
 #endif

@@ -372,24 +372,16 @@ sock_session_open(U16 listener_port, SOCK_WakeupFunctionType *wakeup_hook)
   //- rjf: set up IOCP
   session->iocp = CreateIoCompletionPort(INVALID_HANDLE_VALUE, 0, 0, 0);
   
-  //- rjf: create listener(s)
-  session->tcp_listen_socket = WSASocketA(AF_INET, SOCK_STREAM, IPPROTO_TCP, 0, 0, WSA_FLAG_OVERLAPPED);
+  //- rjf: set up listener(s)
   {
+    session->tcp_listen_socket = WSASocketA(AF_INET, SOCK_STREAM, IPPROTO_TCP, 0, 0, WSA_FLAG_OVERLAPPED);
     DWORD ipv6only = 0;
     setsockopt(session->tcp_listen_socket, IPPROTO_IPV6, IPV6_V6ONLY, (char *)&ipv6only, sizeof(ipv6only));
-  }
-  
-  //- rjf: bind listener sockets
-  {
     struct sockaddr_in server_addr;
     server_addr.sin_family = AF_INET;
     server_addr.sin_addr.s_addr = INADDR_ANY;
     server_addr.sin_port = htons(listener_port);
     bind(session->tcp_listen_socket, (SOCKADDR *)&server_addr, sizeof(server_addr));
-  }
-  
-  //- rjf: start listening for TCP connections
-  {
     listen(session->tcp_listen_socket, SOMAXCONN);
   }
   

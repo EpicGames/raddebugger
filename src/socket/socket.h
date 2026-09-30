@@ -79,12 +79,10 @@ internal void sock_session_close(SOCK_Session session);
 //~ rjf: @per_os_impl Sends
 
 internal B32 sock_send(SOCK_Session session, SOCK_Protocol protocol, SOCK_Endpoint endpoint, String8 data, U64 endt_us);
-#define sock_send_struct(session, protocol_in, endpoint_in, ptr, endt_us) sock_send((session), (protocol_in), (endpoint_in), str8_struct(ptr), (endt_us))
 
 ////////////////////////////////
 //~ rjf: @per_os_impl Receives
 
 internal B32 sock_recv(Arena *arena, SOCK_Session session, SOCK_Protocol *protocol_out, SOCK_Endpoint *endpoint_out, String8 *data_out, U64 endt_us);
-#define sock_recv_struct(arena, session, protocol_out, endpoint_out, data_out, endt_us) sock_recv((arena), (session), (protocol_out), (endpoint_out), (data_out), (endt_us))
 
 #endif // SOCKET_H

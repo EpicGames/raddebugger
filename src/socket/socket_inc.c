@@ -4,6 +4,8 @@
 #include "socket.c"
 #if OS_WINDOWS
 # include "win32/socket/win32_socket.c"
+#elif OS_LINUX
+# include "linux/socket/linux_socket.c"
 #else
 # include "socket_stub.c"
 #endif
