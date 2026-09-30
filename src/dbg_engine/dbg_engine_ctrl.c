@@ -1945,6 +1945,8 @@ d_unwind_from_thread(Arena *arena, D_Handle thread, U64 endt_us)
   //
   if(regs_block_good)
   {
+    D_Entity *last_module_entity = &d_entity_nil;
+    U64 last_tls_vaddr = 0;
     unwind.flags = 0;
     for(;!unwind.flags;)
     {
@@ -1967,8 +1969,18 @@ d_unwind_from_thread(Arena *arena, D_Handle thread, U64 endt_us)
       UWND_ModuleInfo unwinder_module_info = {module_entity->vaddr_range.min, module_info->unwind_info};
       
       //- rjf: thread * module -> tls vaddr
-      U64 tls_vaddr = 0;
-      d_thread_get_module_tls_vaddr(thread_entity->handle, module_entity->handle, &tls_vaddr);
+      //
+      // NOTE: this requires process reads, so only redo it when the module changes -
+      // deep (e.g. recursive) call stacks will unwind through the same module many times
+      //
+      U64 tls_vaddr = last_tls_vaddr;
+      if(module_entity != last_module_entity)
+      {
+        tls_vaddr = 0;
+        d_thread_get_module_tls_vaddr(thread_entity->handle, module_entity->handle, &tls_vaddr);
+        last_module_entity = module_entity;
+        last_tls_vaddr = tls_vaddr;
+      }
       
       //- rjf: do one unwind step
       B32 step_is_good = 0;
@@ -1990,16 +2002,33 @@ d_unwind_from_thread(Arena *arena, D_Handle thread, U64 endt_us)
         // rjf: if we failed to read memory, try to read that memory, equip to memory map.
         // if it is stale and we run out of time, we will need to mark the whole unwind as
         // stale. if it can't be read, the unwind fails.
+        //
+        // NOTE: we first try to read all pages touched by the missed range, rather than
+        // just the missed bytes. otherwise, very deep call stacks (e.g. when stopped on a
+        // stack overflow, which may have tens of thousands of frames) do one tiny process
+        // read & push one tiny memory map range per frame, making the unwind quadratic in
+        // the number of frames. if the page-granular read fails (e.g. part of the range is
+        // not readable), fall back to reading exactly the missed range.
         if(step.status == UWND_StepStatus_FailedMemoryRead)
         {
-          U64 size_desired = dim_1u64(step.missed_read_vaddr_range);
-          U8 *data = push_array(scratch.arena, U8, size_desired);
-          U64 size = d_process_read(process_entity->handle, step.missed_read_vaddr_range, data);
-          if(size == size_desired)
+          Rng1U64 missed_range = step.missed_read_vaddr_range;
+          Rng1U64 page_range = r1u64(AlignDownPow2(missed_range.min, KB(4)), AlignPow2(missed_range.max, KB(4)));
+          Rng1U64 read_ranges[] = {page_range, missed_range};
+          B32 read_good = 0;
+          for EachElement(idx, read_ranges)
           {
-            memory_map_push(scratch.arena, &memory_map, step.missed_read_vaddr_range, data);
+            Rng1U64 range = read_ranges[idx];
+            U64 size_desired = dim_1u64(range);
+            U8 *data = push_array(scratch.arena, U8, size_desired);
+            U64 size = d_process_read(process_entity->handle, range, data);
+            if(size == size_desired)
+            {
+              memory_map_push(scratch.arena, &memory_map, range, data);
+              read_good = 1;
+              break;
+            }
           }
-          else
+          if(!read_good)
           {
             unwind.flags |= D_UnwindFlag_Error;
           }
@@ -6508,11 +6537,15 @@ d_call_stack_artifact_create(String8 key, B32 *cancel_signal, AC_Status *status_
         {
           retry = 1;
         }
-        else if(unwind.flags & D_UnwindFlag_Error)
+        else if((unwind.flags & D_UnwindFlag_Error) && unwind.frames.count == 0)
         {
           good = 0;
           retry = 0;
         }
+        
+        // NOTE: if unwinding failed partway, still produce a call stack with all frames
+        // which were successfully unwound - a partial call stack (e.g. the frames nearest
+        // to the top of the stack on a stack overflow) is much more useful than none.
         else
         {
           good = 1;
