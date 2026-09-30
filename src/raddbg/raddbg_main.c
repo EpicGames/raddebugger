@@ -843,12 +843,12 @@ entry_point(CmdLine *cmd_line)
           }
           
           //- rjf: receive socket data, run as IPC messages
+          SOCK_Protocol ipc_protocol = SOCK_Protocol_TCP;
+          SOCK_Endpoint ipc_endpoint = {0};
           {
             Temp scratch = scratch_begin(0, 0);
-            SOCK_Protocol protocol = SOCK_Protocol_TCP;
-            SOCK_Endpoint endpoint = {0};
             String8 msg = {0};
-            if(sock_recv(scratch.arena, icp_sock_session, &protocol, &endpoint, &msg, 0))
+            if(sock_recv(scratch.arena, icp_sock_session, &ipc_protocol, &ipc_endpoint, &msg, 0))
             {
               String8List cmd_parts_of_msg = str8_split(scratch.arena, msg, (U8 *)";", 1, 0);
               RD_WindowState *dst_ws = rd_state->first_window_state;
@@ -916,6 +916,7 @@ entry_point(CmdLine *cmd_line)
           }
           
           //- rjf: gather command outputs & write them
+#if 0
           if(ipc_command_frame)
           {
             if(ipc_main2sender_shared_memory_base != 0 &&
@@ -931,6 +932,15 @@ entry_point(CmdLine *cmd_line)
               semaphore_drop(ipc_main2sender_signal_semaphore);
               semaphore_drop(ipc_main2sender_lock_semaphore);
             }
+          }
+#endif
+          
+          //- rjf: gather command outputs & send them back back to sender
+          if(ipc_command_frame)
+          {
+            StringJoin join = {s(""), s("\0"), s("")};
+            String8 msg = str8_list_join(scratch.arena, &rd_state->cmd_outputs, &join);
+            sock_send(icp_sock_session, ipc_protocol, ipc_endpoint, msg, now_time_us()+5000000);
           }
         }
       }

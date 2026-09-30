@@ -13748,11 +13748,12 @@ rd_frame(void)
           }break;
           case RD_CmdKind_State:
           {
-            str8_list_pushf(rd_state->cmd_output_arena, &rd_state->cmd_outputs, "state:\n{\n");
-            str8_list_pushf(rd_state->cmd_output_arena, &rd_state->cmd_outputs, " running: %i\n", d_ctrl_targets_running());
-            str8_list_pushf(rd_state->cmd_output_arena, &rd_state->cmd_outputs, " run_gen: %I64u\n", d_run_gen());
-            str8_list_pushf(rd_state->cmd_output_arena, &rd_state->cmd_outputs, " stop_count: %I64u\n", d_stop_count());
-            str8_list_pushf(rd_state->cmd_output_arena, &rd_state->cmd_outputs, " ip: 0x%I64x\n", d_ctrl_last_stop_event().rip_vaddr);
+            String8List state_parts = {0};
+            str8_list_pushf(scratch.arena, &state_parts, "state:\n{\n");
+            str8_list_pushf(scratch.arena, &state_parts, " running: %i\n", d_ctrl_targets_running());
+            str8_list_pushf(scratch.arena, &state_parts, " run_gen: %I64u\n", d_run_gen());
+            str8_list_pushf(scratch.arena, &state_parts, " stop_count: %I64u\n", d_stop_count());
+            str8_list_pushf(scratch.arena, &state_parts, " ip: 0x%I64x\n", d_ctrl_last_stop_event().rip_vaddr);
             {
               Access *access = access_open();
               D_Event evt = d_ctrl_last_stop_event();
@@ -13766,28 +13767,28 @@ rd_frame(void)
               RDI_Symbol *procedure = rdi_procedure_from_voff(rdi, voff);
               String8 name = fully_qualified_str8_from_rdi_symbol(scratch.arena, rdi, procedure);
               name = escaped_from_raw_str8(scratch.arena, name);
-              str8_list_pushf(rd_state->cmd_output_arena, &rd_state->cmd_outputs, " ip_module: \"%S\"\n", str8_skip_last_slash(module->string));
-              str8_list_pushf(rd_state->cmd_output_arena, &rd_state->cmd_outputs, " ip_voff: 0x%I64x\n", voff);
-              str8_list_pushf(rd_state->cmd_output_arena, &rd_state->cmd_outputs, " ip_voff_symbol: \"%S\"\n", name);
+              str8_list_pushf(scratch.arena, &state_parts, " ip_module: \"%S\"\n", str8_skip_last_slash(module->string));
+              str8_list_pushf(scratch.arena, &state_parts, " ip_voff: 0x%I64x\n", voff);
+              str8_list_pushf(scratch.arena, &state_parts, " ip_voff_symbol: \"%S\"\n", name);
               access_close(access);
             }
             {
               D_Event evt = d_ctrl_last_stop_event();
               DR_FStrList explanation_fstrs = rd_stop_explanation_fstrs_from_ctrl_event(scratch.arena, &evt);
               String8 explanation_string = dr_string_from_fstrs(scratch.arena, &explanation_fstrs);
-              str8_list_pushf(rd_state->cmd_output_arena, &rd_state->cmd_outputs, " stop_event:\n {\n");
-              str8_list_pushf(rd_state->cmd_output_arena, &rd_state->cmd_outputs, "  arch: %S\n", string_from_arch(evt.arch));
-              str8_list_pushf(rd_state->cmd_output_arena, &rd_state->cmd_outputs, "  vaddr_range: [0x%I64x, 0x%I64x)\n", evt.vaddr_rng.min, evt.vaddr_rng.max);
-              str8_list_pushf(rd_state->cmd_output_arena, &rd_state->cmd_outputs, "  ip_vaddr: 0x%I64x\n", evt.rip_vaddr);
-              str8_list_pushf(rd_state->cmd_output_arena, &rd_state->cmd_outputs, "  stack_base: 0x%I64x\n", evt.stack_base);
-              str8_list_pushf(rd_state->cmd_output_arena, &rd_state->cmd_outputs, "  tls_root: 0x%I64x\n", evt.tls_root);
-              str8_list_pushf(rd_state->cmd_output_arena, &rd_state->cmd_outputs, "  tls_index: 0x%I64x\n", evt.tls_index);
-              str8_list_pushf(rd_state->cmd_output_arena, &rd_state->cmd_outputs, "  timestamp: 0x%I64x\n", evt.timestamp);
-              str8_list_pushf(rd_state->cmd_output_arena, &rd_state->cmd_outputs, "  exception_code: 0x%I64x\n", (U64)evt.exception_code);
-              str8_list_pushf(rd_state->cmd_output_arena, &rd_state->cmd_outputs, "  bp_flags: 0x%I64x\n", (U64)evt.bp_flags);
-              str8_list_pushf(rd_state->cmd_output_arena, &rd_state->cmd_outputs, "  string: \"%S\"\n", escaped_from_raw_str8(scratch.arena, evt.string));
-              str8_list_pushf(rd_state->cmd_output_arena, &rd_state->cmd_outputs, "  explanation: \"%S\"\n", escaped_from_raw_str8(scratch.arena, explanation_string));
-              str8_list_pushf(rd_state->cmd_output_arena, &rd_state->cmd_outputs, " }\n");
+              str8_list_pushf(scratch.arena, &state_parts, " stop_event:\n {\n");
+              str8_list_pushf(scratch.arena, &state_parts, "  arch: %S\n", string_from_arch(evt.arch));
+              str8_list_pushf(scratch.arena, &state_parts, "  vaddr_range: [0x%I64x, 0x%I64x)\n", evt.vaddr_rng.min, evt.vaddr_rng.max);
+              str8_list_pushf(scratch.arena, &state_parts, "  ip_vaddr: 0x%I64x\n", evt.rip_vaddr);
+              str8_list_pushf(scratch.arena, &state_parts, "  stack_base: 0x%I64x\n", evt.stack_base);
+              str8_list_pushf(scratch.arena, &state_parts, "  tls_root: 0x%I64x\n", evt.tls_root);
+              str8_list_pushf(scratch.arena, &state_parts, "  tls_index: 0x%I64x\n", evt.tls_index);
+              str8_list_pushf(scratch.arena, &state_parts, "  timestamp: 0x%I64x\n", evt.timestamp);
+              str8_list_pushf(scratch.arena, &state_parts, "  exception_code: 0x%I64x\n", (U64)evt.exception_code);
+              str8_list_pushf(scratch.arena, &state_parts, "  bp_flags: 0x%I64x\n", (U64)evt.bp_flags);
+              str8_list_pushf(scratch.arena, &state_parts, "  string: \"%S\"\n", escaped_from_raw_str8(scratch.arena, evt.string));
+              str8_list_pushf(scratch.arena, &state_parts, "  explanation: \"%S\"\n", escaped_from_raw_str8(scratch.arena, explanation_string));
+              str8_list_pushf(scratch.arena, &state_parts, " }\n");
             }
             {
               Access *access = access_open();
@@ -13800,12 +13801,12 @@ rd_frame(void)
               DI_Key dbgi_key = d_dbgi_key_from_module(module);
               RDI_Parsed *rdi = di_rdi_from_key(access, dbgi_key, 0, 0);
               E_String2NumMap *locals_map = e_push_locals_map_from_rdi_voff(scratch.arena, rdi, voff);
-              str8_list_pushf(rd_state->cmd_output_arena, &rd_state->cmd_outputs, " locals:\n {\n");
+              str8_list_pushf(scratch.arena, &state_parts, " locals:\n {\n");
               for(E_String2NumMapNode *n = locals_map->first; n != 0; n = n->order_next)
               {
-                str8_list_pushf(rd_state->cmd_output_arena, &rd_state->cmd_outputs, " %S\n", n->string);
+                str8_list_pushf(scratch.arena, &state_parts, " %S\n", n->string);
               }
-              str8_list_pushf(rd_state->cmd_output_arena, &rd_state->cmd_outputs, " }\n");
+              str8_list_pushf(scratch.arena, &state_parts, " }\n");
               access_close(access);
             }
             {
@@ -13819,48 +13820,50 @@ rd_frame(void)
               String8 dbgi_path = dbg_path->string;
               DI_Key dbgi_key = d_dbgi_key_from_debug_info_path(dbg_path);
               D_LineList lines = d_lines_from_dbgi_key_path_voff(scratch.arena, dbgi_key, dbgi_path, voff);
-              str8_list_pushf(rd_state->cmd_output_arena, &rd_state->cmd_outputs, " lines:\n {\n");
+              str8_list_pushf(scratch.arena, &state_parts, " lines:\n {\n");
               for EachNode(n, D_LineNode, lines.first)
               {
                 D_Line line = n->v;
                 String8 line_file_name = str8_skip_last_slash(line.file_path);
-                str8_list_pushf(rd_state->cmd_output_arena, &rd_state->cmd_outputs, "  {\n");
-                str8_list_pushf(rd_state->cmd_output_arena, &rd_state->cmd_outputs, "   file_name:  \"%S\"\n", line_file_name);
-                str8_list_pushf(rd_state->cmd_output_arena, &rd_state->cmd_outputs, "   line_num:   %I64d\n", line.pt.line);
-                str8_list_pushf(rd_state->cmd_output_arena, &rd_state->cmd_outputs, "   column_num: %I64d\n", line.pt.column);
-                str8_list_pushf(rd_state->cmd_output_arena, &rd_state->cmd_outputs, "   voff_range: [0x%I64x, 0x%I64x)\n", line.voff_range.min, line.voff_range.max);
-                str8_list_pushf(rd_state->cmd_output_arena, &rd_state->cmd_outputs, "  }\n");
+                str8_list_pushf(scratch.arena, &state_parts, "  {\n");
+                str8_list_pushf(scratch.arena, &state_parts, "   file_name:  \"%S\"\n", line_file_name);
+                str8_list_pushf(scratch.arena, &state_parts, "   line_num:   %I64d\n", line.pt.line);
+                str8_list_pushf(scratch.arena, &state_parts, "   column_num: %I64d\n", line.pt.column);
+                str8_list_pushf(scratch.arena, &state_parts, "   voff_range: [0x%I64x, 0x%I64x)\n", line.voff_range.min, line.voff_range.max);
+                str8_list_pushf(scratch.arena, &state_parts, "  }\n");
               }
-              str8_list_pushf(rd_state->cmd_output_arena, &rd_state->cmd_outputs, " }\n");
+              str8_list_pushf(scratch.arena, &state_parts, " }\n");
             }
             {
-              str8_list_pushf(rd_state->cmd_output_arena, &rd_state->cmd_outputs, " threads:\n {\n");
+              str8_list_pushf(scratch.arena, &state_parts, " threads:\n {\n");
               D_EntityArray threads = d_entity_array_from_kind(D_EntityKind_Thread);
               for EachIndex(idx, threads.count)
               {
                 D_Entity *thread = threads.v[idx];
-                str8_list_pushf(rd_state->cmd_output_arena, &rd_state->cmd_outputs, "  {\n");
-                str8_list_pushf(rd_state->cmd_output_arena, &rd_state->cmd_outputs, "   name: \"%S\"\n", escaped_from_raw_str8(scratch.arena, thread->string));
-                str8_list_pushf(rd_state->cmd_output_arena, &rd_state->cmd_outputs, "   id:   %I64u\n", thread->id);
-                str8_list_pushf(rd_state->cmd_output_arena, &rd_state->cmd_outputs, "   ip:   0x%I64x\n", d_query_cached_rip_from_thread(thread));
-                str8_list_pushf(rd_state->cmd_output_arena, &rd_state->cmd_outputs, "  }\n");
+                str8_list_pushf(scratch.arena, &state_parts, "  {\n");
+                str8_list_pushf(scratch.arena, &state_parts, "   name: \"%S\"\n", escaped_from_raw_str8(scratch.arena, thread->string));
+                str8_list_pushf(scratch.arena, &state_parts, "   id:   %I64u\n", thread->id);
+                str8_list_pushf(scratch.arena, &state_parts, "   ip:   0x%I64x\n", d_query_cached_rip_from_thread(thread));
+                str8_list_pushf(scratch.arena, &state_parts, "  }\n");
               }
-              str8_list_pushf(rd_state->cmd_output_arena, &rd_state->cmd_outputs, " }\n");
+              str8_list_pushf(scratch.arena, &state_parts, " }\n");
             }
             {
-              str8_list_pushf(rd_state->cmd_output_arena, &rd_state->cmd_outputs, " modules:\n {\n");
+              str8_list_pushf(scratch.arena, &state_parts, " modules:\n {\n");
               D_EntityArray modules = d_entity_array_from_kind(D_EntityKind_Module);
               for EachIndex(idx, modules.count)
               {
                 D_Entity *module = modules.v[idx];
-                str8_list_pushf(rd_state->cmd_output_arena, &rd_state->cmd_outputs, "  {\n");
-                str8_list_pushf(rd_state->cmd_output_arena, &rd_state->cmd_outputs, "   name:        \"%S\"\n", escaped_from_raw_str8(scratch.arena, module->string));
-                str8_list_pushf(rd_state->cmd_output_arena, &rd_state->cmd_outputs, "   vaddr_range: [0x%I64x, 0x%I64x)\n",  module->vaddr_range.min, module->vaddr_range.max);
-                str8_list_pushf(rd_state->cmd_output_arena, &rd_state->cmd_outputs, "  }\n");
+                str8_list_pushf(scratch.arena, &state_parts, "  {\n");
+                str8_list_pushf(scratch.arena, &state_parts, "   name:        \"%S\"\n", escaped_from_raw_str8(scratch.arena, module->string));
+                str8_list_pushf(scratch.arena, &state_parts, "   vaddr_range: [0x%I64x, 0x%I64x)\n",  module->vaddr_range.min, module->vaddr_range.max);
+                str8_list_pushf(scratch.arena, &state_parts, "  }\n");
               }
-              str8_list_pushf(rd_state->cmd_output_arena, &rd_state->cmd_outputs, " }\n");
+              str8_list_pushf(scratch.arena, &state_parts, " }\n");
             }
-            str8_list_pushf(rd_state->cmd_output_arena, &rd_state->cmd_outputs, "}\n");
+            str8_list_pushf(scratch.arena, &state_parts, "}\n");
+            String8 state = str8_list_join(rd_state->cmd_output_arena, &state_parts, 0);
+            str8_list_push(rd_state->cmd_output_arena, &rd_state->cmd_outputs, state);
           }break;
           case RD_CmdKind_Eval:
           {

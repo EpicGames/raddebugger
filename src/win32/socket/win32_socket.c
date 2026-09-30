@@ -165,7 +165,7 @@ sock_async_tick(void)
   struct SendTask
   {
     SendTask *next;
-    SOCK_Session session;
+    W32_SOCK_Session *session;
     SOCK_Endpoint endpoint;
     String8 data;
   };
@@ -193,10 +193,12 @@ sock_async_tick(void)
               SOCK_Endpoint endpoint = {0};
               endpoint.address_u64[0] = header[2];
               endpoint.address_u64[1] = header[3];
+              endpoint.port = port;
               U64 data_size = header[4];
               U8 *data = push_array(scratch.arena, U8, data_size);
               guarded_ring_read_or_wait(&g, data_size, data, max_U64);
               SendTask *t = push_array(scratch.arena, SendTask, 1);
+              t->session = s;
               t->endpoint = endpoint;
               t->data = str8(data, data_size);
               switch(protocol)
@@ -223,7 +225,7 @@ sock_async_tick(void)
   //
   for(SendTask *t = first_tcp_send; t != 0; t = t->next)
   {
-    W32_SOCK_Session *session = (W32_SOCK_Session *)t->session.u64[0];
+    W32_SOCK_Session *session = t->session;
     U64 hash = u64_hash_from_str8(str8_struct(&t->endpoint));
     U64 slot_idx = hash%session->connection_slots_count;
     W32_SOCK_ConnectionSlot *slot = &session->connection_slots[slot_idx];
