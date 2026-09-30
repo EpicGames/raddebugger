@@ -76,6 +76,7 @@ w32_sock_listener_thread_entry_point(void *p)
         con->endpoint = endpoint;
         con->protocol = SOCK_Protocol_TCP;
         con->socket = new_socket;
+        MemoryZeroStruct(&con->recv_overlapped);
         DLLPushBack(slot->first, slot->last, con);
         buf.len = sizeof(con->recv_buffer);
         buf.buf = con->recv_buffer;
@@ -226,25 +227,126 @@ sock_async_tick(void)
   for(SendTask *t = first_tcp_send; t != 0; t = t->next)
   {
     W32_SOCK_Session *session = t->session;
+    
+    // rjf: unpack endpoint
     U64 hash = u64_hash_from_str8(str8_struct(&t->endpoint));
     U64 slot_idx = hash%session->connection_slots_count;
     W32_SOCK_ConnectionSlot *slot = &session->connection_slots[slot_idx];
     Stripe *stripe = stripe_from_slot_idx(&session->connection_stripes, slot_idx);
-    RWMutexScope(stripe->rw_mutex, 1)
+    
+    // rjf: get existing socket for this endpoint
+    SOCKET ep_socket = -1;
+    RWMutexScope(stripe->rw_mutex, 0)
     {
       for(W32_SOCK_Connection *c = slot->first; c != 0; c = c->next)
       {
         if(MemoryMatchStruct(&c->endpoint, &t->endpoint))
         {
-          if(send(c->socket, t->data.str, t->data.size, 0) == SOCKET_ERROR)
+          ep_socket = c->socket;
+          break;
+        }
+      }
+    }
+    
+    // rjf: didn't get a socket? -> open socket
+    if(ep_socket == -1) RWMutexScope(stripe->rw_mutex, 1)
+    {
+      // rjf: try to get socket again, now that we have the write lock
+      W32_SOCK_Connection *con = 0;
+      for(W32_SOCK_Connection *c = slot->first; c != 0; c = c->next)
+      {
+        if(MemoryMatchStruct(&c->endpoint, &t->endpoint))
+        {
+          con = c;
+          break;
+        }
+      }
+      
+      // rjf: no socket still? -> create
+      if(con == 0)
+      {
+        // rjf: convert endpoint -> sockaddr
+        struct sockaddr_storage endpoint_sockaddr = {0};
+        int endpoint_sockaddr_size = 0;
+        {
+          switch(t->endpoint.kind)
           {
-            int error = WSAGetLastError();
-            if(error == WSAECONNRESET)
+            default:{}break;
+            case SOCK_EndpointKind_IPv4:
             {
-              DLLRemove(slot->first, slot->last, c);
-              c->next = stripe->free;
-              stripe->free = c;
-            }
+              struct sockaddr_in *dst = (struct sockaddr_in *)(&endpoint_sockaddr);
+              endpoint_sockaddr_size = sizeof(*dst);
+              dst->sin_family = AF_INET;
+              dst->sin_port = htons(t->endpoint.port);
+              MemoryCopy(&dst->sin_addr, &t->endpoint.address_u32[0], sizeof(U32));
+            }break;
+            case SOCK_EndpointKind_IPv6:
+            {
+              struct sockaddr_in6 *dst = (struct sockaddr_in6 *)(&endpoint_sockaddr);
+              endpoint_sockaddr_size = sizeof(*dst);
+              dst->sin6_family = AF_INET6;
+              dst->sin6_port = htons(t->endpoint.port);
+              MemoryCopy(&dst->sin6_addr, &t->endpoint.address_u128[0], sizeof(U128));
+            }break;
+          }
+        }
+        
+        // rjf: create
+        SOCKET new_socket = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+        connect(new_socket, (struct sockaddr *)&endpoint_sockaddr, endpoint_sockaddr_size);
+        
+        // rjf: store in cache
+        con = (W32_SOCK_Connection *)stripe->free;
+        if(con != 0)
+        {
+          stripe->free = con->next;
+        }
+        else
+        {
+          con = push_array(stripe->arena, W32_SOCK_Connection, 1);
+        }
+        con->endpoint = t->endpoint;
+        con->protocol = SOCK_Protocol_TCP;
+        con->socket = new_socket;
+        DLLPushBack(slot->first, slot->last, con);
+        
+        // rjf: associate this socket with iocp
+        CreateIoCompletionPort((HANDLE)new_socket, session->iocp, 0, 0);
+        MemoryZeroStruct(&con->recv_overlapped);
+        
+        // rjf: kick off receive on this socket
+        WSABUF buf = {sizeof(con->recv_buffer), con->recv_buffer};
+        DWORD flags = MSG_PUSH_IMMEDIATE;
+        WSARecv(con->socket, &buf, 1, &con->recv_size, &flags, &con->recv_overlapped, 0);
+      }
+      
+      // rjf: get socket from cache
+      ep_socket = con->socket;
+    }
+    
+    // rjf: got socket? -> send
+    B32 send_failed = 0;
+    if(ep_socket != -1 && send(ep_socket, t->data.str, t->data.size, 0) == SOCKET_ERROR)
+    {
+      int error = WSAGetLastError();
+      if(error == WSAECONNRESET)
+      {
+        send_failed = 1;
+      }
+    }
+    
+    // rjf: got a socket, but send failed? -> connection closed
+    if(ep_socket != -1 && send_failed)
+    {
+      RWMutexScope(stripe->rw_mutex, 1)
+      {
+        for(W32_SOCK_Connection *c = slot->first; c != 0; c = c->next)
+        {
+          if(MemoryMatchStruct(&c->endpoint, &t->endpoint))
+          {
+            DLLRemove(slot->first, slot->last, c);
+            c->next = stripe->free;
+            stripe->free = c;
           }
         }
       }

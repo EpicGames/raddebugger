@@ -940,6 +940,10 @@ entry_point(CmdLine *cmd_line)
           {
             StringJoin join = {s(""), s("\0"), s("")};
             String8 msg = str8_list_join(scratch.arena, &rd_state->cmd_outputs, &join);
+            if(msg.size == 0)
+            {
+              msg = s("done");
+            }
             sock_send(icp_sock_session, ipc_protocol, ipc_endpoint, msg, now_time_us()+5000000);
           }
         }
@@ -952,6 +956,43 @@ entry_point(CmdLine *cmd_line)
     {
       Temp scratch = scratch_begin(0, 0);
       
+      //- rjf: create socket session
+      SOCK_Session ipc_sock_session = sock_session_open(0, 0);
+      
+      //- rjf: form target raddbg endpoint address
+      SOCK_Endpoint endpoint = {0};
+      {
+        endpoint.address_u8[0] = 127;
+        endpoint.address_u8[3] = 1;
+        endpoint.port = (U16)ipc_port;
+      }
+      
+      //- rjf: form message from command line inputs
+      String8List parts = {0};
+      {
+        for EachIndex(idx, cmd_line->argc-1)
+        {
+          str8_list_push(scratch.arena, &parts, str8_cstring(cmd_line->argv[idx+1]));
+        }
+      }
+      StringJoin join = {str8_lit(""), str8_lit(" "), str8_lit("")};
+      String8 msg = str8_list_join(scratch.arena, &parts, &join);
+      
+      //- rjf: send to server, get outputs
+      String8List outputs = {0};
+      if(sock_send(ipc_sock_session, SOCK_Protocol_TCP, endpoint, msg, now_time_us()+10000000))
+      {
+        SOCK_Protocol outputs_protocol = SOCK_Protocol_TCP;
+        SOCK_Endpoint outputs_endpoint = {0};
+        String8 output_data = {0};
+        if(sock_recv(scratch.arena, ipc_sock_session, &outputs_protocol, &outputs_endpoint, &output_data, now_time_us()+10000000))
+        {
+          U8 split_char = 0;
+          outputs = str8_split(scratch.arena, output_data, &split_char, 1, 0);
+        }
+      }
+      
+#if 0
       //- rjf: grab explicit PID argument
       U32 dst_pid = 0;
       if(cmd_line_has_argument(cmd_line, str8_lit("pid")))
@@ -1040,6 +1081,7 @@ entry_point(CmdLine *cmd_line)
           semaphore_drop(ipc_main2sender_lock_semaphore);
         }
       }
+#endif
       
       //- rjf: write outputs to stdout
       for(String8Node *n = outputs.first; n != 0; n = n->next)
