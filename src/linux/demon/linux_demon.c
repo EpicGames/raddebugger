@@ -2302,12 +2302,52 @@ dmn_ctrl_run(Arena *arena, DMN_CtrlCtx *ctx, DMN_RunCtrls *ctrls)
           thread->pass_through_signo = wstopsig;
           
           // rjf: determine if this is a repeat
-          B32 is_second_chance = (thread->last_exception_ip == exception_ip &&
+          local_persist B8 signo_is_repeatable_table[] =
+          {
+            0, // null
+            1, // SIGHUP           1
+            1, // SIGINT           2
+            1, // SIGQUIT          3
+            1, // SIGILL           4
+            1, // SIGTRAP          5
+            1, // SIGABRT/SIGIOT   6
+            1, // SIGBUS           7
+            1, // SIGFPE           8
+            1, // SIGKILL          9
+            1, // SIGUSR1         10
+            1, // SIGSEGV         11
+            1, // SIGUSR2         12
+            1, // SIGPIPE         13
+            1, // SIGALRM         14
+            1, // SIGTERM         15
+            1, // SIGSTKFLT       16
+            0, // SIGCHLD         17
+            0, // SIGCONT         18
+            1, // SIGSTOP         19
+            1, // SIGTSTP         20
+            1, // SIGTTIN         21
+            1, // SIGTTOU         22
+            0, // SIGURG          23
+            1, // SIGXCPU         24
+            1, // SIGXFSZ         25
+            1, // SIGVTALRM       26
+            1, // SIGPROF         27
+            0, // SIGWINCH        28
+            1, // SIGIO           29
+            1, // SIGPWR          30
+            1, // SIGSYS/SIGUNUSED31
+          };
+          B32 is_repeatable = (wstopsig < ArrayCount(signo_is_repeatable_table)) ? signo_is_repeatable_table[wstopsig] : 0;
+          B32 is_second_chance = (is_repeatable &&
+                                  thread->last_exception_ip == exception_ip &&
                                   thread->last_exception_signo == wstopsig);
           
           // rjf: store this last exception info
-          thread->last_exception_ip = exception_ip;
-          thread->last_exception_signo = wstopsig;
+          if(is_repeatable)
+          {
+            thread->last_exception_ip = exception_ip;
+            thread->last_exception_signo = wstopsig;
+          }
           
           // rjf: report as exception
           DMN_Event *e = dmn_event_list_push(arena, &events);
