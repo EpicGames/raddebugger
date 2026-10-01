@@ -1202,7 +1202,7 @@ dw2_read_line_table_header(Arena *arena, DW_Raw *raw, DW2_ParseCtx *ctx, String8
 //~ rjf: String Offset Table Parsing (.debug_str_offsets)
 
 internal U64
-dw2_read_offset_table(String8 data, U64 off, DW2_OffsetTable *out)
+dw2_read_offset_table(String8 data, U64 off, B32 offset_count_entry, DW2_OffsetTable *out)
 {
   U64 start_off = off;
   {
@@ -1225,11 +1225,34 @@ dw2_read_offset_table(String8 data, U64 off, DW2_OffsetTable *out)
       off += str8_deserial_read_struct(data, off, &addr_size);
       off += str8_deserial_read_struct(data, off, &segment_selector_size);
       
-      // rjf: determine entry size
-      U64 entry_size = dw_addr_size_from_format(format);
-      if(addr_size != 0)
+      // rjf: 0 addr size / segment selector size -> this is an offset table (e.g. stroffs).
+      // this means the table immediately follows the header, and the entry size is based
+      // on the format.
+      U64 entry_size = 0;
+      U64 entry_count = 0;
+      if(addr_size == 0 && segment_selector_size == 0)
+      {
+        entry_size = dw_addr_size_from_format(format);
+        entry_count = (unit_data_off_opl - off) / entry_size;
+      }
+      
+      // rjf: nonzero addr size / segment selector size -> if we have an explicitly
+      // stored offset count entry, we need to parse it
+      else if(offset_count_entry)
+      {
+        entry_size = dw_addr_size_from_format(format);
+        off += str8_deserial_read(data, off, &entry_count, 4, 4);
+        U64 entry_count_cap = (unit_data_off_opl - off) / entry_size;
+        entry_count = Min(entry_count, entry_count_cap);
+      }
+      
+      // rjf: nonzero addr size / segment selector size -> no stored offset count,
+      // then we infer the entry count from the data remaining, as we are just
+      // storing address pairs.
+      else
       {
         entry_size = addr_size + segment_selector_size;
+        entry_count = (unit_data_off_opl - off) / entry_size;
       }
       
       // rjf: fill table info
@@ -1238,7 +1261,8 @@ dw2_read_offset_table(String8 data, U64 off, DW2_OffsetTable *out)
       out->addr_size             = addr_size;
       out->segment_selector_size = segment_selector_size;
       out->entry_size            = entry_size;
-      out->entries_count         = (unit_data_off_opl - off) / out->entry_size;
+      out->entries_count         = entry_count;
+      out->entries_are_addrs     = (!offset_count_entry && addr_size != 0);
       out->entries               = data.str + off;
       
       // rjf: skip table
@@ -1250,14 +1274,14 @@ dw2_read_offset_table(String8 data, U64 off, DW2_OffsetTable *out)
 }
 
 internal DW2_OffsetTableList
-dw2_offset_table_list_from_data(Arena *arena, String8 data)
+dw2_offset_table_list_from_data(Arena *arena, String8 data, B32 offset_count_entry)
 {
   DW2_OffsetTableList list = {0};
   for(U64 off = 0; off < data.size;)
   {
     U64 start_off = off;
     DW2_OffsetTable table = {0};
-    off += dw2_read_offset_table(data, off, &table);
+    off += dw2_read_offset_table(data, off, offset_count_entry, &table);
     if(table.entries != 0)
     {
       DW2_OffsetTableNode *n = push_array(arena, DW2_OffsetTableNode, 1);
@@ -1282,7 +1306,7 @@ dw2_try_offset_from_table_idx(DW2_OffsetTable *tbl, U64 idx, U64 *out)
   {
     U64 entry_size = tbl->entry_size;
     U64 entry_off = idx * entry_size;
-    if(tbl->addr_size != 0)
+    if(tbl->entries_are_addrs)
     {
       U64 segment_off = entry_off;
       U64 addr_off = entry_off + tbl->segment_selector_size;
@@ -1310,22 +1334,24 @@ dw2_offset_table_set_from_raw(Arena *arena, DW_Raw *raw)
     struct
     {
       String8 data;
+      B32 offset_count_entry;
       U64 *tables_count_out;
       DW2_OffsetTable **tables_out;
       Rng1U64 **tables_ranges_out;
     }
     tasks[] =
     {
-      {raw->sec[DW_SectionKind_StrOffsets].data, &result.str_offsets_tables_count, &result.str_offsets_tables, &result.str_offsets_tables_ranges},
-      {raw->sec[DW_SectionKind_RngLists].data, &result.rnglists_tables_count, &result.rnglists_tables, &result.rnglists_tables_ranges},
-      {raw->sec[DW_SectionKind_Addr].data, &result.addr_tables_count, &result.addr_tables, &result.addr_tables_ranges},
-      {raw->sec[DW_SectionKind_LocLists].data, &result.loclists_tables_count, &result.loclists_tables, &result.loclists_tables_ranges},
+      {raw->sec[DW_SectionKind_StrOffsets].data, 0, &result.str_offsets_tables_count, &result.str_offsets_tables, &result.str_offsets_tables_ranges},
+      {raw->sec[DW_SectionKind_RngLists].data, 1, &result.rnglists_tables_count, &result.rnglists_tables, &result.rnglists_tables_ranges},
+      {raw->sec[DW_SectionKind_Addr].data, 0, &result.addr_tables_count, &result.addr_tables, &result.addr_tables_ranges},
+      {raw->sec[DW_SectionKind_LocLists].data, 1, &result.loclists_tables_count, &result.loclists_tables, &result.loclists_tables_ranges},
     };
     for EachElement(task_idx, tasks)
     {
       Temp scratch = scratch_begin(&arena, 1);
       String8 data = tasks[task_idx].data;
-      DW2_OffsetTableList tables = dw2_offset_table_list_from_data(scratch.arena, data);
+      B32 offset_count_entry = tasks[task_idx].offset_count_entry;
+      DW2_OffsetTableList tables = dw2_offset_table_list_from_data(scratch.arena, data, offset_count_entry);
       tasks[task_idx].tables_count_out[0] = tables.count;
       tasks[task_idx].tables_out[0] = push_array(arena, DW2_OffsetTable, tables.count);
       tasks[task_idx].tables_ranges_out[0] = push_array(arena, Rng1U64, tables.count);
@@ -1421,7 +1447,10 @@ dw2_rnglist_from_form_val(Arena *arena, DW2_ParseCtx *ctx, DW_Raw *raw, DW2_Form
         if(ctx->rnglists_table != 0)
         {
           U64 rnglist_off_idx = form_val.u128.u64[0];
-          dw2_try_offset_from_table_idx(ctx->rnglists_table, rnglist_off_idx, &rnglist_off);
+          U64 rnglist_off_from_off_array = 0;
+          dw2_try_offset_from_table_idx(ctx->rnglists_table, rnglist_off_idx, &rnglist_off_from_off_array);
+          U64 rnglist_off_array_base_off = (U64)((U8 *)ctx->rnglists_table->entries - data.str);
+          rnglist_off = rnglist_off_array_base_off + rnglist_off_from_off_array;
         }break;
       }
       
@@ -1624,7 +1653,7 @@ dw2_loclist_from_form_val(Arena *arena, DW2_ParseCtx *ctx, DW_Raw *raw, DW2_Form
           loclist_off = form_val.u128.u64[0];
         }break;
         case DW_FormKind_LocListx:
-        if(ctx->rnglists_table != 0)
+        if(ctx->loclists_table != 0)
         {
           U64 loclist_off_idx = form_val.u128.u64[0];
           dw2_try_offset_from_table_idx(ctx->loclists_table, loclist_off_idx, &loclist_off);
