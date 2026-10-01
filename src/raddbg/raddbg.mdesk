@@ -469,17 +469,17 @@ RD_VocabTable:
         linux_sigsegv: bool,
       @display_name("Break on Linux SIGUSR2") @default(1) @description("User-defined signal 2 (Code: 12)")
         linux_sigusr2: bool,
-      @display_name("Break on Linux SIGPIPE") @default(1) @description("Broken pipe; write to pipe with no readers (Code: 13)")
+      @display_name("Break on Linux SIGPIPE") @default(0) @description("Broken pipe; write to pipe with no readers (Code: 13)")
         linux_sigpipe: bool,
-      @display_name("Break on Linux SIGALRM") @default(1) @description("Timer signal (Code: 14)")
+      @display_name("Break on Linux SIGALRM") @default(0) @description("Timer signal (Code: 14)")
         linux_sigalrm: bool,
       @display_name("Break on Linux SIGTERM") @default(1) @description("Termination signal (Code: 15)")
         linux_sigterm: bool,
       @display_name("Break on Linux SIGSTKFLT") @default(1) @description("Stack fault on coprocessor (Code: 16)")
         linux_sigstkflt: bool,
-      @display_name("Break on Linux SIGCHLD") @default(1) @description("Child stopped, terminated, or continued (Code: 17)")
+      @display_name("Break on Linux SIGCHLD") @default(0) @description("Child stopped, terminated, or continued (Code: 17)")
         linux_sigchld: bool,
-      @display_name("Break on Linux SIGCONT") @default(1) @description("Continue if stopped (Code: 18)")
+      @display_name("Break on Linux SIGCONT") @default(0) @description("Continue if stopped (Code: 18)")
         linux_sigcont: bool,
       @display_name("Break on Linux SIGSTOP") @default(1) @description("Stop process (Code: 19)")
         linux_sigstop: bool,
@@ -489,19 +489,19 @@ RD_VocabTable:
         linux_sigttin: bool,
       @display_name("Break on Linux SIGTTOU") @default(1) @description("Terminal output for background process (Code: 22)")
         linux_sigttou: bool,
-      @display_name("Break on Linux SIGURG") @default(1) @description("Urgent condition on socket (Code: 23)")
+      @display_name("Break on Linux SIGURG") @default(0) @description("Urgent condition on socket (Code: 23)")
         linux_sigurg: bool,
       @display_name("Break on Linux SIGXCPU") @default(1) @description("CPU time limit exceeded (Code: 24)")
         linux_sigxcpu: bool,
       @display_name("Break on Linux SIGXFSZ") @default(1) @description("File size limit exceeded (Code: 25)")
         linux_sigxfsz: bool,
-      @display_name("Break on Linux SIGVTALRM") @default(1) @description("Virtual alarm clock (Code: 26)")
+      @display_name("Break on Linux SIGVTALRM") @default(0) @description("Virtual alarm clock (Code: 26)")
         linux_sigvtalrm: bool,
-      @display_name("Break on Linux SIGPROF") @default(1) @description("Profiling timer expired (Code: 27)")
+      @display_name("Break on Linux SIGPROF") @default(0) @description("Profiling timer expired (Code: 27)")
         linux_sigprof: bool,
-      @display_name("Break on Linux SIGWINCH") @default(1) @description("Window resize signal (Code: 28)")
+      @display_name("Break on Linux SIGWINCH") @default(0) @description("Window resize signal (Code: 28)")
         linux_sigwinch: bool,
-      @display_name("Break on Linux SIGIO") @default(1) @description("I/O now possible (Code: 29)")
+      @display_name("Break on Linux SIGIO") @default(0) @description("I/O now possible (Code: 29)")
         linux_sigio: bool,
       @display_name("Break on Linux SIGPWR") @default(1) @description("Power failure (Code: 30)")
         linux_sigpwr: bool,
