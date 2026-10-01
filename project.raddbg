@@ -1,4 +1,4 @@
-// raddbg 0.9.29 project file
+// raddbg 0.9.30 project file
 
 name: "The RAD Debugger"
 target:
@@ -7,7 +7,6 @@ target:
   working_directory: build
   arguments: "--user:raddbg_test.user"
   debug_subprocesses: 0
-  enabled: 1
 }
 target:
 {
@@ -36,6 +35,7 @@ target:
   executable: "build/raddbg"
   working_directory: build
   arguments: "--user:raddbg_test.user"
+  enabled: 1
 }
 target:
 {
