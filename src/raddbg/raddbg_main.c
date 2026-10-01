@@ -5,6 +5,11 @@
 //~ rjf: linux TODO notes
 //
 // post initial alpha:
+// [ ] 0x1b (SIGPROF) - need to ignore by default
+// [ ] line stepping over function epilogue seems to end up just resuming in some cases
+// [ ] function breakpoint resolution racing
+// [ ] conditional breakpoint evaluation bug
+//
 // [ ] windowing
 //  [ ] wayland
 // [ ] support

@@ -106,6 +106,37 @@ D_ExceptionCodeKind_Win32ProcedureNotFound,
 D_ExceptionCodeKind_Win32SanitizerErrorDetected,
 D_ExceptionCodeKind_Win32SanitizerRawAccessViolation,
 D_ExceptionCodeKind_Win32DirectXDebugLayer,
+D_ExceptionCodeKind_LinuxSIGHUP,
+D_ExceptionCodeKind_LinuxSIGINT,
+D_ExceptionCodeKind_LinuxSIGQUIT,
+D_ExceptionCodeKind_LinuxSIGILL,
+D_ExceptionCodeKind_LinuxSIGTRAP,
+D_ExceptionCodeKind_LinuxSIGABRT,
+D_ExceptionCodeKind_LinuxSIGBUS,
+D_ExceptionCodeKind_LinuxSIGFPE,
+D_ExceptionCodeKind_LinuxSIGKILL,
+D_ExceptionCodeKind_LinuxSIGUSR1,
+D_ExceptionCodeKind_LinuxSIGSEGV,
+D_ExceptionCodeKind_LinuxSIGUSR2,
+D_ExceptionCodeKind_LinuxSIGPIPE,
+D_ExceptionCodeKind_LinuxSIGALRM,
+D_ExceptionCodeKind_LinuxSIGTERM,
+D_ExceptionCodeKind_LinuxSIGSTKFLT,
+D_ExceptionCodeKind_LinuxSIGCHLD,
+D_ExceptionCodeKind_LinuxSIGCONT,
+D_ExceptionCodeKind_LinuxSIGSTOP,
+D_ExceptionCodeKind_LinuxSIGTSTP,
+D_ExceptionCodeKind_LinuxSIGTTIN,
+D_ExceptionCodeKind_LinuxSIGTTOU,
+D_ExceptionCodeKind_LinuxSIGURG,
+D_ExceptionCodeKind_LinuxSIGXCPU,
+D_ExceptionCodeKind_LinuxSIGXFSZ,
+D_ExceptionCodeKind_LinuxSIGVTALRM,
+D_ExceptionCodeKind_LinuxSIGPROF,
+D_ExceptionCodeKind_LinuxSIGWINCH,
+D_ExceptionCodeKind_LinuxSIGIO,
+D_ExceptionCodeKind_LinuxSIGPWR,
+D_ExceptionCodeKind_LinuxSIGSYS,
 D_ExceptionCodeKind_COUNT,
 } D_ExceptionCodeKind;
 
@@ -133,10 +164,11 @@ struct {B32 *value_ptr; String8 name;} DEV_toggle_table[] =
 C_LINKAGE_BEGIN
 extern String8 d_entity_kind_code_name_table[13];
 extern String8 d_entity_kind_display_string_table[13];
-extern U32 d_exception_code_kind_code_table[38];
-extern String8 d_exception_code_kind_display_string_table[38];
-extern String8 d_exception_code_kind_lowercase_code_string_table[38];
-extern B8 d_exception_code_kind_default_enable_table[38];
+extern U32 d_exception_code_kind_code_table[69];
+extern OperatingSystem d_exception_code_kind_os_table[69];
+extern String8 d_exception_code_kind_display_string_table[69];
+extern String8 d_exception_code_kind_lowercase_code_string_table[69];
+extern B8 d_exception_code_kind_default_enable_table[69];
 
 C_LINKAGE_END
 
