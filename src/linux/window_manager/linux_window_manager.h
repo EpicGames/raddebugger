@@ -12,6 +12,7 @@
 #include <X11/cursorfont.h>
 #include <X11/extensions/sync.h>
 #include <X11/extensions/Xfixes.h>
+#include <X11/extensions/Xrandr.h>
 #include <X11/keysym.h>
 #include <X11/keysymdef.h>
 #include <poll.h>

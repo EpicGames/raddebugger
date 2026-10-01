@@ -40,7 +40,7 @@ jobs:
         shell: bash
         run: |
           sudo apt-get update
-          sudo apt-get install --no-install-recommends -y pkg-config libfreetype6-dev libx11-dev libxext-dev libxfixes-dev libgl1-mesa-dev libegl1-mesa-dev
+          sudo apt-get install --no-install-recommends -y pkg-config libfreetype6-dev libx11-dev libxext-dev libxfixes-dev libxrandr-dev libgl1-mesa-dev libegl1-mesa-dev
 
       - name: Install clang-17 Dependencies
         if: ${{ matrix.compiler == 'clang-17' }}
@@ -162,7 +162,7 @@ jobs:
           wget -O - https://apt.llvm.org/llvm-snapshot.gpg.key | sudo apt-key add -
           sudo apt-add-repository -y "deb http://apt.llvm.org/noble/ llvm-toolchain-noble-22 main"
           sudo apt-get update
-          sudo apt-get install -y clang-22 lld-22 llvm-22 gcc-14 pkg-config libfreetype6-dev libx11-dev libxext-dev libxfixes-dev libgl1-mesa-dev libegl1-mesa-dev
+          sudo apt-get install -y clang-22 lld-22 llvm-22 gcc-14 pkg-config libfreetype6-dev libx11-dev libxext-dev libxfixes-dev libxrandr-dev libgl1-mesa-dev libegl1-mesa-dev
           # crash callstack symbolizer depends on LLVM
           sudo ln -s /usr/bin/llvm-symbolizer-22 /usr/bin/llvm-symbolizer
       - name: Run

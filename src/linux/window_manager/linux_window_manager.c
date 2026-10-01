@@ -374,10 +374,40 @@ wm_init(void)
   //- rjf: open im
   lnx_wm_state->xim = XOpenIM(lnx_wm_state->display, 0, 0, 0);
   
-  //- rjf: fill out gfx info
+  //- rjf: fill out default gfx info
   lnx_wm_state->gfx_info.double_click_time = 0.5f;
   lnx_wm_state->gfx_info.caret_blink_time = 0.5f;
   lnx_wm_state->gfx_info.default_refresh_rate = 60.f;
+  
+  //- rjf: determine default refresh rate
+  {
+    XRRScreenResources *res = XRRGetScreenResourcesCurrent(lnx_wm_state->display, DefaultRootWindow(lnx_wm_state->display));
+    for EachIndex(idx, res->noutput)
+    {
+      XRROutputInfo *out_info = XRRGetOutputInfo(lnx_wm_state->display, res, res->outputs[idx]);
+      if(out_info && out_info->connection == RR_Connected && out_info->crtc != None)
+      {
+        XRRCrtcInfo *crtc_info = XRRGetCrtcInfo(lnx_wm_state->display, res, out_info->crtc);
+        if(crtc_info)
+        {
+          for EachIndex(mode_idx, res->nmode)
+          {
+            if(res->modes[mode_idx].id == crtc_info->mode)
+            {
+              XRRModeInfo *mode_info = &res->modes[mode_idx];
+              if(mode_info->vTotal != 0 && mode_info->hTotal != 0)
+              {
+                lnx_wm_state->gfx_info.default_refresh_rate = (F32)mode_info->dotClock / ((F32)mode_info->hTotal * (F32)mode_info->vTotal);
+              }
+            }
+          }
+          XRRFreeCrtcInfo(crtc_info);
+        }
+        XRRFreeOutputInfo(out_info);
+      }
+    }
+    XRRFreeScreenResources(res);
+  }
   
   //- rjf: fill out cursors
   {
