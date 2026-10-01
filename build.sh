@@ -3,22 +3,24 @@ set -eu
 cd "$(dirname "$0")"
 
 # --- Unpack Arguments --------------------------------------------------------
+auto_compile_flags=""
 for arg in "$@"; do declare $arg='1'; done
 if [[ "$#" == "0" ]]; then raddbg='1'; fi
-cc_sanitize=""
+if [[ "$#" == "1" && "${release:-0}" == "1" ]]; then raddbg='1'; fi
 if [[ "${asan:-0}" == "1" ]]; then
   echo "[asan enabled]"
-  cc_sanitize="-fsanitize=address"
+  auto_compile_flags="-fsanitize=address"
 fi
 
-# --- Get Current Git Commit Id -----------------------------------------------
-git_hash=$(git describe --always --dirty)
-git_hash_full=$(git rev-parse HEAD)
+# --- Mix Git Commit ID -------------------------------------------------------
+if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  auto_compile_flags="-DBUILD_GIT_HASH=\"$(git describe --always --dirty)\" -DBUILD_GIT_HASH_FULL=$(git rev-parse HEAD)"
+fi
 
 # --- Compile/Link Line Definitions -------------------------------------------
 cc_cflags_gcc=""
-cc_cflags_clang=${cc_sanitize}" -fdiagnostics-absolute-paths -Wno-for-loop-analysis  -Wno-incompatible-pointer-types-discards-qualifiers -Wno-initializer-overrides -Wno-compare-distinct-pointer-types -Wno-single-bit-bitfield-constant-conversion -Wno-deprecated-declarations -Wno-writable-strings -Wno-unknown-warning-option -Wno-deprecated-register -Wno-unused-local-typedef -msse2"
-cc_common="-mcx16 -I../src/ -I../local/ -D_GNU_SOURCE -g -DBUILD_GIT_HASH=\"$git_hash\" -DBUILD_GIT_HASH_FULL=\"$git_hash_full\" -Wall -Wno-missing-braces -Wno-unused-function -Wno-unused-variable -Wno-unused-but-set-variable -Wno-unused-value -D_USE_MATH_DEFINES -Dstrdup=_strdup -Dgnu_printf=printf"
+cc_cflags_clang=" -fdiagnostics-absolute-paths -Wno-for-loop-analysis  -Wno-incompatible-pointer-types-discards-qualifiers -Wno-initializer-overrides -Wno-compare-distinct-pointer-types -Wno-single-bit-bitfield-constant-conversion -Wno-deprecated-declarations -Wno-writable-strings -Wno-unknown-warning-option -Wno-deprecated-register -Wno-unused-local-typedef -msse2"
+cc_common=${auto_compile_flags}"-mcx16 -I../src/ -I../local/ -D_GNU_SOURCE -g -Wall -Wno-missing-braces -Wno-unused-function -Wno-unused-variable -Wno-unused-but-set-variable -Wno-unused-value -D_USE_MATH_DEFINES -Dstrdup=_strdup -Dgnu_printf=printf"
 cc_debug="-g -O0 -DBUILD_DEBUG=1 ${cc_common}"
 cc_release="-g -O2 -DBUILD_DEBUG=0 ${cc_common}"
 cc_link="-lpthread -lm -lrt -ldl"
@@ -58,7 +60,7 @@ compile() {
 mkdir -p build local
 
 # --- Build & Run Metaprogram -------------------------------------------------
-if [[ "${no_meta:-0}" == "0" ]]
+if [[ "${meta:-0}" == "1" ]]
 then
   echo "[building metagen]"
   cd build

@@ -69,6 +69,13 @@ if "%pgo%"=="1" (
   )
 )
 
+:: --- Mix Git Commit ID ------------------------------------------------------
+git rev-parse --is-inside-work-tree >nul 2>&1 && set in_git_tree=1
+if "%in_git_tree%"=="1" (
+  for /f %%i in ('call git describe --always --dirty')   do set auto_compile_flags=!auto_compile_flags! -DBUILD_GIT_HASH=\"%%i\"
+  for /f %%i in ('call git rev-parse HEAD')              do set auto_compile_flags=!auto_compile_flags! -DBUILD_GIT_HASH_FULL=\"%%i\"
+)
+
 :: --- Compile/Link Line Definitions ------------------------------------------
 set cl_common=     /I..\src\ /I..\local\ /nologo /FC /Z7 /Zc:preprocessor
 set cl_debug=      call cl /Od /Ob1 /DBUILD_DEBUG=1 %cl_common% %auto_compile_flags% 
@@ -126,10 +133,6 @@ if not exist local mkdir local
 pushd build
 %rc% /nologo /fo logo.res ..\data\logo.rc || exit /b 1
 popd
-
-:: --- Get Current Git Commit Id ----------------------------------------------
-for /f %%i in ('call git describe --always --dirty')   do set compile=%compile% -DBUILD_GIT_HASH=\"%%i\"
-for /f %%i in ('call git rev-parse HEAD')              do set compile=%compile% -DBUILD_GIT_HASH_FULL=\"%%i\"
 
 :: --- Build & Run Metaprogram ------------------------------------------------
 pushd build

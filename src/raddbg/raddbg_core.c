@@ -1830,7 +1830,9 @@ rd_view_ui(Rng2F32 rect)
             UI_TagF("weak")
           {
             ui_label(s(BUILD_VERSION_STRING_LITERAL " " BUILD_RELEASE_PHASE_STRING_LITERAL));
+#if defined(BUILD_GIT_HASH)
             ui_label(s(BUILD_GIT_HASH));
+#endif
           }
         }
         
