@@ -179,6 +179,8 @@ struct LNX_DMN_Thread
   B32 is_reg_block_dirty;
   B32 pass_through_signal;
   B32 ghost_trap;
+  U64 last_exception_ip;
+  U64 last_exception_signo;
   U64 last_name_hash;
   U64 name_gather_time_us;
   U64 pass_through_signo;

@@ -1792,6 +1792,7 @@ dmn_ctrl_run(Arena *arena, DMN_CtrlCtx *ctx, DMN_RunCtrls *ctrls)
       // wifexited -> normal process exit via _exit or exit()
       // wifsignaled -> exit because child did not handle a signal
       //
+      B32 is_exception = 0;
       if(!signal_handled && (wifexited || wifsignaled))
       {
         thread_done = 1;
@@ -2291,15 +2292,32 @@ dmn_ctrl_run(Arena *arena, DMN_CtrlCtx *ctx, DMN_RunCtrls *ctrls)
         //
         else
         {
+          is_exception = 1;
+          
+          // rjf: unpack ip
+          U64 exception_ip = lnx_dmn_ip_from_thread(thread);
+          
+          // rjf: pass this signal back
           thread->pass_through_signal = 1;
           thread->pass_through_signo = wstopsig;
+          
+          // rjf: determine if this is a repeat
+          B32 is_second_chance = (thread->last_exception_ip == exception_ip &&
+                                  thread->last_exception_signo == wstopsig);
+          
+          // rjf: store this last exception info
+          thread->last_exception_ip = exception_ip;
+          thread->last_exception_signo = wstopsig;
+          
+          // rjf: report as exception
           DMN_Event *e = dmn_event_list_push(arena, &events);
           e->kind                = DMN_EventKind_Exception;
           e->process             = lnx_dmn_handle_from_process(thread->process);
           e->thread              = lnx_dmn_handle_from_thread(thread);
-          e->instruction_pointer = lnx_dmn_ip_from_thread(thread);
-          e->address             = e->instruction_pointer;
+          e->instruction_pointer = exception_ip;
+          e->address             = exception_ip;
           e->code                = wstopsig;
+          e->exception_repeated  = is_second_chance;
           if(wstopsig == SIGSEGV)
           {
             siginfo_t si = {0};
@@ -2307,6 +2325,15 @@ dmn_ctrl_run(Arena *arena, DMN_CtrlCtx *ctx, DMN_RunCtrls *ctrls)
             e->address = (U64)si.si_addr;
           }
         }
+      }
+      
+      //////////////////////////
+      //- rjf: not exception? -> clear this thread's last exception info
+      //
+      if(!is_exception && thread != 0)
+      {
+        thread->last_exception_ip = 0;
+        thread->last_exception_signo = 0;
       }
       
       //////////////////////////
