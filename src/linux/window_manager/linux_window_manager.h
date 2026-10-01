@@ -95,6 +95,8 @@ struct LNX_WM_State
   LNX_WM_WindowClientArea *free_client_area;
   long *icon_image_data;
   U64 icon_image_data_count;
+  WM_Modifiers modifier_state;
+  U64 key_down_state[(WM_Key_COUNT+63)/64];
 };
 
 ////////////////////////////////

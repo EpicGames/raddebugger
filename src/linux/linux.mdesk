@@ -1,0 +1,38 @@
+// Copyright (c) Epic Games Tools
+// Licensed under the MIT license (https://opensource.org/license/mit/)
+
+@table(name  code  repeatable) LNX_SignalCodeTable:
+{
+  { SIGHUP            1 1 }
+  { SIGINT            2 1 }
+  { SIGQUIT           3 1 }
+  { SIGILL            4 1 }
+  { SIGTRAP           5 1 }
+  { SIGABRT           6 1 }
+  { SIGIOT            6 1 }
+  { SIGBUS            7 1 }
+  { SIGFPE            8 1 }
+  { SIGKILL           9 1 }
+  { SIGUSR1          10 1 }
+  { SIGSEGV          11 1 }
+  { SIGUSR2          12 1 }
+  { SIGPIPE          13 1 }
+  { SIGALRM          14 1 }
+  { SIGTERM          15 1 }
+  { SIGSTKFLT        16 1 }
+  { SIGCHLD          17 0 }
+  { SIGCONT          18 0 }
+  { SIGSTOP          19 1 }
+  { SIGTSTP          20 1 }
+  { SIGTTIN          21 1 }
+  { SIGTTOU          22 1 }
+  { SIGURG           23 0 }
+  { SIGXCPU          24 1 }
+  { SIGXFSZ          25 1 }
+  { SIGVTALRM        26 1 }
+  { SIGPROF          27 1 }
+  { SIGWINCH         28 0 }
+  { SIGIO            29 1 }
+  { SIGPWR           30 1 }
+  { SIGSYS           31 1 }
+}

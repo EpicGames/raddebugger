@@ -1,0 +1,60 @@
+// Copyright (c) Epic Games Tools
+// Licensed under the MIT license (https://opensource.org/license/mit/)
+
+//- GENERATED CODE
+
+#ifndef WIN32_META_H
+#define WIN32_META_H
+
+typedef enum W32_ExceptionCodeKind
+{
+W32_ExceptionCodeKind_Null,
+W32_ExceptionCodeKind_CtrlC,
+W32_ExceptionCodeKind_CtrlBreak,
+W32_ExceptionCodeKind_WinRTOriginateError,
+W32_ExceptionCodeKind_WinRTTransformError,
+W32_ExceptionCodeKind_RPCCallCancelled,
+W32_ExceptionCodeKind_DatatypeMisalignment,
+W32_ExceptionCodeKind_AccessViolation,
+W32_ExceptionCodeKind_InPageError,
+W32_ExceptionCodeKind_InvalidHandle,
+W32_ExceptionCodeKind_NotEnoughQuota,
+W32_ExceptionCodeKind_IllegalInstruction,
+W32_ExceptionCodeKind_CannotContinueException,
+W32_ExceptionCodeKind_InvalidExceptionDisposition,
+W32_ExceptionCodeKind_ArrayBoundsExceeded,
+W32_ExceptionCodeKind_FloatingPointDenormalOperand,
+W32_ExceptionCodeKind_FloatingPointDivisionByZero,
+W32_ExceptionCodeKind_FloatingPointInexactResult,
+W32_ExceptionCodeKind_FloatingPointInvalidOperation,
+W32_ExceptionCodeKind_FloatingPointOverflow,
+W32_ExceptionCodeKind_FloatingPointStackCheck,
+W32_ExceptionCodeKind_FloatingPointUnderflow,
+W32_ExceptionCodeKind_IntegerDivisionByZero,
+W32_ExceptionCodeKind_IntegerOverflow,
+W32_ExceptionCodeKind_PrivilegedInstruction,
+W32_ExceptionCodeKind_StackOverflow,
+W32_ExceptionCodeKind_UnableToLocateDLL,
+W32_ExceptionCodeKind_OrdinalNotFound,
+W32_ExceptionCodeKind_EntryPointNotFound,
+W32_ExceptionCodeKind_DLLInitializationFailed,
+W32_ExceptionCodeKind_FloatingPointSSEMultipleFaults,
+W32_ExceptionCodeKind_FloatingPointSSEMultipleTraps,
+W32_ExceptionCodeKind_AssertionFailed,
+W32_ExceptionCodeKind_ModuleNotFound,
+W32_ExceptionCodeKind_ProcedureNotFound,
+W32_ExceptionCodeKind_SanitizerErrorDetected,
+W32_ExceptionCodeKind_SanitizerRawAccessViolation,
+W32_ExceptionCodeKind_DirectXDebugLayer,
+W32_ExceptionCodeKind_COUNT,
+} W32_ExceptionCodeKind;
+
+C_LINKAGE_BEGIN
+extern U32 w32_exception_code_kind_code_table[38];
+extern String8 w32_exception_code_kind_display_string_table[38];
+extern String8 w32_exception_code_kind_lowercase_code_string_table[38];
+extern B8 w32_exception_code_kind_default_enable_table[38];
+
+C_LINKAGE_END
+
+#endif // WIN32_META_H

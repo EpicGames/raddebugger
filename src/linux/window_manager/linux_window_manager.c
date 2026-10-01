@@ -1231,6 +1231,18 @@ wm_get_events(Arena *arena, B32 wait)
           B32 is_right_sided = 0;
           WM_Key key = lnx_wm_key_from_keysym(keysym, &is_right_sided);
           
+          // rjf: update modifier / key down state
+          if(evt.type == KeyPress)
+          {
+            lnx_wm_state->modifier_state |= modifiers;
+            lnx_wm_state->key_down_state[key/64] |= (1ull<<(key%64));
+          }
+          else
+          {
+            lnx_wm_state->modifier_state &= ~modifiers;
+            lnx_wm_state->key_down_state[key/64] &= ~(1ull<<(key%64));
+          }
+          
           // rjf: push text event
           if(evt.type == KeyPress && text_size != 0)
           {
@@ -1465,25 +1477,14 @@ wm_get_events(Arena *arena, B32 wait)
 internal WM_Modifiers
 wm_get_modifiers(void)
 {
-  WM_Modifiers mods = 0;
-  if(wm_key_is_down(WM_Key_Shift)) { mods |= WM_Modifier_Shift; }
-  if(wm_key_is_down(WM_Key_Alt))   { mods |= WM_Modifier_Alt; }
-  if(wm_key_is_down(WM_Key_Ctrl))  { mods |= WM_Modifier_Ctrl; }
+  WM_Modifiers mods = lnx_wm_state->modifier_state;
   return mods;
 }
 
 internal B32
 wm_key_is_down(WM_Key key)
 {
-  B32 result = 0;
-  {
-    char keys[32];
-    XQueryKeymap(lnx_wm_state->display, keys);
-    KeySym sym = lnx_wm_keysym_from_key(key);
-    KeyCode code = XKeysymToKeycode(lnx_wm_state->display, sym);
-    B32 is_down = !!(keys[code/8] & (1u<<(code%8)));
-    result = is_down;
-  }
+  B32 result = !!(lnx_wm_state->key_down_state[key/64] & (1ull<<(key%64)));
   return result;
 }
 

@@ -1339,6 +1339,7 @@ d_entity_store_apply_events(D_EntityCtxRWStore *store, D_EventList *list)
         if(process != &d_entity_nil)
         {
           D_Entity *thread = d_entity_alloc(store, process, D_EntityKind_Thread, event->arch, event->entity, (U64)event->entity_id);
+          thread->os = process->os;
           D_Entity *first_thread = d_entity_child_from_kind(process, D_EntityKind_Thread);
           if(first_thread == thread)
           {
@@ -1369,7 +1370,6 @@ d_entity_store_apply_events(D_EntityCtxRWStore *store, D_EventList *list)
           thread->stack_base = event->stack_base;
           thread->tls_root_vaddr = event->tls_root;
         }
-        //d_cached_ip_from_thread(&store->ctx, event->entity);
       }break;
       case D_EventKind_EndThread:
       {
@@ -1446,6 +1446,7 @@ d_entity_store_apply_events(D_EntityCtxRWStore *store, D_EventList *list)
         d_entity_equip_string(store, module, event->string);
         module->timestamp = event->timestamp;
         module->vaddr_range = event->vaddr_rng;
+        module->os = process->os;
         D_Entity *first_module = d_entity_child_from_kind(process, D_EntityKind_Module);
         if(first_module == module && process->string.size == 0)
         {
