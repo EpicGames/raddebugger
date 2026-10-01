@@ -21,7 +21,7 @@ sh_message(B32 error, String8 title, String8 message)
     Temp scratch = scratch_begin(0, 0);
     if(text_is_long)
     {
-      String8 cmd = str8f(scratch.arena, "echo \"%S\" | zenity --text-info --no-markup --title=\"%S\"", escaped_from_raw_str8(scratch.arena, message), title);
+      String8 cmd = str8f(scratch.arena, "printf \"%S\" | zenity --text-info --no-markup --title=\"%S\"", escaped_from_raw_str8(scratch.arena, message), title);
       FILE *f = popen((char *)cmd.str, "r");
       done = (f != 0);
       pclose(f);
