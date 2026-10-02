@@ -189,7 +189,7 @@ sh_install_or_uninstall_self(B32 write, B32 install)
       
       //- rjf: make symlink in binary path to this exe
       make_directory(str8_chop_last_slash(symlink_path));
-      symlink((char *)get_process_info()->binary_file_path.str, (char *)symlink_path.str);
+      LNX_RETRY_ON_EINTR(symlink((char *)get_process_info()->binary_file_path.str, (char *)symlink_path.str));
     }
     
     //- rjf: uninstall -> delete files

@@ -1141,7 +1141,7 @@ wm_get_events(Arena *arena, B32 wait)
       if(poll_fds[1].revents & POLLIN)
       {
         U64 dummy = 0;
-        read(lnx_wm_state->wakeup_fd, &dummy, sizeof(dummy));
+        LNX_RETRY_ON_EINTR(read(lnx_wm_state->wakeup_fd, &dummy, sizeof(dummy)));
         wait = 0;
       }
     }

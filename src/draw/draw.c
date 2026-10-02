@@ -437,13 +437,10 @@ dr_mesh(R_Handle mesh_vertices, R_Handle mesh_indices, R_GeoTopologyKind mesh_ge
     U64 buffer[] =
     {
       mesh_vertices.u64[0],
-      mesh_vertices.u64[1],
       mesh_indices.u64[0],
-      mesh_indices.u64[1],
       (U64)mesh_geo_topology,
       (U64)mesh_geo_vertex_flags,
       albedo_tex.u64[0],
-      albedo_tex.u64[1],
       (U64)dr_top_tex2d_sample_kind(),
     };
     hash = dr_hash_from_string(str8((U8 *)buffer, sizeof(buffer)));
