@@ -234,6 +234,8 @@ internal String8 str8f(Arena *arena, char *fmt, ...);
 #define push_str8f(arena, ...) str8f((arena), __VA_ARGS__)
 internal String8 push_cstr(Arena *arena, String8 str); // TODO(rjf): this is unnecessary - this is implied by `push_str8_copy`. need to remove.
 
+#define sf(...) str8f((scratch.arena), __VA_ARGS__)
+
 ////////////////////////////////
 //~ rjf: String <=> Integer Conversions
 

@@ -11861,13 +11861,13 @@ rd_frame(void)
   //
   if(rd_state->frame_depth == 1)
   {
-    CFG_Node *transient = cfg_node_child_from_string(cfg_node_root(), str8_lit("transient"));
+    CFG_Node *transient = cfg_node_child_from_string(cfg_node_root(), s("transient"));
     for(CFG_Node *tln = transient->first, *next = &cfg_nil_node; tln != &cfg_nil_node; tln = next)
     {
       next = tln->next;
-      if(str8_match(tln->string, str8_lit("immediate"), 0))
+      if(str8_match(tln->string, s("immediate"), 0))
       {
-        if(cfg_node_child_from_string(tln, str8_lit("hot")) == &cfg_nil_node)
+        if(cfg_node_child_from_string(tln, s("hot")) == &cfg_nil_node)
         {
           cfg_node_release(rd_state->cfg, tln);
         }
@@ -11875,12 +11875,12 @@ rd_frame(void)
     }
     for(CFG_Node *tln = transient->first; tln != &cfg_nil_node; tln = tln->next)
     {
-      if(str8_match(tln->string, str8_lit("immediate"), 0))
+      if(str8_match(tln->string, s("immediate"), 0))
       {
         for(CFG_Node *child = tln->first, *next = &cfg_nil_node; child != &cfg_nil_node; child = next)
         {
           next = child->next;
-          if(str8_match(child->string, str8_lit("hot"), 0))
+          if(str8_match(child->string, s("hot"), 0))
           {
             cfg_node_release(rd_state->cfg, child);
           }

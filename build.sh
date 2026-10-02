@@ -9,12 +9,12 @@ if [[ "$#" == "0" ]]; then raddbg='1'; fi
 if [[ "$#" == "1" && "${release:-0}" == "1" ]]; then raddbg='1'; fi
 if [[ "${asan:-0}" == "1" ]]; then
   echo "[asan enabled]"
-  auto_compile_flags="-fsanitize=address"
+  auto_compile_flags="$auto_compile_flags -fsanitize=address"
 fi
 
 # --- Mix Git Commit ID -------------------------------------------------------
 if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-  auto_compile_flags="-DBUILD_GIT_HASH=\"$(git describe --always --dirty)\" -DBUILD_GIT_HASH_FULL=$(git rev-parse HEAD)"
+  auto_compile_flags="$auto_compile_flags -DBUILD_GIT_HASH=\"$(git describe --always --dirty)\" -DBUILD_GIT_HASH_FULL=$(git rev-parse HEAD)"
 fi
 
 # --- Compile/Link Line Definitions -------------------------------------------
