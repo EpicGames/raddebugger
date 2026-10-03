@@ -94,84 +94,7 @@ dmn_thread__entry_point(void *p)
     //
     for(String8Node *msg_n = msgs.first; msg_n != 0; msg_n = msg_n->next)
     {
-      //////////////////////////
-      //- rjf: unpack message
-      //
-      String8 data = msg_n->string;
-      U16 magic_maybe = 0;
-      str8_deserial_read_struct(data, 0, &magic_maybe);
-      
-      //////////////////////////
-      //- rjf: parse message
-      //
-      RDS_Msg msg = {0};
-      if(magic_maybe == RDS_MSG_MAGIC)
-      {
-        U64 off = sizeof(magic_maybe);
-        
-        // rjf: read flat parts
-        off += str8_deserial_read_struct(data, off, &msg.kind);
-        off += str8_deserial_read_struct(data, off, &msg.flags);
-        off += str8_deserial_read_struct(data, off, &msg.id);
-        off += str8_deserial_read_struct(data, off, &msg.vaddr_range);
-        off += str8_deserial_read_struct(data, off, &msg.access_flags);
-        off += str8_deserial_read_struct(data, off, &msg.entity);
-        off += str8_deserial_read_struct(data, off, &msg.pid);
-        
-        // rjf: read command line strings
-        {
-          U64 cmd_line_string_count = 0;
-          off += str8_deserial_read_struct(data, off, &cmd_line_string_count);
-          for EachIndex(idx, cmd_line_string_count)
-          {
-            String8 string = {0};
-            off += str8_deserial_read_struct(data, off, &string.size);
-            string = str8_substr(data, r1u64(off, off+string.size));
-            str8_list_push(scratch.arena, &msg.command_line, string);
-          }
-        }
-        
-        // rjf: read path
-        {
-          String8 string = {0};
-          off += str8_deserial_read_struct(data, off, &string.size);
-          string = str8_substr(data, r1u64(off, off+string.size));
-          msg.path = string;
-        }
-        
-        // rjf: read environment strings
-        {
-          U64 env_string_count = 0;
-          off += str8_deserial_read_struct(data, off, &env_string_count);
-          for EachIndex(idx, env_string_count)
-          {
-            String8 string = {0};
-            off += str8_deserial_read_struct(data, off, &string.size);
-            string = str8_substr(data, r1u64(off, off+string.size));
-            str8_list_push(scratch.arena, &msg.env, string);
-          }
-        }
-        
-        // rjf: read traps
-        {
-          U64 trap_count = 0;
-          off += str8_deserial_read_struct(data, off, &trap_count);
-          for EachIndex(idx, trap_count)
-          {
-            DMN_Trap trap = {0};
-            off += str8_deserial_read_struct(data, off, &trap.process);
-            off += str8_deserial_read_struct(data, off, &trap.vaddr);
-            off += str8_deserial_read_struct(data, off, &trap.id);
-            off += str8_deserial_read_struct(data, off, &trap.flags);
-            off += str8_deserial_read_struct(data, off, &trap.size);
-            dmn_trap_chunk_list_push(scratch.arena, &msg.traps, trap_count, &trap);
-          }
-        }
-      }
-      
-      //////////////////////////
-      //- rjf: do message
-      //
+      RDS_Msg msg = rds_msg_from_data(scratch.arena, msg_n->string);
       switch(msg.kind)
       {
         default:{}break;
@@ -187,30 +110,6 @@ dmn_thread__entry_point(void *p)
         
         case RDS_MsgKind_Run:{}break;
         case RDS_MsgKind_SingleStep:{}break;
-        case RDS_MsgKind_Halt:{}break;
-        
-        //- rjf: memory ops
-        
-        case RDS_MsgKind_MemoryReserve:{}break;
-        case RDS_MsgKind_MemoryCommit:{}break;
-        case RDS_MsgKind_MemoryDecommit:{}break;
-        case RDS_MsgKind_MemoryRelease:{}break;
-        case RDS_MsgKind_MemoryProtect:{}break;
-        case RDS_MsgKind_MemoryRead:{}break;
-        case RDS_MsgKind_MemoryWrite:{}break;
-        
-        //- rjf: thread ops
-        
-        case RDS_MsgKind_ThreadRegBlockRead:{}break;
-        case RDS_MsgKind_ThreadRegBlockWrite:{}break;
-        case RDS_MsgKind_ThreadGetModuleTLSVAddr:{}break;
-        
-        //- rjf: system ops
-        
-        case RDS_MsgKind_ListSystemProcesses:
-        {
-          
-        }break;
       }
     }
     
@@ -271,22 +170,32 @@ entry_point(CmdLine *cmd_line)
       fprintf(stderr, "  magic:  0x%x\n", (int)magic_maybe);
     }
     
-    //- rjf: the only kind of message we handle on the main thread is halting,
-    // since we need to interrupt the actual controller. just look for that one
-    // code here, and handle it - otherwise, all we need to do is send the message
-    // blob to the demon thread.
+    //- rjf: try to handle this message on the main thread, before sending to
+    // demon. the demon thread trades runtimes with debuggees, and so it is
+    // only able to handle messages when it is not running - e.g. launching,
+    // attaching, detaching, and so on. other operations, like reading/writing
+    // memory/registers, listing processes, and halting, we want to just do
+    // on the main thread without interrupting the demon at all.
     RDS_MsgKind peek_kind = RDS_MsgKind_Null;
     if(magic_maybe == RDS_MSG_MAGIC)
     {
       str8_deserial_read_struct(data, 2, &peek_kind);
-      if(peek_kind == RDS_MsgKind_Halt && rds_state->demon_is_running)
+      if(peek_kind < RDS_MsgKind_DemonThreadHandledFirst || RDS_MsgKind_DemonThreadHandledLast < peek_kind)
       {
-        dmn_halt(0, 0);
+        RDS_Msg msg = rds_msg_from_data(scratch.arena, data);
+        switch(msg.kind)
+        {
+          default:{}break;
+          case RDS_MsgKind_Halt:
+          {
+            dmn_halt(0, 0);
+          }break;
+        }
       }
     }
     
-    //- rjf: not halt? -> okay, send to demon thread, if it's ready.
-    if(magic_maybe == RDS_MSG_MAGIC && peek_kind != RDS_MsgKind_Halt && !rds_state->demon_is_running)
+    //- rjf: not handled by main thread? -> okay, send to demon thread, if it's ready.
+    if(magic_maybe == RDS_MSG_MAGIC && !rds_state->demon_is_running && (RDS_MsgKind_DemonThreadHandledFirst <= peek_kind && peek_kind <= RDS_MsgKind_DemonThreadHandledLast))
     {
       RWMutexScope(rds_state->c2d_rw_mutex, 1)
       {

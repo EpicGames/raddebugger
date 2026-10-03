@@ -14,14 +14,16 @@ typedef enum RDS_MsgKind
   RDS_MsgKind_Null,
   
   //- rjf: debuggee attaching/detaching ops
-  RDS_MsgKind_Launch,
+  RDS_MsgKind_Launch, RDS_MsgKind_DemonThreadHandledFirst = RDS_MsgKind_Launch,
   RDS_MsgKind_Attach,
   RDS_MsgKind_Kill,
   RDS_MsgKind_Detach,
   
   //- rjf: running ops
   RDS_MsgKind_Run,
-  RDS_MsgKind_SingleStep,
+  RDS_MsgKind_SingleStep, RDS_MsgKind_DemonThreadHandledLast = RDS_MsgKind_SingleStep,
+  
+  //- rjf: halting
   RDS_MsgKind_Halt,
   
   //- rjf: memory ops
@@ -88,5 +90,10 @@ struct RDS_Response
   U64 pid;
   U64 demon_event_count;
 };
+
+////////////////////////////////
+//~ rjf: Message Parsing
+
+internal RDS_Msg rds_msg_from_data(Arena *arena, String8 data);
 
 #endif // RADDBG_SERVER_H
