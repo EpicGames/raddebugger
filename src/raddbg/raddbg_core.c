@@ -7912,16 +7912,19 @@ rd_window_frame(void)
             {
               CFG_Node *rc = n->v;
               String8 ip_addr = rc->first->string;
-              UI_VisualMargin(ui_top_font_size()*0.5f)
-                UI_CornerRadius(ui_top_font_size()*0.5f)
               {
                 ui_set_next_pref_width(ui_children_sum(1));
                 ui_set_next_child_layout_axis(Axis2_X);
-                UI_Box *rc_box = ui_build_box_from_stringf(UI_BoxFlag_Clickable|
-                                                           UI_BoxFlag_DrawBackground|
-                                                           UI_BoxFlag_DrawHotEffects|
-                                                           UI_BoxFlag_DrawActiveEffects,
-                                                           "###rc_button");
+                UI_Box *rc_box = &ui_nil_box;
+                UI_VisualMargin(ui_top_font_size()*0.5f)
+                  UI_CornerRadius(ui_top_font_size()*0.5f)
+                {
+                  rc_box = ui_build_box_from_stringf(UI_BoxFlag_Clickable|
+                                                     UI_BoxFlag_DrawBackground|
+                                                     UI_BoxFlag_DrawHotEffects|
+                                                     UI_BoxFlag_DrawActiveEffects,
+                                                     "###rc_button");
+                }
                 wm_window_push_custom_title_bar_client_area(ws->os, rc_box->rect);
                 UI_Parent(rc_box)
                   UI_PrefWidth(ui_text_dim(10, 0))
@@ -13976,7 +13979,7 @@ rd_frame(void)
           {
             CFG_Node *transient = cfg_node_child_from_string(cfg_node_root(), s("transient"));
             CFG_Node *ctrlr = cfg_node_new(rd_state->cfg, transient, s("remote_controller"));
-            cfg_node_new(rd_state->cfg, ctrlr, rd_regs()->string);
+            cfg_node_new(rd_state->cfg, ctrlr, sock_string_from_endpoint(scratch.arena, rd_state->ipc_sock_endpoint));
           }break;
           case RD_CmdKind_RemoteControllerDisconnect:
           {

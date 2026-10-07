@@ -1256,8 +1256,8 @@ ui_end_build(void)
     }
     else
     {
-      ui_state->tooltip_root->rect.x0 = 10000;
-      ui_state->tooltip_root->rect.y0 = 10000;
+      ui_state->tooltip_root->rect.x0 = ui_state->tooltip_root->rect.x1 = 10000;
+      ui_state->tooltip_root->rect.y0 = ui_state->tooltip_root->rect.y1 = 10000;
     }
   }
   
@@ -1951,8 +1951,8 @@ ui_tooltip_begin_base(void)
   ui_push_flags(0);
   ui_push_text_raster_flags(ui_bottom_text_raster_flags());
   ui_push_font_size(ui_bottom_font_size());
-  ui_push_tag(str8_lit("."));
-  ui_push_tag(str8_lit("floating"));
+  ui_push_tag(s("."));
+  ui_push_tag(s("floating"));
 }
 
 internal void
@@ -1973,7 +1973,7 @@ ui_tooltip_begin(void)
   ui_tooltip_begin_base();
   ui_set_next_squish(0.1f-ui_state->tooltip_open_t*0.1f);
   ui_set_next_transparency(1-ui_state->tooltip_open_t);
-  UI_Flags(UI_BoxFlag_Floating|UI_BoxFlag_DrawBorder|UI_BoxFlag_DrawBackground|UI_BoxFlag_DrawBackgroundBlur|UI_BoxFlag_DrawDropShadow|UI_BoxFlag_SquishAnchored)
+  UI_Flags(UI_BoxFlag_DrawBorder|UI_BoxFlag_DrawBackground|UI_BoxFlag_DrawBackgroundBlur|UI_BoxFlag_DrawDropShadow|UI_BoxFlag_SquishAnchored)
     UI_PrefWidth(ui_children_sum(1))
     UI_PrefHeight(ui_children_sum(1))
     UI_CornerRadius(ui_top_font_size()*0.25f)

@@ -690,8 +690,8 @@ entry_point(CmdLine *cmd_line)
         d_set_wakeup_hook(wakeup_hook_ctrl);
       }
       
-      //- rjf: set up socket session for ICP
-      SOCK_Session icp_sock_session = sock_session_open((U16)ipc_port, wakeup_hook_ctrl);
+      //- rjf: set up socket session for IPC
+      SOCK_Session ipc_sock_session = sock_session_open((U16)ipc_port, wakeup_hook_ctrl);
       
       //- rjf: main application loop
       {
@@ -704,7 +704,7 @@ entry_point(CmdLine *cmd_line)
           {
             Temp scratch = scratch_begin(0, 0);
             String8 packet = {0};
-            if(sock_recv(scratch.arena, icp_sock_session, &ipc_protocol, &ipc_endpoint, &packet, 0))
+            if(sock_recv(scratch.arena, ipc_sock_session, &ipc_protocol, &ipc_endpoint, &packet, 0))
             {
               // rjf: use header to determine message portion
               String8 msg = {0};
@@ -761,6 +761,7 @@ entry_point(CmdLine *cmd_line)
                   }
                   rd_request_frame();
                   ipc_command_frame = 1;
+                  rd_state->ipc_sock_endpoint = ipc_endpoint;
                 }
               }
             }
@@ -798,7 +799,7 @@ entry_point(CmdLine *cmd_line)
             str8_list_push_front(scratch.arena, &rd_state->cmd_outputs, str8_struct(&packet_size));
             str8_list_push_front(scratch.arena, &rd_state->cmd_outputs, str8_struct(&ipc_packet_magic_start));
             String8 msg = str8_list_join(scratch.arena, &rd_state->cmd_outputs, 0);
-            sock_send(icp_sock_session, ipc_protocol, ipc_endpoint, msg, now_time_us()+5000000);
+            sock_send(ipc_sock_session, ipc_protocol, ipc_endpoint, msg, now_time_us()+5000000);
           }
         }
       }
