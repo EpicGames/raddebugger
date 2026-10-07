@@ -407,6 +407,10 @@ wm_init(void)
       }
     }
     XRRFreeScreenResources(res);
+    if(lnx_wm_state->gfx_info.default_refresh_rate == 0)
+    {
+      lnx_wm_state->gfx_info.default_refresh_rate = 60.f;
+    }
   }
   
   //- rjf: fill out cursors
