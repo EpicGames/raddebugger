@@ -62,19 +62,17 @@ mkdir -p build local
 # --- Build & Run Metaprogram -------------------------------------------------
 cd build
 if [[ ! -f metagen ]]; then meta='1'; fi
-if [[ "${meta:-0}" == "1" ]]
-then
+if [[ "${meta:-0}" == "1" ]]; then
   echo "[building metagen]"
   $compiler $cc_debug ../src/metagen/metagen_main.c $cc_link -o metagen
 fi
-if [[ ! -v no_meta ]] then
+if [[ ! -v no_meta ]]; then
   ./metagen
 fi
 cd ..
 
 # --- Assemble BLAKE3 ---------------------------------------------------------
-if [[ ! -f "build/blake3.a" ]]
-then
+if [[ ! -f "build/blake3.a" ]]; then
   echo "[assembling blake3]"
   $compiler -c -g -o build/blake3_sse2_x86-64_unix.o   src/third_party/blake3/blake3_sse2_x86-64_unix.S
   $compiler -c -g -o build/blake3_sse41_x86-64_unix.o  src/third_party/blake3/blake3_sse41_x86-64_unix.S
@@ -130,14 +128,12 @@ if [[ "${torture:-0}"              == "1" ]]; then didbuild=1 && compile ../src/
 cd ..
 
 # --- Warn On No Builds -------------------------------------------------------
-if [[ "${didbuild:-0}" == "0" ]]
-then
+if [[ "${didbuild:-0}" == "0" ]]; then
   echo "[WARNING] no valid build target specified; must use build target names as arguments to this script, like \`./build.sh raddbg\` or \`./build.sh radlink\`."
   exit 1
 fi
 
 # --- Warn On Debug Builds (if debug not explicitly specified) ----------------
-if [[ ! -v debug && ! -v release ]]
-then
+if [[ ! -v debug && ! -v release ]]; then
   echo "[INFO] Debug build complete. For a faster build, call this script with the \`release\` argument (this will take significantly longer than a debug build)."
 fi
