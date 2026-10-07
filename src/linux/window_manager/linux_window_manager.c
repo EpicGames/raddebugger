@@ -1136,7 +1136,7 @@ wm_get_events(Arena *arena, B32 wait)
         { .fd = ConnectionNumber(lnx_wm_state->display), .events = POLLIN },
         { .fd = lnx_wm_state->wakeup_fd,                 .events = POLLIN },
       };
-      int timeout = wait && evts.count == 0 ? -1 : 0;
+      int timeout = (wait && evts.count == 0 ? -1 : 0);
       int poll_status = poll(poll_fds, ArrayCount(poll_fds), timeout);
       if(poll_fds[1].revents & POLLIN)
       {

@@ -40,6 +40,7 @@ struct LNX_SOCK_Session
   GuardedRing *u2s_ring;
   GuardedRing *s2u_ring;
   int epoll_fd;
+  SOCK_WakeupFunctionType *wakeup_hook;
   int tcp_listen_socket;
   U64 connection_slots_count;
   StripeArray connection_stripes;

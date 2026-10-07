@@ -108,7 +108,11 @@ r_ogl_scissor(Rng2F32 clip, Vec2F32 viewport_dim)
   {
     glScissor(x0, (S32)viewport_dim.y - y1, width, height);
   }
-  return width > 0 && height > 0;
+  else
+  {
+    glScissor(0, 0, 0, 0);
+  }
+  return width > 0 || height > 0;
 }
 
 ////////////////////////////////

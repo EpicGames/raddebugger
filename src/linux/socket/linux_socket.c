@@ -15,6 +15,12 @@ lnx_sock_listener_thread_entry_point(void *p)
     struct epoll_event evts[1] = {0};
     int wait_result = LNX_RETRY_ON_EINTR(epoll_wait(session->epoll_fd, evts, ArrayCount(evts), -1));
     
+    //- rjf: call wakeup hook
+    if(session->wakeup_hook)
+    {
+      session->wakeup_hook();
+    }
+    
     //- rjf: code is 0 -> listener is ready for accept
     if(evts[0].data.u64 == 0)
     {
@@ -93,7 +99,7 @@ lnx_sock_listener_thread_entry_point(void *p)
       ssize_t recv_result = LNX_RETRY_ON_EINTR(recv(con->socket, buffer, sizeof(buffer), MSG_DONTWAIT));
       
       // rjf: bytes received -> push result to user.
-      if(recv_result >= 0)
+      if(recv_result > 0)
       {
         RingGuard g = guarded_ring_open(session->s2u_ring);
         U64 header[5] =
@@ -113,7 +119,8 @@ lnx_sock_listener_thread_entry_point(void *p)
       else RWMutexScope(stripe->rw_mutex, 1)
       {
         close(con->socket);
-        LNX_RETRY_ON_EINTR(epoll_ctl(session->epoll_fd, EPOLL_CTL_DEL, con->socket, 0));
+        struct epoll_event evt = {0}; // NOTE(rjf): required on Linux pre-2.6.9
+        LNX_RETRY_ON_EINTR(epoll_ctl(session->epoll_fd, EPOLL_CTL_DEL, con->socket, &evt));
         DLLRemove(slot->first, slot->last, con);
         con->next = stripe->free;
         stripe->free = con;
@@ -296,7 +303,7 @@ sock_async_tick(void)
     
     // rjf: got socket? -> send
     B32 send_failed = 0;
-    if(ep_socket != -1 && send(ep_socket, t->data.str, t->data.size, 0) == -1)
+    if(ep_socket != -1 && send(ep_socket, t->data.str, t->data.size, MSG_NOSIGNAL) == -1)
     {
       send_failed = 1;
     }
@@ -311,7 +318,8 @@ sock_async_tick(void)
           if(MemoryMatchStruct(&c->endpoint, &t->endpoint))
           {
             close(c->socket);
-            LNX_RETRY_ON_EINTR(epoll_ctl(session->epoll_fd, EPOLL_CTL_DEL, c->socket, 0));
+            struct epoll_event evt = {0}; // NOTE(rjf): required on Linux pre-2.6.9
+            LNX_RETRY_ON_EINTR(epoll_ctl(session->epoll_fd, EPOLL_CTL_DEL, c->socket, &evt));
             DLLRemove(slot->first, slot->last, c);
             c->next = stripe->free;
             stripe->free = c;
@@ -337,6 +345,7 @@ sock_session_open(U16 listener_port, SOCK_WakeupFunctionType *wakeup_hook)
   session->u2s_ring = guarded_ring_alloc(arena, KB(256));
   session->s2u_ring = guarded_ring_alloc(arena, KB(256));
   session->epoll_fd = epoll_create(1);
+  session->wakeup_hook = wakeup_hook;
   
   //- rjf: set up listener
   {

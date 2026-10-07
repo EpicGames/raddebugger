@@ -628,6 +628,7 @@ entry_point(CmdLine *cmd_line)
   make_directory(g_logs_folder);
   
   //- rjf: dispatch to top-level codepath based on execution mode
+  U32 ipc_packet_magic_start = 0x72726300;
   switch(exec_mode)
   {
     //- rjf: normal execution
@@ -689,16 +690,34 @@ entry_point(CmdLine *cmd_line)
       {
         for(B32 quit = 0; !quit;)
         {
-          //- rjf: receive socket data, run as IPC messages
+          //- rjf: receive packets, run as IPC messages
           B32 ipc_command_frame = 0;
           SOCK_Protocol ipc_protocol = SOCK_Protocol_TCP;
           SOCK_Endpoint ipc_endpoint = {0};
           {
             Temp scratch = scratch_begin(0, 0);
-            String8 msg = {0};
-            if(sock_recv(scratch.arena, icp_sock_session, &ipc_protocol, &ipc_endpoint, &msg, 0))
+            String8 packet = {0};
+            if(sock_recv(scratch.arena, icp_sock_session, &ipc_protocol, &ipc_endpoint, &packet, 0))
             {
+              // rjf: use header to determine message portion
+              String8 msg = {0};
+              {
+                U64 msg_size = 0;
+                U64 header_size = sizeof(ipc_packet_magic_start) + sizeof(U64);
+                if(str8_match(packet, str8_struct(&ipc_packet_magic_start), StringMatchFlag_RightSideSloppy) &&
+                   packet.size >= header_size)
+                {
+                  U64 msg_size_cap = packet.size - header_size;
+                  msg_size = *(U64 *)(packet.str + sizeof(ipc_packet_magic_start));
+                  msg_size = Min(msg_size, msg_size_cap);
+                  msg = str8_substr(packet, r1u64(header_size, header_size+msg_size));
+                }
+              }
+              
+              // rjf: split command by ;s
               String8List cmd_parts_of_msg = str8_split(scratch.arena, msg, (U8 *)";", 1, 0);
+              
+              // rjf: pick target window
               RD_WindowState *dst_ws = rd_state->first_window_state;
               for(RD_WindowState *ws = dst_ws; ws != &rd_nil_window_state; ws = ws->order_next)
               {
@@ -708,6 +727,8 @@ entry_point(CmdLine *cmd_line)
                   break;
                 }
               }
+              
+              // rjf: got a window -> send command
               if(dst_ws != &rd_nil_window_state)
               {
                 dst_ws->window_temporarily_focused_ipc = 1;
@@ -766,12 +787,10 @@ entry_point(CmdLine *cmd_line)
           //- rjf: gather command outputs & send them back back to sender
           if(ipc_command_frame)
           {
-            StringJoin join = {s(""), s("\0"), s("")};
-            String8 msg = str8_list_join(scratch.arena, &rd_state->cmd_outputs, &join);
-            if(msg.size == 0)
-            {
-              msg = s("done");
-            }
+            U64 packet_size = rd_state->cmd_outputs.total_size;
+            str8_list_push_front(scratch.arena, &rd_state->cmd_outputs, str8_struct(&packet_size));
+            str8_list_push_front(scratch.arena, &rd_state->cmd_outputs, str8_struct(&ipc_packet_magic_start));
+            String8 msg = str8_list_join(scratch.arena, &rd_state->cmd_outputs, 0);
             sock_send(icp_sock_session, ipc_protocol, ipc_endpoint, msg, now_time_us()+5000000);
           }
         }
@@ -803,13 +822,23 @@ entry_point(CmdLine *cmd_line)
       //- rjf: form message from command line inputs
       String8List parts = {0};
       {
+        String8List text_parts = {0};
         for EachIndex(idx, cmd_line->argc-1)
         {
-          str8_list_push(scratch.arena, &parts, str8_cstring(cmd_line->argv[idx+1]));
+          String8 arg = str8_cstring(cmd_line->argv[idx+1]);
+          if(!str8_match(arg, s("--ipc"), 0) && !str8_match(arg, s("-ipc"), 0))
+          {
+            str8_list_push(scratch.arena, &text_parts, arg);
+          }
         }
+        StringJoin join = {.sep = s(" ")};
+        String8 text = str8_list_join(scratch.arena, &text_parts, &join);
+        U64 msg_size = text_parts.total_size;
+        str8_list_push(scratch.arena, &parts, str8_struct(&ipc_packet_magic_start));
+        str8_list_push(scratch.arena, &parts, str8_struct(&msg_size));
+        str8_list_push(scratch.arena, &parts, text);
       }
-      StringJoin join = {str8_lit(""), str8_lit(" "), str8_lit("")};
-      String8 msg = str8_list_join(scratch.arena, &parts, &join);
+      String8 msg = str8_list_join(scratch.arena, &parts, 0);
       
       //- rjf: send to server, get outputs
       String8List outputs = {0};
@@ -817,15 +846,24 @@ entry_point(CmdLine *cmd_line)
       {
         SOCK_Protocol outputs_protocol = SOCK_Protocol_TCP;
         SOCK_Endpoint outputs_endpoint = {0};
-        String8 output_data = {0};
-        if(sock_recv(scratch.arena, ipc_sock_session, &outputs_protocol, &outputs_endpoint, &output_data, now_time_us()+10000000))
+        String8 packet = {0};
+        if(sock_recv(scratch.arena, ipc_sock_session, &outputs_protocol, &outputs_endpoint, &packet, now_time_us()+10000000) &&
+           str8_match(packet, str8_struct(&ipc_packet_magic_start), StringMatchFlag_RightSideSloppy) &&
+           packet.size >= sizeof(ipc_packet_magic_start) + sizeof(U64))
         {
+          U64 msg_size = *(U64 *)(packet.str + sizeof(ipc_packet_magic_start));
+          String8 msg = str8_skip(packet, sizeof(ipc_packet_magic_start) + sizeof(U64));
+          msg.size = Min(msg.size, msg_size);
           U8 split_char = 0;
-          outputs = str8_split(scratch.arena, output_data, &split_char, 1, 0);
+          outputs = str8_split(scratch.arena, msg, &split_char, 1, 0);
         }
       }
       
       //- rjf: write outputs to stdout
+      if(outputs.node_count == 0)
+      {
+        fprintf(stdout, "(response received, no output)\n");
+      }
       for(String8Node *n = outputs.first; n != 0; n = n->next)
       {
         fwrite(n->string.str, 1, n->string.size, stdout);

@@ -47,3 +47,4 @@ target:
   executable: "../jai/examples/invaders/invaders"
   working_directory: "../jai/examples/invaders"
 }
+linux_sigpipe: 1
