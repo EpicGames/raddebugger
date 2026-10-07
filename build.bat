@@ -136,6 +136,7 @@ popd
 
 :: --- Build & Run Metaprogram ------------------------------------------------
 pushd build
+if not exist metagen.exe set meta=1
 if "%meta%"=="1" (
   echo [building metagen]
   %compile_debug% ..\src\metagen\metagen_main.c %compile_link% %out%metagen.exe || exit /b 1
