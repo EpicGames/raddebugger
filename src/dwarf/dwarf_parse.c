@@ -706,7 +706,7 @@ dw2_parse_ctx_equip_unit_root_tag(DW2_ParseCtx *ctx_out, DW2_Tag *tag, DW2_Offse
   ctx_out->unit_base_addr = low_pc_attrib->val.addr;
   ctx_out->language = lang_attrib->val.u128.u64[0];
   ctx_out->unit_dir = comp_dir_attrib->val.string;
-  ctx_out->unit_file = comp_dir_attrib->val.string;
+  ctx_out->unit_file = name_attrib->val.string;
   
   // rjf: find offset tables
   Rng1U64Array rnglists_tables_ranges_array = {offset_tables->rnglists_tables_ranges, offset_tables->rnglists_tables_count};
@@ -960,7 +960,10 @@ dw2_read_line_table_header(Arena *arena, DW_Raw *raw, DW2_ParseCtx *ctx, String8
     off += dw2_read_fmt_u64(data, off, format, &header_length);
     opl_header_length_off = off;
     off += str8_deserial_read_struct(data, off, &min_inst_length);
-    off += str8_deserial_read_struct(data, off, &max_ops_per_inst);
+    if(version >= DW_Version_4)
+    {
+      off += str8_deserial_read_struct(data, off, &max_ops_per_inst);
+    }
     off += str8_deserial_read_struct(data, off, &default_is_stmt);
     off += str8_deserial_read_struct(data, off, &line_base);
     off += str8_deserial_read_struct(data, off, &line_range);
