@@ -2,6 +2,13 @@
 // Licensed under the MIT license (https://opensource.org/license/mit/)
 
 ////////////////////////////////
+//~ rjf: remote TODO notes
+//
+// [ ] ui -> ui?
+// [ ] ui (w/ debug info) -> ui (w/out debug info)?
+// [ ] ctrl -> slim server?
+
+////////////////////////////////
 //~ rjf: linux TODO notes
 //
 // post initial alpha:

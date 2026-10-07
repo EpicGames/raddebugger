@@ -45,6 +45,8 @@ D_CmdKind_SetEntityName,
 D_CmdKind_DownloadModuleDebugInfo,
 D_CmdKind_Attach,
 D_CmdKind_OpenCrashDump,
+D_CmdKind_OpenRemoteDebugger,
+D_CmdKind_CloseRemoteDebugger,
 D_CmdKind_COUNT,
 } D_CmdKind;
 

@@ -7903,12 +7903,50 @@ rd_window_frame(void)
             }
           }
           
+          // rjf: remote controller viz
+          {
+            CFG_Node *root = cfg_node_root();
+            CFG_Node *transient = cfg_node_child_from_string(root, s("transient"));
+            CFG_NodePtrList remote_controllers = cfg_node_child_list_from_string(scratch.arena, transient, s("remote_controller"));
+            for EachNode(n, CFG_NodePtrNode, remote_controllers.first)
+            {
+              CFG_Node *rc = n->v;
+              String8 ip_addr = rc->first->string;
+              UI_VisualMargin(ui_top_font_size()*0.5f)
+                UI_CornerRadius(ui_top_font_size()*0.5f)
+              {
+                ui_set_next_pref_width(ui_children_sum(1));
+                ui_set_next_child_layout_axis(Axis2_X);
+                UI_Box *rc_box = ui_build_box_from_stringf(UI_BoxFlag_Clickable|
+                                                           UI_BoxFlag_DrawBackground|
+                                                           UI_BoxFlag_DrawHotEffects|
+                                                           UI_BoxFlag_DrawActiveEffects,
+                                                           "###rc_button");
+                wm_window_push_custom_title_bar_client_area(ws->os, rc_box->rect);
+                UI_Parent(rc_box)
+                  UI_PrefWidth(ui_text_dim(10, 0))
+                  UI_TextAlignment(UI_TextAlign_Center)
+                  UI_Padding(ui_em(0.5f, 1.f))
+                  RD_Font(RD_FontSlot_Icons)
+                  UI_TagF("pop")
+                {
+                  ui_label(rd_icon_kind_text_table[RD_IconKind_Machine]);
+                }
+                UI_Signal rc_sig = ui_signal_from_box(rc_box);
+                if(ui_hovering(rc_sig)) UI_Tooltip
+                {
+                  ui_label(ip_addr);
+                }
+              }
+            }
+          }
+          
           // rjf: loaded project viz
           if(do_user_prof)
           {
             CFG_Node *root = cfg_node_root();
-            CFG_Node *project = cfg_node_child_from_string(root, str8_lit("project"));
-            CFG_Node *name = cfg_node_child_from_string(project, str8_lit("name"));
+            CFG_Node *project = cfg_node_child_from_string(root, s("project"));
+            CFG_Node *name = cfg_node_child_from_string(project, s("name"));
             String8 project_name = name->first->string;
             if(project_name.size == 0)
             {
@@ -13933,6 +13971,24 @@ rd_frame(void)
               str8_list_pushf(rd_state->cmd_output_arena, &rd_state->cmd_outputs, " }\n");
             }
             str8_list_pushf(rd_state->cmd_output_arena, &rd_state->cmd_outputs, "}\n");
+          }break;
+          case RD_CmdKind_RemoteControllerConnect:
+          {
+            CFG_Node *transient = cfg_node_child_from_string(cfg_node_root(), s("transient"));
+            CFG_Node *ctrlr = cfg_node_new(rd_state->cfg, transient, s("remote_controller"));
+            cfg_node_new(rd_state->cfg, ctrlr, rd_regs()->string);
+          }break;
+          case RD_CmdKind_RemoteControllerDisconnect:
+          {
+            CFG_Node *transient = cfg_node_child_from_string(cfg_node_root(), s("transient"));
+            for(CFG_Node *child = transient; child != &cfg_nil_node; child = child->next)
+            {
+              if(str8_match(child->string, s("remote_controller"), 0) && str8_match(child->first->string, rd_regs()->string, 0))
+              {
+                cfg_node_release(rd_state->cfg, child);
+                break;
+              }
+            }
           }break;
           
           //- rjf: exiting

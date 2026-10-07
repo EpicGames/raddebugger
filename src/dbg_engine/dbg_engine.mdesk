@@ -58,6 +58,10 @@ D_CmdTable:     //               |        |              |                      
   
   //- rjf: crash dump opening
   {OpenCrashDump                  1        1              `folder:\\"$input\\"`        FilePath           0  0  0  0  0  1  1                                                           FileOutline           "open_crash_dump"             "Open Crash Dump"                             "Opens a crash dump file and recreates debuggee state at the time of the crash."                                   ""                               ""                                                                                            }
+
+  //- rjf: remote debugger connecting
+  {OpenRemoteDebugger             1        1              ""                           String             0  0  0  0  0  1  1                                                           Machine               "open_remote_debugger"        "Open Remote Debugger"                        "Opens a remote debugger by IP address."                                                                           ""                               ""                                                                                            }
+  {CloseRemoteDebugger            1        1              "query:machines"             CtrlEntity         0  0  0  0  0  1  1                                                           Machine               "close_remote_debugger"       "Close Remote Debugger"                       "Closes a remote debugger."                                                                                        ""                               ""                                                                                            }
 }
 
 @enum D_CmdKind:

@@ -2527,6 +2527,10 @@ d_ctrl_thread__entry_point(void *p)
           case D_MsgKind_Null:
           case D_MsgKind_COUNT:{}break;
           
+          //- rjf: remote debuggers
+          case D_MsgKind_OpenRemoteDebugger:{}break;
+          case D_MsgKind_CloseRemoteDebugger:{}break;
+          
           //- rjf: target operations
           case D_MsgKind_Launch:            {d_ctrl_thread__launch              (ctrl_ctx, msg);}break;
           case D_MsgKind_Attach:            {d_ctrl_thread__attach              (ctrl_ctx, msg);}break;

@@ -4,16 +4,16 @@
 ////////////////////////////////
 //~ rjf: Message Parsing
 
-internal RDS_Msg
-rds_msg_from_data(Arena *arena, String8 data)
+internal DS_Msg
+ds_msg_from_serialized(Arena *arena, String8 data)
 {
   //- rjf: unpack message
   U16 magic_maybe = 0;
   str8_deserial_read_struct(data, 0, &magic_maybe);
   
   //- rjf: parse message
-  RDS_Msg msg = {0};
-  if(magic_maybe == RDS_MSG_MAGIC)
+  DS_Msg msg = {0};
+  if(magic_maybe == DS_MSG_MAGIC)
   {
     U64 off = sizeof(magic_maybe);
     
@@ -78,4 +78,17 @@ rds_msg_from_data(Arena *arena, String8 data)
   }
   
   return msg;
+}
+
+internal String8
+ds_serialized_from_msg(Arena *arena, DS_Msg *msg)
+{
+  Temp scratch = scratch_begin(&arena, 1);
+  String8List srl = {0};
+  {
+    // TODO(rjf)
+  }
+  scratch_end(scratch);
+  String8 result = str8_list_join(arena, &srl, 0);
+  return result;
 }

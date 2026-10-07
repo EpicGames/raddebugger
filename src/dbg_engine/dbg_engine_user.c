@@ -2191,6 +2191,24 @@ d_tick(Arena *arena, D_TargetArray *targets, D_BreakpointArray *breakpoints, D_P
           MemoryCopyArray(msg->exception_code_filters, exception_code_filters);
           msg->auto_download_debug_info = auto_download_debug_info;
         }break;
+        
+        //- rjf: opening/closing remote debuggers
+        case D_CmdKind_OpenRemoteDebugger:
+        {
+          D_Msg *msg = d_msg_list_push(scratch.arena, &ctrl_msgs);
+          msg->kind      = D_MsgKind_OpenRemoteDebugger;
+          msg->path      = str8_copy(scratch.arena, params->string);
+          MemoryCopyArray(msg->exception_code_filters, exception_code_filters);
+          msg->auto_download_debug_info = auto_download_debug_info;
+        }break;
+        case D_CmdKind_CloseRemoteDebugger:
+        {
+          D_Msg *msg = d_msg_list_push(scratch.arena, &ctrl_msgs);
+          msg->kind      = D_MsgKind_CloseRemoteDebugger;
+          msg->entity    = params->entity;
+          MemoryCopyArray(msg->exception_code_filters, exception_code_filters);
+          msg->auto_download_debug_info = auto_download_debug_info;
+        }break;
       }
       
       // rjf: do run if needed

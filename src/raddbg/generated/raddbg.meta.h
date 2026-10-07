@@ -106,6 +106,8 @@ RD_CmdKind_SetEntityName,
 RD_CmdKind_DownloadModuleDebugInfo,
 RD_CmdKind_Attach,
 RD_CmdKind_OpenCrashDump,
+RD_CmdKind_OpenRemoteDebugger,
+RD_CmdKind_CloseRemoteDebugger,
 RD_CmdKind_Exit,
 RD_CmdKind_OpenPalette,
 RD_CmdKind_RunCommand,
@@ -113,6 +115,8 @@ RD_CmdKind_RunExternalDriverTextCommand,
 RD_CmdKind_State,
 RD_CmdKind_Eval,
 RD_CmdKind_LineFromVAddr,
+RD_CmdKind_RemoteControllerConnect,
+RD_CmdKind_RemoteControllerDisconnect,
 RD_CmdKind_WMEvent,
 RD_CmdKind_SelectThread,
 RD_CmdKind_SelectUnwind,
@@ -630,7 +634,7 @@ Z(getting_started)\
 C_LINKAGE_BEGIN
 extern String8 rd_tab_fast_path_view_name_table[25];
 extern String8 rd_tab_fast_path_query_name_table[25];
-extern RD_VocabInfo rd_vocab_info_table[370];
+extern RD_VocabInfo rd_vocab_info_table[374];
 extern RD_NameSchemaInfo rd_name_schema_info_table[39];
 extern String8 rd_reg_slot_code_name_table[56];
 extern Rng1U64 rd_reg_slot_range_table[56];

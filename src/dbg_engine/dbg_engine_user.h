@@ -160,6 +160,8 @@ struct D_RunLocalsCache
 typedef enum D_MsgKind
 {
   D_MsgKind_Null,
+  D_MsgKind_OpenRemoteDebugger,
+  D_MsgKind_CloseRemoteDebugger,
   D_MsgKind_Launch,
   D_MsgKind_Attach,
   D_MsgKind_OpenCrashDump,
