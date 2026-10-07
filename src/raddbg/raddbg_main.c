@@ -840,7 +840,7 @@ entry_point(CmdLine *cmd_line)
         }
         StringJoin join = {.sep = s(" ")};
         String8 text = str8_list_join(scratch.arena, &text_parts, &join);
-        U64 msg_size = text_parts.total_size;
+        U64 msg_size = text.size;
         str8_list_push(scratch.arena, &parts, str8_struct(&ipc_packet_magic_start));
         str8_list_push(scratch.arena, &parts, str8_struct(&msg_size));
         str8_list_push(scratch.arena, &parts, text);
