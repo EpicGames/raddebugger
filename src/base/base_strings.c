@@ -1609,6 +1609,7 @@ str8_path_list_resolve_dots_in_place(String8List *path, PathStyle style)
   {
     String8MetaNode *next;
     String8Node *node;
+    String8Node *prev;
   };
   String8MetaNode *stack = 0;
   String8MetaNode *free_meta_node = 0;
@@ -1647,6 +1648,7 @@ str8_path_list_resolve_dots_in_place(String8List *path, PathStyle style)
     // handlers:
     save_with_stack:
     {
+      String8Node *prev = path->last;
       str8_list_push_node(path, node);
       String8MetaNode *stack_node = free_meta_node;
       if(stack_node != 0)
@@ -1659,6 +1661,7 @@ str8_path_list_resolve_dots_in_place(String8List *path, PathStyle style)
       }
       SLLStackPush(stack, stack_node);
       stack_node->node = node;
+      stack_node->prev = prev;
       continue;
     }
     
@@ -1672,14 +1675,16 @@ str8_path_list_resolve_dots_in_place(String8List *path, PathStyle style)
     {
       path->node_count -= 1;
       path->total_size -= stack->node->string.size;
+      String8Node *prev = stack->prev;
       SLLStackPop(stack);
-      if(stack == 0)
+      path->last = prev;
+      if(prev == 0)
       {
-        path->last = path->first;
+        path->first = 0;
       }
       else
       {
-        path->last = stack->node;
+        prev->next = 0;
       }
       continue;
     }

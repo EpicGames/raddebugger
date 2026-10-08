@@ -67,6 +67,31 @@ Test(str8_list_substr)
   }
 }
 
+TEST(path_dot_resolution)
+{
+  String8List one_part = path_normalized_list_from_string(arena, str8_lit("a/b/.."), 0);
+  T_Ok(one_part.node_count == 1);
+  T_Ok(one_part.first == one_part.last);
+  T_Ok(one_part.last != 0 && one_part.last->next == 0);
+  String8 normalized = path_normalized_from_string(arena, str8_lit("a/b/.."));
+  T_Ok(str8_match(normalized, str8_lit("a"), 0));
+  T_Ok(normalized.str[normalized.size] == 0);
+
+  String8List empty = path_normalized_list_from_string(arena, str8_lit("a/.."), 0);
+  T_Ok(empty.node_count == 0);
+  T_Ok(empty.first == 0 && empty.last == 0);
+
+  String8List two_parents = path_normalized_list_from_string(arena, str8_lit("../../a/.."), 0);
+  T_Ok(two_parents.node_count == 2);
+  T_Ok(two_parents.first != 0 && two_parents.first->next == two_parents.last);
+  T_Ok(two_parents.last != 0 && two_parents.last->next == 0);
+
+  String8List absolute = path_normalized_list_from_string(arena, str8_lit("C:/a/.."), 0);
+  T_Ok(absolute.node_count == 1);
+  T_Ok(absolute.first == absolute.last);
+  T_Ok(absolute.last != 0 && absolute.last->next == 0);
+}
+
 TEST(bit_array)
 {
   for (U64 start=0; start<32*3; start++) {
