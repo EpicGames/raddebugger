@@ -53,7 +53,6 @@ lnk_is_import_metadata_name(String8 name)
          (name.size && name.str[0] == 0x7f && str8_ends_with(name, str8_lit("_NULL_THUNK_DATA"), 0));
 }
 
-internal
 THREAD_POOL_TASK_FUNC(lnk_obj_initer)
 {
   LNK_ObjIniter *task    = raw_task;
@@ -540,7 +539,6 @@ lnk_note_import_reference(LNK_Import *import, String8 name)
   }
 }
 
-internal
 THREAD_POOL_TASK_FUNC(lnk_input_coff_symbol_table)
 {
   LNK_InputCoffSymbolTable *task = raw_task;
@@ -712,7 +710,6 @@ lnk_obj_collect_associated_section_numbers(Arena *arena, LNK_Obj *obj, U32 root_
   return result;
 }
 
-internal
 THREAD_POOL_TASK_FUNC(lnk_assign_comdat_symlinks_task)
 {
   LNK_InputCoffSymbolTable *task = raw_task;
@@ -1047,7 +1044,6 @@ lnk_parsed_symbol_from_coff_symbol_idx(LNK_Obj *obj, U64 symbol_idx)
   return result;
 }
 
-internal
 THREAD_POOL_TASK_FUNC(lnk_collect_obj_section_numbers_task)
 {
   LNK_SectionCollector *task = raw_task;

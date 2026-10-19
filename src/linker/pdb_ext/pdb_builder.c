@@ -860,7 +860,6 @@ pdb_type_server_alloc(U64 bucket_cap)
   return ts;
 }
 
-internal
 THREAD_POOL_TASK_FUNC(pdb_write_type_to_bucket_map_32_task)
 {
   PDB_WriteTypeToBucketMap *task = raw_task;
@@ -949,7 +948,6 @@ pdb_type_hash_stream_build(TP_Context *tp, PDB_TypeServer *ts, PDB_StringTable *
   return result;
 }
 
-internal
 THREAD_POOL_TASK_FUNC(pdb_write_types_task)
 {
   ProfBeginFunction();
@@ -1189,7 +1187,6 @@ pdb_type_server_push(PDB_TypeServer *ts, String8 raw_leaf)
   ProfEnd();
 }
 
-internal
 THREAD_POOL_TASK_FUNC(pdb_count_udt_task)
 {
   PDB_PushLeafTask *task  = raw_task;
@@ -1206,7 +1203,6 @@ THREAD_POOL_TASK_FUNC(pdb_count_udt_task)
   }
 }
 
-internal
 THREAD_POOL_TASK_FUNC(pdb_push_udt_leaf_task)
 {
   PDB_PushLeafTask *task          = raw_task;
@@ -1247,7 +1243,6 @@ typedef struct
   String8Node  *nodes;
 } PDB_String8ListFromLeafArray;
 
-internal
 THREAD_POOL_TASK_FUNC(pdb_str8_list_from_leaf_array_task)
 {
   PDB_String8ListFromLeafArray *task = raw_task;
@@ -1748,7 +1743,6 @@ psi_addr_map_name_compar_is_before(void *raw_a, void *raw_b)
   return is_before;
 }
 
-internal
 THREAD_POOL_TASK_FUNC(psi_addr_map_radix_init_task)
 {
   ProfBeginFunction();
@@ -1764,7 +1758,6 @@ THREAD_POOL_TASK_FUNC(psi_addr_map_radix_init_task)
   ProfEnd();
 }
 
-internal
 THREAD_POOL_TASK_FUNC(psi_addr_map_radix_histogram_task)
 {
   ProfBeginFunction();
@@ -1783,7 +1776,6 @@ THREAD_POOL_TASK_FUNC(psi_addr_map_radix_histogram_task)
   ProfEnd();
 }
 
-internal
 THREAD_POOL_TASK_FUNC(psi_addr_map_radix_sort_task)
 {
   ProfBeginFunction();
@@ -1810,7 +1802,6 @@ psi_addr_map_name_sort_work(Rng1U64 run)
   return work;
 }
 
-internal
 THREAD_POOL_TASK_FUNC(psi_addr_map_name_sort_task)
 {
   ProfBeginFunction();
@@ -1972,7 +1963,6 @@ psi_addr_map_from_gsi_records(TP_Context *tp, Arena *arena, PDB_GsiSortRecord *g
   return addr_map;
 }
 
-internal
 THREAD_POOL_TASK_FUNC(gsi_size_buckets_task)
 {
   U64                          bucket_idx  = task_id;
@@ -2043,7 +2033,6 @@ gsi_pub_symbol_is_before(void *raw_a, void *raw_b)
   return is_before;
 }
 
-internal
 THREAD_POOL_TASK_FUNC(gsi_serialize_pub32)
 {
   Temp scratch = scratch_begin(&arena, 1);
@@ -2094,7 +2083,6 @@ THREAD_POOL_TASK_FUNC(gsi_serialize_pub32)
   scratch_end(scratch);
 }
 
-internal
 THREAD_POOL_TASK_FUNC(gsi_serialize_symbols_task)
 {
   Temp scratch = scratch_begin(&arena, 1);
@@ -2281,7 +2269,6 @@ gsi_push(PDB_GsiContext *gsi, CV_Symbol *symbol)
   return node;
 }
 
-internal
 THREAD_POOL_TASK_FUNC(gsi_symbol_hasher_task)
 {
   ProfBeginFunction();
@@ -2495,7 +2482,6 @@ dbi_count_source_files(String8 names)
   return count;
 }
 
-internal
 THREAD_POOL_TASK_FUNC(dbi_build_file_info_assign_file_offsets_task)
 {
   ProfBeginFunction();
@@ -2693,7 +2679,6 @@ typedef struct
   Rng1U64   *range_arr;
 } LNK_DbiScCopy;
 
-internal
 THREAD_POOL_TASK_FUNC(lnk_dbi_sc_copy_task)
 {
   LNK_DbiScCopy *copy = raw_task;
@@ -2701,7 +2686,6 @@ THREAD_POOL_TASK_FUNC(lnk_dbi_sc_copy_task)
   MemoryCopy(copy->dst + range.min, copy->src + range.min, sizeof(copy->src[0]) * dim_1u64(range));
 }
 
-internal
 THREAD_POOL_TASK_FUNC(lnk_dbi_sc_radix_histo_task)
 {
   LNK_DbiScRadixPass *pass = raw_task;
@@ -2712,7 +2696,6 @@ THREAD_POOL_TASK_FUNC(lnk_dbi_sc_radix_histo_task)
   }
 }
 
-internal
 THREAD_POOL_TASK_FUNC(lnk_dbi_sc_radix_scatter_task)
 {
   LNK_DbiScRadixPass *pass = raw_task;
@@ -3301,7 +3284,6 @@ pdb_get_guid(PDB_Context *pdb)
   return pdb->info->guid;
 }
 
-internal
 THREAD_POOL_TASK_FUNC(pdb_build_gsi_psi_task)
 {
   Temp scratch = scratch_begin(&arena, 1);

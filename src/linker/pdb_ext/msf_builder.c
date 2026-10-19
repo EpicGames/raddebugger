@@ -354,7 +354,6 @@ msf_stream_align(MSF_Context *msf, MSF_StreamNumber sn, MSF_UInt align)
   msf_stream_write(msf, sn, 0, AlignPadPow2(pos, align));
 }
 
-internal
 THREAD_POOL_TASK_FUNC(msf_write_task)
 {
   MSF_WriteTask *task = raw_task;

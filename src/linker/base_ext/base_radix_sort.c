@@ -14,7 +14,6 @@ typedef struct U64RadixTask
   U32      shift;
 } U64RadixTask;
 
-internal
 THREAD_POOL_TASK_FUNC(u64_radix_hist_task)
 {
   U64RadixTask *task   = raw_task;
@@ -26,7 +25,6 @@ THREAD_POOL_TASK_FUNC(u64_radix_hist_task)
   }
 }
 
-internal
 THREAD_POOL_TASK_FUNC(u64_radix_scatter_task)
 {
   U64RadixTask *task    = raw_task;

@@ -160,7 +160,6 @@ lnk_make_full_path(Arena *arena, PathStyle system_path_style, String8 work_dir, 
   return result;
 }
 
-internal
 THREAD_POOL_TASK_FUNC(lnk_blake3_hasher_task)
 {
   ProfBeginFunction();
@@ -1145,7 +1144,6 @@ lnk_inputer_flush(Arena *arena, TP_Context *tp, LNK_Inputer *inputer, LNK_InputL
   return result;
 }
 
-internal
 THREAD_POOL_TASK_FUNC(lnk_release_file_maps_task)
 {
   LNK_ReleaseFileMapsTask *task = raw_task;
@@ -1851,7 +1849,6 @@ lnk_queue_lib_member(Arena                *arena,
   }
 }
 
-internal
 THREAD_POOL_TASK_FUNC(lnk_search_lib_task)
 {
   LNK_SearchLibTask    *task             = raw_task;
@@ -2982,7 +2979,6 @@ lnk_resolve_reloc_target_symbol(Arena *arena, LNK_SymbolTable *symtab, LNK_ObjSy
   return is_resolved;
 }
 
-internal
 THREAD_POOL_TASK_FUNC(lnk_opt_ref_task)
 {
   ProfBeginFunction();
@@ -4218,7 +4214,6 @@ lnk_should_gather_section(LNK_Obj *obj, U64 section_number, COFF_SectionHeader *
   return 1;
 }
 
-internal
 THREAD_POOL_TASK_FUNC(lnk_gather_sections_task)
 {
   Temp scratch = scratch_begin(&arena, 1);
@@ -4405,7 +4400,6 @@ THREAD_POOL_TASK_FUNC(lnk_gather_sections_task)
   scratch_end(scratch);
 }
 
-internal
 THREAD_POOL_TASK_FUNC(lnk_set_comdat_leaders_contribs_task)
 {
   LNK_BuildImageTask *task    = raw_task;
@@ -4427,7 +4421,6 @@ THREAD_POOL_TASK_FUNC(lnk_set_comdat_leaders_contribs_task)
   ProfEnd();
 }
 
-internal
 THREAD_POOL_TASK_FUNC(lnk_flag_debug_symbols_task)
 {
   LNK_BuildImageTask *task    = raw_task;
@@ -4446,7 +4439,6 @@ THREAD_POOL_TASK_FUNC(lnk_flag_debug_symbols_task)
   }
 }
 
-internal
 THREAD_POOL_TASK_FUNC(lnk_patch_comdat_leaders_task)
 {
   LNK_BuildImageTask *task    = raw_task;
@@ -4529,7 +4521,6 @@ typedef struct LNK_SortContribsRadixTask
   U64      shift;
 } LNK_SortContribsRadixTask;
 
-internal
 THREAD_POOL_TASK_FUNC(lnk_sort_contribs_radix_hist_task)
 {
   LNK_SortContribsRadixTask *task = raw_task;
@@ -4539,7 +4530,6 @@ THREAD_POOL_TASK_FUNC(lnk_sort_contribs_radix_hist_task)
   }
 }
 
-internal
 THREAD_POOL_TASK_FUNC(lnk_sort_contribs_radix_scatter_task)
 {
   LNK_SortContribsRadixTask *task = raw_task;
@@ -4617,7 +4607,6 @@ lnk_sort_contribs_chunk_radix(TP_Context *tp, Arena *arena, LNK_SectionContribCh
   ProfEnd();
 }
 
-internal
 THREAD_POOL_TASK_FUNC(lnk_sort_contribs_task)
 {
   LNK_BuildImageTask *task = raw_task;
@@ -4646,7 +4635,6 @@ lnk_common_block_contrib_is_before(void *raw_a, void *raw_b)
   return is_before;
 }
 
-internal
 THREAD_POOL_TASK_FUNC(lnk_patch_common_block_leaders_task)
 {
   ProfBeginFunction();
@@ -4670,7 +4658,6 @@ THREAD_POOL_TASK_FUNC(lnk_patch_common_block_leaders_task)
   ProfEnd();
 }
 
-internal
 THREAD_POOL_TASK_FUNC(lnk_patch_common_block_symbols_task)
 {
   LNK_BuildImageTask *task    = raw_task;
@@ -4696,7 +4683,6 @@ THREAD_POOL_TASK_FUNC(lnk_patch_common_block_symbols_task)
   ProfEnd();
 }
 
-internal
 THREAD_POOL_TASK_FUNC(lnk_patch_regular_symbols_task)
 {
   LNK_BuildImageTask *task    = raw_task;
@@ -4777,35 +4763,30 @@ lnk_patch_obj_symtab(LNK_SymbolTable *symtab, LNK_Obj *obj, B8 *was_symbol_patch
   ProfEnd();
 }
 
-internal
 THREAD_POOL_TASK_FUNC(lnk_patch_common_symbols_task)
 {
   LNK_BuildImageTask *task = raw_task;
   lnk_patch_obj_symtab(task->symtab, task->objs[task_id], task->u.patch_symtabs.was_symbol_patched[task_id], COFF_SymbolValueInterp_Common);
 }
 
-internal
 THREAD_POOL_TASK_FUNC(lnk_patch_abs_symbols_task)
 {
   LNK_BuildImageTask *task = raw_task;
   lnk_patch_obj_symtab(task->symtab, task->objs[task_id], task->u.patch_symtabs.was_symbol_patched[task_id], COFF_SymbolValueInterp_Abs);
 }
 
-internal
 THREAD_POOL_TASK_FUNC(lnk_patch_undefined_symbols_task)
 {
   LNK_BuildImageTask *task = raw_task;
   lnk_patch_obj_symtab(task->symtab, task->objs[task_id], task->u.patch_symtabs.was_symbol_patched[task_id], COFF_SymbolValueInterp_Undefined);
 }
 
-internal
 THREAD_POOL_TASK_FUNC(lnk_patch_weak_symbols_task)
 {
   LNK_BuildImageTask *task = raw_task;
   lnk_patch_obj_symtab(task->symtab, task->objs[task_id], task->u.patch_symtabs.was_symbol_patched[task_id], COFF_SymbolValueInterp_Weak);
 }
 
-internal
 THREAD_POOL_TASK_FUNC(lnk_image_fill_task)
 {
   ProfBeginFunction();
@@ -4839,7 +4820,6 @@ lnk_compute_win32_image_header_size(LNK_Config *config, U64 sect_count)
   return image_header_size;
 }
 
-internal
 THREAD_POOL_TASK_FUNC(lnk_obj_reloc_patcher)
 {
   ProfBeginFunction();
@@ -4877,7 +4857,6 @@ THREAD_POOL_TASK_FUNC(lnk_obj_reloc_patcher)
   ProfEnd();
 }
 
-internal
 THREAD_POOL_TASK_FUNC(lnk_count_common_block_contribs_task)
 {
   LNK_BuildImageTask *task   = raw_task;
@@ -4895,7 +4874,6 @@ THREAD_POOL_TASK_FUNC(lnk_count_common_block_contribs_task)
   }
 }
 
-internal
 THREAD_POOL_TASK_FUNC(lnk_fill_out_common_block_contribs_task)
 {
   LNK_BuildImageTask *task   = raw_task;
@@ -4916,7 +4894,6 @@ THREAD_POOL_TASK_FUNC(lnk_fill_out_common_block_contribs_task)
   }
 }
 
-internal
 THREAD_POOL_TASK_FUNC(lnk_flag_hotpatch_contribs_task)
 {
   LNK_BuildImageTask *task    = raw_task;
@@ -5283,7 +5260,6 @@ lnk_build_guard_tables(TP_Context       *tp,
 #endif
 }
 
-internal
 THREAD_POOL_TASK_FUNC(lnk_patch_virtual_offsets_and_sizes_in_obj_section_headers_task)
 {
   LNK_BuildImageTask *task    = raw_task;
@@ -5303,7 +5279,6 @@ THREAD_POOL_TASK_FUNC(lnk_patch_virtual_offsets_and_sizes_in_obj_section_headers
   ProfEnd();
 }
 
-internal
 THREAD_POOL_TASK_FUNC(lnk_patch_file_offsets_and_sizes_in_obj_section_headers_task)
 {
   LNK_BuildImageTask *task    = raw_task;
@@ -5328,7 +5303,6 @@ THREAD_POOL_TASK_FUNC(lnk_patch_file_offsets_and_sizes_in_obj_section_headers_ta
   ProfEnd();
 }
 
-internal
 THREAD_POOL_TASK_FUNC(lnk_patch_section_symbols_task)
 {
   LNK_BuildImageTask *task    = raw_task;
@@ -5404,7 +5378,6 @@ THREAD_POOL_TASK_FUNC(lnk_patch_section_symbols_task)
   ProfEnd();
 }
 
-internal
 THREAD_POOL_TASK_FUNC(lnk_gather_base_reloc_pages_task)
 {
   LNK_BaseRelocsTask    *task       = raw_task;
@@ -5465,7 +5438,6 @@ THREAD_POOL_TASK_FUNC(lnk_gather_base_reloc_pages_task)
   ProfEnd();
 }
 
-internal
 THREAD_POOL_TASK_FUNC(lnk_filter_out_duplicate_base_reloc_entries_task)
 {
   ProfBeginFunction();
@@ -5507,7 +5479,6 @@ THREAD_POOL_TASK_FUNC(lnk_filter_out_duplicate_base_reloc_entries_task)
   ProfEnd();
 }
 
-internal
 THREAD_POOL_TASK_FUNC(lnk_serialize_base_reloc_pages_task)
 {
   ProfBeginFunction();
@@ -6747,7 +6718,6 @@ lnk_log_timers(void)
   scratch_end(scratch);
 }
 
-internal
 THREAD_POOL_TASK_FUNC(lnk_p2r_worker)
 {
   Temp scratch = scratch_begin(&arena, 1);
@@ -6973,7 +6943,6 @@ lnk_run_linker(LNK_Config *config)
   ProfEnd();
 }
 
-internal
 THREAD_POOL_TASK_FUNC(lnk_serialize_rrt_type_data_task)
 {
   Temp scratch = scratch_begin(&arena, 1);

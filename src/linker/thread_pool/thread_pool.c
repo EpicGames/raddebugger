@@ -180,7 +180,6 @@ tp_temp_begin(TP_Arena *arena)
   return temp;
 }
 
-internal
 THREAD_POOL_TASK_FUNC(tp_release_scratch_free_blocks_task)
 {
   TCTX *tctx = tctx_selected();

@@ -25,7 +25,6 @@ lnk_discard_cv_debug_info(LNK_CodeViewInput *input, U64 obj_idx)
   cv_debug_s_exclude_kind(&input->debug_s_arr[obj_idx], CV_C13SubSectionKind_InlineeLines);
 }
 
-internal
 THREAD_POOL_TASK_FUNC(lnk_parse_debug_s_task)
 {
   U64                obj_idx = task_id;
@@ -78,7 +77,6 @@ THREAD_POOL_TASK_FUNC(lnk_parse_debug_s_task)
   }
 }
 
-internal
 THREAD_POOL_TASK_FUNC(lnk_parse_debug_h_task)
 {
   U64                obj_idx = task_id;
@@ -141,7 +139,6 @@ THREAD_POOL_TASK_FUNC(lnk_parse_debug_h_task)
   exit:;
 }
 
-internal
 THREAD_POOL_TASK_FUNC(lnk_strip_debug_t_sig_task)
 {
   U64               obj_idx = task_id;
@@ -165,7 +162,6 @@ THREAD_POOL_TASK_FUNC(lnk_strip_debug_t_sig_task)
   exit:;
 }
 
-internal
 THREAD_POOL_TASK_FUNC(lnk_parse_debug_t_task)
 {
   ProfBeginFunction();
@@ -174,7 +170,6 @@ THREAD_POOL_TASK_FUNC(lnk_parse_debug_t_task)
   ProfEnd();
 }
 
-internal
 THREAD_POOL_TASK_FUNC(lnk_read_type_servers_task)
 {
   ProfBeginFunction();
@@ -1385,7 +1380,6 @@ lnk_assigned_ti_hash_search(LNK_AssignedTiHash *ht, LNK_CodeViewInput *input, LN
   return 0;
 }
 
-internal
 THREAD_POOL_TASK_FUNC(lnk_hash_debug_t_task)
 {
   ProfBeginFunction();
@@ -1405,7 +1399,6 @@ THREAD_POOL_TASK_FUNC(lnk_hash_debug_t_task)
   ProfEnd();
 }
 
-internal
 THREAD_POOL_TASK_FUNC(lnk_hash_debug_t_deep_task)
 {
   ProfBeginFunction();
@@ -1498,7 +1491,6 @@ lnk_leaf_hash_table_count_inserts(LNK_MergeTypes *task, CV_TypeIndexSource sourc
   }
 }
 
-internal
 THREAD_POOL_TASK_FUNC(lnk_leaf_dedup_task)
 {
   LNK_MergeTypes    *task         = raw_task;
@@ -1551,7 +1543,6 @@ typedef struct
   Rng1U64           *ranges;
 } LNK_RehashLeaves;
 
-internal
 THREAD_POOL_TASK_FUNC(lnk_rehash_leaves_task)
 {
   LNK_RehashLeaves *task = raw_task;
@@ -1625,7 +1616,6 @@ lnk_dedup_leaf_indices(TP_Context *tp, LNK_MergeTypes *task, U32Array indices)
   scratch_end(scratch);
 }
 
-internal
 THREAD_POOL_TASK_FUNC(lnk_count_present_buckets_task)
 {
   ProfBeginFunction();
@@ -1642,7 +1632,6 @@ THREAD_POOL_TASK_FUNC(lnk_count_present_buckets_task)
   ProfEnd();
 }
 
-internal
 THREAD_POOL_TASK_FUNC(lnk_get_present_buckets_task)
 {
   ProfBeginFunction();
@@ -1662,7 +1651,6 @@ THREAD_POOL_TASK_FUNC(lnk_get_present_buckets_task)
   ProfEnd();
 }
 
-internal
 THREAD_POOL_TASK_FUNC(lnk_assign_type_indices_task)
 {
   LNK_MergeTypes *task  = raw_task;
@@ -1797,7 +1785,6 @@ lnk_patch_symbol_copy(LNK_MergedTypes *types, U32 obj_idx, CV_Symbol symbol)
   exit:;
 }
 
-internal
 THREAD_POOL_TASK_FUNC(lnk_unbucket_hashes_task)
 {
   LNK_MergeTypes *task = raw_task;
@@ -1812,7 +1799,6 @@ THREAD_POOL_TASK_FUNC(lnk_unbucket_hashes_task)
   }
 }
 
-internal
 THREAD_POOL_TASK_FUNC(lnk_build_obj_ti_map)
 {
   LNK_MergeTypes      *task  = raw_task;
@@ -2299,7 +2285,6 @@ lnk_write_pdb_type(LNK_WritePdbTypes *ctx, U64 leaf_idx, String8 source, String8
   return size;
 }
 
-internal
 THREAD_POOL_TASK_FUNC(lnk_measure_pdb_types_task)
 {
   LNK_WritePdbTypes *task = raw_task;
@@ -2313,7 +2298,6 @@ THREAD_POOL_TASK_FUNC(lnk_measure_pdb_types_task)
   }
 }
 
-internal
 THREAD_POOL_TASK_FUNC(lnk_write_pdb_types_task)
 {
   LNK_WritePdbTypes *task = raw_task;
@@ -2489,7 +2473,6 @@ lnk_is_pdb_module_symbol(CV_Symbol *symbol, U64 *scope_depth)
   return 1;
 }
 
-internal
 THREAD_POOL_TASK_FUNC(lnk_move_global_symbols_to_gsi)
 {
   Temp scratch = scratch_begin(&arena, 1);
@@ -3148,7 +3131,6 @@ lnk_write_debug_s_to_pdb_module(LNK_BuildPdb *task, U32 obj_idx, String8 module)
   return module_size;
 }
 
-internal
 THREAD_POOL_TASK_FUNC(lnk_write_pdb_modules)
 {
   Temp scratch = scratch_begin(&arena, 1);
@@ -3247,7 +3229,6 @@ THREAD_POOL_TASK_FUNC(lnk_write_pdb_modules)
   scratch_end(scratch);
 }
 
-internal
 THREAD_POOL_TASK_FUNC(lnk_build_pdb_strings_and_modules)
 {
   LNK_BuildPdb *task = raw_task;
@@ -3325,7 +3306,6 @@ THREAD_POOL_TASK_FUNC(lnk_build_pdb_strings_and_modules)
   scratch_end(scratch);
 }
 
-internal
 THREAD_POOL_TASK_FUNC(lnk_push_dbi_sec_contrib_task)
 {
   // TODO: compute CRC for relocations

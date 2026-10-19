@@ -180,7 +180,6 @@ lnk_read_data_from_file_path(Arena *arena, String8 path, B8 *was_read_out)
   return data_arr.v[0];
 }
 
-internal
 THREAD_POOL_TASK_FUNC(lnk_memory_map_file_task)
 {
   LNK_DiskReader *task = raw_task;

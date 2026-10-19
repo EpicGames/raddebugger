@@ -940,7 +940,6 @@ cv_string_hash_table_insert_or_update(CV_StringBucket **buckets, U64 cap, U64 ha
   return result;
 }
 
-internal
 THREAD_POOL_TASK_FUNC(cv_count_strings_in_debug_s_arr_task)
 {
   ProfBeginFunction();
@@ -969,7 +968,6 @@ THREAD_POOL_TASK_FUNC(cv_count_strings_in_debug_s_arr_task)
   ProfEnd();
 }
 
-internal
 THREAD_POOL_TASK_FUNC(cv_dedup_strings_in_debug_s_arr_task)
 {
   ProfBeginFunction();
@@ -1151,7 +1149,6 @@ cv_string_hash_table_lookup(CV_StringHashTable ht, String8 string)
   return 0;
 }
 
-internal
 THREAD_POOL_TASK_FUNC(cv_pack_string_hash_table_task)
 {
   ProfBeginFunction();

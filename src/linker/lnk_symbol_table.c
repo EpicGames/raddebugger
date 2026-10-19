@@ -761,7 +761,6 @@ lnk_resolve_symbol(LNK_SymbolTable *symtab, LNK_ObjSymbolRef symbol, LNK_ObjSymb
   return is_resolved;
 }
 
-internal
 THREAD_POOL_TASK_FUNC(lnk_replace_weak_with_default_symbol_task)
 {
   Temp scratch = scratch_begin(0,0);

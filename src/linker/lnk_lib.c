@@ -207,7 +207,6 @@ lnk_lib_from_data(Arena *arena, String8 data, String8 path, U64 input_idx, B32 w
   return 0;
 }
 
-internal
 THREAD_POOL_TASK_FUNC(lnk_lib_initer)
 {
   LNK_LibIniter *task          = raw_task;
