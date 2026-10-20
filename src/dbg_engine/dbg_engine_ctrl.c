@@ -4702,7 +4702,12 @@ d_ctrl_thread__open_crash_dump(DMN_CtrlCtx *ctrl_ctx, D_Msg *msg)
           {
             if(n->v.path.size != 0)
             {
-              module_info.local_debug_info_path = str8_copy(module_info_arena, n->v.path);
+              String8 debug_path_absolutified = n->v.path;
+              if(path_style_from_str8(n->v.path) == PathStyle_Relative)
+              {
+                debug_path_absolutified = path_absolute_dst_from_relative_dst_src(scratch.arena, n->v.path, str8_chop_last_slash(dump_modules[idx].path));
+              }
+              module_info.local_debug_info_path = str8_copy(module_info_arena, debug_path_absolutified);
               module_info.dbg_name = str8_skip_last_slash(module_info.local_debug_info_path);
               module_info.dbg_guid = n->v.guid;
               module_info.dbg_age  = n->v.age;
