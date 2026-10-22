@@ -76,7 +76,7 @@ global LNK_CmdSwitch g_cmd_switch_map[] =
   { LNK_CmdSwitch_Rad_CheckUnusedDelayLoadDll,      0, LNK_CmdValueKind_Scalar, "RAD_CHECK_UNUSED_DELAY_LOAD_DLL",      "[:NO]",                "Check for unused delay load dlls."                                                },
   { LNK_CmdSwitch_Rad_DataDirCount,                 0, LNK_CmdValueKind_Scalar, "RAD_DATA_DIR_COUNT",                   ":#",                   "Internal default for PE optional header data directory count."                    },
   { LNK_CmdSwitch_Rad_MapLinesForUnresolvedSymbols, 0, LNK_CmdValueKind_Scalar, "RAD_MAP_LINES_FOR_UNRESOLVED_SYMBOLS", "[:NO]",                "Use debug info to print source file location for unresolved symbol"               },
-  { LNK_CmdSwitch_Rad_BootMode,                     0, LNK_CmdValueKind_Scalar, "RAD_BOOT_MODE",                        "[:LINKER|TYPE_SERVER|LIB]", "Overrides default boot program."                                              },
+  { LNK_CmdSwitch_Rad_Tool,                         0, LNK_CmdValueKind_Scalar, "RAD_TOOL",                             "[:LINKER|TYPE_SERVER|LIB]", "Overrides default boot program."                                              },
   { LNK_CmdSwitch_Rad_Debug,                        0, LNK_CmdValueKind_Scalar, "RAD_DEBUG",                            "[:NO]",                "Emit RAD debug info file."                                                        },
   { LNK_CmdSwitch_Rad_DebugAltPath,                 0, LNK_CmdValueKind_Scalar, "RAD_DEBUGALTPATH",                     ":PATH",                "Alternative output path for the RDI."                                             },
   { LNK_CmdSwitch_Rad_DebugName,                    0, LNK_CmdValueKind_Scalar, "RAD_DEBUG_NAME",                       ":FILENAME",            "Set file name for RAD debug info file."                                           },
@@ -114,6 +114,14 @@ global LNK_CmdSwitch g_cmd_switch_map[] =
   { LNK_CmdSwitch_RadTypeServer,                   0, LNK_CmdValueKind_Scalar, "RAD_TYPE_SERVER", ":FILENAME", "Merge types and store them in the specified file. The filename must have the .rrt extension." },
 
   { LNK_CmdSwitch_LLVM_AddrSig, 0, LNK_CmdValueKind_Scalar, "LLVM_ADDRSIG", "[:NO]", "Use .llvm_addrsig to guide ICF." },
+
+  { LNK_CmdSwitch_Rad_Oodle2,          0, LNK_CmdValueKind_Scalar, "RAD_OODLE2",            ":FILEPATH", "Path to Oodle2 SDK." },
+  { LNK_CmdSwitch_Rad_ObjSegmentSize,  0, LNK_CmdValueKind_Scalar, "RAD_OBJ_SEGMENT_SIZE",  ":#",        "Segment size used for compressing object files. (Min " Stringify(RADCOBJ_MIN_SEGMENT_SIZE) ")." },
+  { LNK_CmdSwitch_Rad_CfmCacheCap,     0, LNK_CmdValueKind_Scalar, "RAD_CFM_CACHE_CAP",     ":#",        "Cache capacity for the compressed file maps."                                                         },
+  { LNK_CmdSwitch_Rad_CfmPrefetchSize, 0, LNK_CmdValueKind_Scalar, "RAD_CFM_PREFETCH_SIZE", ":#",        "Number of bytes to prefetch during file map decompression."                                           },
+  { LNK_CmdSwitch_Rad_CfmWorkerCount,  0, LNK_CmdValueKind_Scalar, "RAD_CFM_WORKER_COUNT",  ":#",        "Number of workers allocated for file map decompression."                                              },
+  { LNK_CmdSwitch_Compress,   0, LNK_CmdValueKind_Null, "COMPRESS",   "", "Run object compressor tool on the input files."   },
+  { LNK_CmdSwitch_Decompress, 0, LNK_CmdValueKind_Null, "DECOMPRESS", "", "Run object decompressor tool on the input files." },
 
   { LNK_CmdSwitch_Help, 0, LNK_CmdValueKind_Null, "HELP", "", "" },
   { LNK_CmdSwitch_Help, 0, LNK_CmdValueKind_Null, "?",    "", "" },
@@ -1305,7 +1313,7 @@ lnk_apply_cmd_option_to_config(LNK_Config *config, String8 cmd_name, String8 val
   } break;
 
   case LNK_CmdSwitch_Def: {
-    if (config->boot_mode == LNK_BootMode_Lib) {
+    if (config->tool == LNK_Tool_Lib) {
       config->build_imp_lib = 1;
       if (value.size) {
         str8_list_push(config->arena, &config->def_paths, push_str8_copy(config->arena, value));
@@ -1364,7 +1372,7 @@ lnk_apply_cmd_option_to_config(LNK_Config *config, String8 cmd_name, String8 val
   case LNK_CmdSwitch_Export: {
     PE_ExportParse export_parse = {0};
     if (lnk_parse_export_directive_ex(config->arena, values, obj, &export_parse)) {
-      if (config->boot_mode == LNK_BootMode_Lib && obj == 0) {
+      if (config->tool == LNK_Tool_Lib && obj == 0) {
         config->build_imp_lib = 1;
       }
       lnk_push_export_to_config(config, obj, export_parse);
@@ -1467,7 +1475,7 @@ lnk_apply_cmd_option_to_config(LNK_Config *config, String8 cmd_name, String8 val
   } break;
 
   case LNK_CmdSwitch_Ignore: {
-    if (config->boot_mode == LNK_BootMode_Lib) {
+    if (config->tool == LNK_Tool_Lib) {
       String8List codes = str8_split_by_string_chars(scratch.arena, value, str8_lit(","), 0);
       if (codes.node_count == 0) {
         lnk_error_cmd_switch_invalid_param_count(LNK_Error_Cmdl, 0, cmd_switch);
@@ -1533,7 +1541,7 @@ lnk_apply_cmd_option_to_config(LNK_Config *config, String8 cmd_name, String8 val
   } break;
 
   case LNK_CmdSwitch_Lib: {
-    config->boot_mode = LNK_BootMode_Lib;
+    config->tool = LNK_Tool_Lib;
   } break;
 
   case LNK_CmdSwitch_LibPath: {
@@ -2027,11 +2035,11 @@ lnk_apply_cmd_option_to_config(LNK_Config *config, String8 cmd_name, String8 val
     lnk_cmd_switch_parse_flag(obj, cmd_switch, value, &config->map_lines_for_unresolved_symbols);
   } break;
 
-  case LNK_CmdSwitch_Rad_BootMode: {
-#define X(n,...) if (str8_matchi(value, str8_lit(Stringify(n)))) { config->boot_mode = LNK_BootMode_##n; break; }
-    LNK_BootMode_XList
+  case LNK_CmdSwitch_Rad_Tool: {
+#define X(n,...) if (str8_matchi(value, str8_lit(Stringify(n)))) { config->tool = LNK_Tool_##n; break; }
+    LNK_Tool_XList
 #undef X
-    lnk_error_cmd_switch(LNK_Error_Boot, obj, cmd_switch, "unknown boot mode: \"%S\".", value);
+    lnk_error_cmd_switch(LNK_Error_Boot, obj, cmd_switch, "unknown tool: \"%S\".", value);
   } break;
 
   case LNK_CmdSwitch_Rad_Debug: {
@@ -2329,7 +2337,7 @@ lnk_apply_cmd_option_to_config(LNK_Config *config, String8 cmd_name, String8 val
     if (config->type_server_name.size) {
       String8 ext = str8_postfix(config->type_server_name, s("rrt").size);
       if (str8_matchi(ext, s("rrt"))) {
-        config->boot_mode = LNK_BootMode_TypeServer;
+        config->tool = LNK_Tool_TypeServer;
       } else {
         lnk_error_cmd_switch(LNK_Error_Cmdl, obj, cmd_switch, "missing .rrt file extension after type server name %S", config->type_server_name);
       }
@@ -2340,6 +2348,61 @@ lnk_apply_cmd_option_to_config(LNK_Config *config, String8 cmd_name, String8 val
 
   case LNK_CmdSwitch_LLVM_AddrSig: {
     lnk_cmd_switch_parse_flag(obj, cmd_switch, value, &config->llvm_addrsig);
+  } break;
+
+  case LNK_CmdSwitch_Rad_Oodle2: {
+    lnk_cmd_switch_parse_string_copy(config->arena, obj, cmd_switch, value, &config->oodle2_path);
+  } break;
+
+  case LNK_CmdSwitch_Rad_ObjSegmentSize: {
+    U64 segment_size = 0;
+    if ( ! lnk_cmd_switch_parse_u64(obj, cmd_switch, value, &segment_size, LNK_ParseU64Flag_CheckPow2)) {
+      break;
+    }
+    if (segment_size < RADCOBJ_MIN_SEGMENT_SIZE) {
+      lnk_error_cmd_switch(LNK_Error_Cmdl, obj, cmd_switch, "segment size is below the minimal size %llu", RADCOBJ_MIN_SEGMENT_SIZE);
+      break;
+    }
+    config->obj_segment_size = segment_size;
+  } break;
+
+  case LNK_CmdSwitch_Rad_CfmCacheCap: {
+    U64 cfm_cache_cap = 0;
+    if ( ! lnk_cmd_switch_parse_u64(obj, cmd_switch, value, &cfm_cache_cap, 0)) {
+      break;
+    }
+    if (cfm_cache_cap < CFM_MIN_CACHE_SIZE) {
+      lnk_error_cmd_switch(LNK_Error_Cmdl, obj, cmd_switch, "failed to set cache size; min cache size is %llu", CFM_MIN_CACHE_SIZE);
+      break;
+    }
+    config->cfm_cache_cap = cfm_cache_cap;
+  } break;
+
+  case LNK_CmdSwitch_Rad_CfmPrefetchSize: {
+    U64 cfm_prefetch_size = 0;
+    if ( ! lnk_cmd_switch_parse_u64(obj, cmd_switch, value, &cfm_prefetch_size, 0)) {
+      break;
+    }
+    config->cfm_prefetch_size = cfm_prefetch_size;
+  } break;
+
+  case LNK_CmdSwitch_Rad_CfmWorkerCount: {
+    U64 cfm_worker_count = 0;
+    if ( ! lnk_cmd_switch_parse_u64(obj, cmd_switch, value, &cfm_worker_count, 0)) {
+      break;
+    }
+    if (cfm_worker_count == 0) {
+      lnk_error_cmd_switch(LNK_Error_Cmdl, obj, cmd_switch, "number of CFM workers must be greater than zero");
+    }
+    config->cfm_worker_count = cfm_worker_count;
+  } break;
+
+  case LNK_CmdSwitch_Compress: {
+    config->tool = LNK_Tool_Compress;
+  } break;
+
+  case LNK_CmdSwitch_Decompress: {
+    config->tool = LNK_Tool_Decompress;
   } break;
   }
 
@@ -2431,9 +2494,9 @@ lnk_apply_def_file_to_config(LNK_Config *config, String8 path, LNK_Obj *obj)
   Temp scratch = scratch_begin(&config->arena, 1);
 
   // load DEF file
-  B8      file_read = 0;
-  String8 raw_file  = lnk_read_data_from_file_path(scratch.arena, path, &file_read);
-  if ( ! file_read) {
+  B8      was_file_read = 0;
+  String8 raw_file      = lnk_read_data_from_file_path(scratch.arena, path, &was_file_read);
+  if ( ! was_file_read) {
     lnk_error(LNK_Error_Cmdl, "failed to read DEF file: %S", path);
     goto exit;
   }
@@ -2606,7 +2669,7 @@ lnk_apply_def_file_to_config(LNK_Config *config, String8 path, LNK_Obj *obj)
         }
 
         if (config->out_path.size == 0) {
-          config->out_path = config->boot_mode == LNK_BootMode_Lib
+          config->out_path = config->tool == LNK_Tool_Lib
             ? path_replace_file_extension(config->arena, image_name, str8_lit("lib"))
             : push_str8_copy(config->arena, image_name);
         }
@@ -2739,9 +2802,9 @@ lnk_unwrap_cmd_line(Arena *arena, String8List arg_list)
       }
 
       // read rsp from disk
-      B8 is_file_read = 0;
-      String8 file_data = lnk_read_data_from_file_path(scratch.arena, file_name, &is_file_read);
-      if ( ! is_file_read) {
+      B8      was_rsp_read = 0;
+      String8 file_data    = lnk_read_data_from_file_path(scratch.arena, file_name, &was_rsp_read);
+      if ( ! was_rsp_read) {
         lnk_error(LNK_Error_Cmdl, "unable to find RSP: %S", file_name);
         continue;
       }
@@ -2766,7 +2829,7 @@ lnk_unwrap_cmd_line(Arena *arena, String8List arg_list)
 }
 
 internal LNK_CmdLine
-lnk_make_default_cmd_line(Arena *arena, LNK_CmdLine user_cmd_line, LNK_BootMode boot_mode)
+lnk_make_default_cmd_line(Arena *arena, LNK_CmdLine user_cmd_line, LNK_Tool tool)
 {
   Temp scratch = scratch_begin(&arena, 1);
   LNK_CmdLine cmd_line = {0};
@@ -2785,7 +2848,7 @@ lnk_make_default_cmd_line(Arena *arena, LNK_CmdLine user_cmd_line, LNK_BootMode 
     (char*)str8f(scratch.arena, "/STACK:%llu,%llu", MB(1), KB(4)).str,
 
     //"/RAD_BUILD_EXP",
-    boot_mode == LNK_BootMode_Lib ? "/RAD_BUILD_IMPLIB:NO" : "/RAD_BUILD_IMPLIB",
+    tool == LNK_Tool_Lib ? "/RAD_BUILD_IMPLIB:NO" : "/RAD_BUILD_IMPLIB",
     "/RAD_AGE:1",
     "/RAD_CHECK_UNUSED_DELAY_LOAD_DLL",
     "/RAD_DO_MERGE",
@@ -2824,6 +2887,13 @@ lnk_make_default_cmd_line(Arena *arena, LNK_CmdLine user_cmd_line, LNK_BootMode 
     // the algorithm must compare each section property before
     // deciding whether sections are truly identical.
     "/RAD_ICF_HASH_KIND:BLAKE3",
+
+    (char*)str8f(scratch.arena, "/RAD_CFM_CACHE_CAP:%llu", GB(8)).str,
+    (char*)str8f(scratch.arena, "/RAD_CFM_WORKER_COUNT:%llu", 8).str,
+    (char*)str8f(scratch.arena, "/RAD_CFM_PREFETCH_SIZE:%llu", KB(4)).str,
+
+    "/RAD_OODLE2:oo2core_9_win64.dll",
+    (char*)str8f(scratch.arena, "/RAD_OBJ_SEGMENT_SIZE:%llu", KB(512)).str,
   };
 
   char *push_opts[] = {
@@ -2906,11 +2976,11 @@ lnk_config_apply_cmd_line(LNK_Config *config, LNK_CmdLine input_cmd_line)
 
   HashMap     env_vars      = lnk_env_vars_from_process_info(scratch.arena, get_process_info(), LNK_EnvVarRule_Batch);
   LNK_CmdLine user_cmd_line = input_cmd_line;
-  LNK_CmdLine cmd_line      = lnk_make_default_cmd_line(scratch.arena, user_cmd_line, config->boot_mode);
+  LNK_CmdLine cmd_line      = lnk_make_default_cmd_line(scratch.arena, user_cmd_line, config->tool);
   lnk_cmd_line_concat_in_place(&cmd_line, &user_cmd_line);
 
   config->force = lnk_cmd_line_has_switch(cmd_line, LNK_CmdSwitch_Force);
-  config->build_exp = config->boot_mode == LNK_BootMode_Lib;
+  config->build_exp = config->tool == LNK_Tool_Lib;
 
   // apply command line switches
   for EachNode(cmd, LNK_CmdOption, cmd_line.first_option) {
@@ -3046,14 +3116,14 @@ lnk_config_apply_cmd_line(LNK_Config *config, LNK_CmdLine input_cmd_line)
   // handle empty /OUT
   // Read deferred DEF files after all user options, so /LIB and /NAME do not
   // depend on their order relative to /DEF. Objects add exports during collection.
-  if (config->boot_mode == LNK_BootMode_Lib) {
+  if (config->tool == LNK_Tool_Lib) {
     for EachNode(def, String8Node, config->def_paths.first) {
       lnk_apply_def_file_to_config(config, def->string, 0);
     }
   }
 
   if (!config->out_path.size) {
-    if (config->boot_mode == LNK_BootMode_Lib) {
+    if (config->tool == LNK_Tool_Lib) {
       String8 name = str8_list_first(&config->input_list[LNK_Input_Obj]);
       if (!name.size) { name = str8_list_first(&config->input_list[LNK_Input_Lib]); }
       if (!name.size) { name = config->image_alt_path; }
@@ -3228,7 +3298,11 @@ lnk_config_init(U64 argc, char **argv)
   // select the program before interpreting program-specific switches or defaults
   for EachNode(cmd, LNK_CmdOption, cmd_line.first_option) {
     LNK_CmdSwitchType type = lnk_cmd_switch_type_from_string(cmd->string);
-    if (type == LNK_CmdSwitch_Lib || type == LNK_CmdSwitch_Rad_BootMode || type == LNK_CmdSwitch_RadTypeServer) {
+    if (type == LNK_CmdSwitch_Rad_Tool ||
+        type == LNK_CmdSwitch_Lib      ||
+        type == LNK_CmdSwitch_Compress ||
+        type == LNK_CmdSwitch_Decompress ||
+        type == LNK_CmdSwitch_RadTypeServer) {
       lnk_apply_cmd_option_to_config(config, cmd->string, cmd->value, 0);
     }
   }

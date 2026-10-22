@@ -5,11 +5,12 @@
 
 // --- Input -------------------------------------------------------------------
 
+// parallel arrays are indexed by primary symbol index
 typedef struct LNK_ObjSymbolArray
 {
-  U64                   count;
-  U32Array              primary_bits;
-  U32                  *block_bases;
+  U64                   count;        // primary symbol count
+  U32Array              primary_bits; // set bit indicates symbol is a primary
+  U32                  *block_bases;  // index of the primary symbol in the symbol table
   U64                  *values;
   U32                  *section_numbers;
   COFF_SymbolType      *types;
@@ -19,9 +20,9 @@ typedef struct LNK_ObjSymbolArray
   U32                  *name_sizes;
 } LNK_ObjSymbolArray;
 
+// parallel arrays are indexed by COFF section number; slot zero is null
 typedef struct LNK_ObjSectionArray
 {
-  // Parallel arrays are indexed by COFF section number; slot zero is null.
   U64                 count_no_null;
   COFF_SectionHeader *headers;
   U32                *comdats;
@@ -36,29 +37,32 @@ typedef struct LNK_ObjImportMetadata
 
 typedef struct LNK_ObjCoff
 {
-  String8                data;
-  COFF_FileHeaderInfo    header;
-  LNK_ObjSectionArray    sections;
-  LNK_ObjSymbolArray     symbols;
-  LNK_ObjImportMetadata *import_metadata;
-  U32                    debug_t_section_number;
-  U32                    debug_p_section_number;
-  U32                    debug_h_section_number;
-  U32                    llvm_addrsig_section_number;
-  B8                     hotpatch;
+  String8                data;                        // object backing bytes
+  COFF_FileHeaderInfo    header;                      // abstracted COFF file header
+  LNK_ObjSectionArray    sections;                    // object file section table
+  LNK_ObjSymbolArray     symbols;                     // object file symbol table
+  LNK_ObjImportMetadata *import_metadata;             // import metadata sections
+  U32                    debug_t_section_number;      // section index of debug$T, max_U32 if not present.
+  U32                    debug_p_section_number;      // section index of debug$P, max_U32 if not present.
+  U32                    debug_h_section_number;      // section index of debug$H, max_U32 if not present.
+  U32                    llvm_addrsig_section_number; // section index of llvm_addrsig, max_U32 if not present.
+  B8                     hotpatch;                    // indicates if object compiled with /hotpatch
 } LNK_ObjCoff;
 
+typedef struct LNK_Input   LNK_Input;
 typedef struct LNK_Lib     LNK_Lib;
 typedef struct LNK_ObjNode LNK_ObjNode;
+
 typedef struct LNK_Obj
 {
-  String8           path;
-  LNK_ObjCoff       coff;
-  B8                exclude_from_debug_info;
-  U32               input_idx;
-  LNK_ObjSymbolRef *symlinks; // indexed by COFF section number; slot zero is null
-  LNK_Lib          *lib;
-  LNK_ObjNode      *self;
+  String8           path;                    // path where object file was loaded from
+  LNK_ObjCoff       coff;                    // extracted COFF info about the object
+  B8                exclude_from_debug_info; // is object linkgen
+  U32               input_idx;               // input index of the object file
+  LNK_ObjSymbolRef *symlinks;                // indexed by COFF section number; slot zero is null
+  LNK_Lib          *lib;                     // library that contains the object
+  LNK_ObjNode      *self;                    // object node in the link list
+  LNK_Input        *input;
 
   // @type_server
   Rng1U64       ti_range;
@@ -77,7 +81,6 @@ typedef struct LNK_ObjSection
   Rng1U64             frange;
   U32                 reloc_count;
 } LNK_ObjSection;
-
 
 typedef struct LNK_ObjNode
 {

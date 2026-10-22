@@ -4,18 +4,20 @@
 #pragma once
 
 // entry points
-#define LNK_BootMode_XList \
+#define LNK_Tool_XList \
   X(Linker)     \
   X(TypeServer) \
   X(Lib)        \
+  X(Compress)   \
+  X(Decompress) \
   /* end */
 
 typedef enum
 {
-#define X(n,...) LNK_BootMode_##n,
-  LNK_BootMode_XList
+#define X(n,...) LNK_Tool_##n,
+  LNK_Tool_XList
 #undef X
-} LNK_BootMode;
+} LNK_Tool;
 
 #if OS_WINDOWS
 # define LNK_MANIFEST_MERGE_TOOL_NAME "mt.exe"
@@ -110,7 +112,7 @@ typedef enum
   LNK_CmdSwitch_WholeArchive,
 
   LNK_CmdSwitch_Rad_Age,
-  LNK_CmdSwitch_Rad_BootMode,
+  LNK_CmdSwitch_Rad_Tool,
   LNK_CmdSwitch_Rad_BuildExp,
   LNK_CmdSwitch_Rad_BuildImpLib,
   LNK_CmdSwitch_Rad_BuildInfo,
@@ -152,11 +154,17 @@ typedef enum
   LNK_CmdSwitch_Rad_WorkDir,
   LNK_CmdSwitch_Rad_Workers,
   LNK_CmdSwitch_Rad_WriteTempFiles,
-
   LNK_CmdSwitch_RadTypeServer,
   LNK_CmdSwitch_RadTypeServer_MatchObj,
-
   LNK_CmdSwitch_LLVM_AddrSig,
+
+  LNK_CmdSwitch_Rad_Oodle2,
+  LNK_CmdSwitch_Rad_ObjSegmentSize,
+  LNK_CmdSwitch_Rad_CfmCacheCap,
+  LNK_CmdSwitch_Rad_CfmPrefetchSize,
+  LNK_CmdSwitch_Rad_CfmWorkerCount,
+  LNK_CmdSwitch_Compress,
+  LNK_CmdSwitch_Decompress,
 
   LNK_CmdSwitch_Help,
 
@@ -325,7 +333,7 @@ typedef enum
 typedef struct LNK_Config
 {
   Arena                      *arena;
-  LNK_BootMode                boot_mode;
+  LNK_Tool                    tool;
   LNK_ConfigFlags             flags;
   LNK_DebugMode               debug_mode;
   B32                         ghash;
@@ -436,6 +444,13 @@ typedef struct LNK_Config
 
   // LIB
   String8List def_paths;
+
+  // COMPRESS
+  String8 oodle2_path;
+  U64     obj_segment_size;
+  U64     cfm_cache_cap;
+  U64     cfm_prefetch_size;
+  U64     cfm_worker_count;
 } LNK_Config;
 
 // --- MSVC Error Codes --------------------------------------------------------

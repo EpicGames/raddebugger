@@ -14,6 +14,7 @@
 
 #include "base/base_inc.h"
 #include "hash_table.h"
+#include "compression/compression_inc.h"
 #include "coff/coff.h"
 #include "coff/coff_parse.h"
 #include "coff/coff_obj_writer.h"
@@ -35,6 +36,7 @@
 
 #include "base/base_inc.c"
 #include "hash_table.c"
+#include "compression/compression_inc.c"
 #include "coff/coff.c"
 #include "coff/coff_parse.c"
 #include "coff/coff_obj_writer.c"
@@ -122,6 +124,7 @@
 #include "lnk_hasher.c"
 #include "lnk_io.c"
 #include "lnk_cmd_line.c"
+#include "lnk_obj_codec.c"
 #include "lnk_config.c"
 #include "lnk_name_trie.c"
 #include "lnk_symbol_table.c"
@@ -138,7 +141,8 @@
 //
 // [ ] Handle EXPORTAS (short import header contains an optional third string that should be used as export name)
 // [ ] Omit the import descriptors on /WHOLEARCHIVE to help with the current metadata handling complexity that comes from including every lib member
-//
+// [ ] Reduce the duplicative fields in LNK_Obj now that LNK_Input is there
+// [ ] Pass over LNK_Config and separate common switches from linker specific switches
 
 internal String8
 lnk_make_full_path(Arena *arena, PathStyle system_path_style, String8 work_dir, String8 path)
@@ -330,9 +334,9 @@ lnk_manifest_from_inputs(Arena       *arena,
     lnk_merge_manifest_files(mt_path, merged_manifest_path, unique_input_manifest_paths);
 
     // read mt.exe output from disk
-    B8 was_manifest_read;
+    B8 was_manifest_read = 0;
     manifest_data = lnk_read_data_from_file_path(arena, merged_manifest_path, &was_manifest_read);
-    if (was_manifest_read == 0) {
+    if ( ! was_manifest_read) {
       lnk_error(LNK_Error_Mt, "unable to find mt.exe output manifest on disk, expected path \"%S\"", merged_manifest_path);
     }
 
@@ -995,8 +999,9 @@ lnk_inputer_push_lib_thin(LNK_Inputer *inputer, LNK_Config *config, LNK_InputSou
     BucketNode *was_reported = hash_table_search_path(inputer->missing_lib_ht, path);
     if (was_reported == 0) {
       hash_table_push_path_u64(inputer->arena, inputer->missing_lib_ht, path, 0);
-      LNK_ErrorCode code = config->boot_mode == LNK_BootMode_Lib && input_source == LNK_InputSource_CmdLine
-                          ? LNK_Error_InvalidPath : LNK_Warning_FileNotFound;
+      LNK_ErrorCode code = config->tool == LNK_Tool_Lib && input_source == LNK_InputSource_CmdLine
+                           ? LNK_Error_InvalidPath
+                           : LNK_Warning_FileNotFound;
       lnk_error(code, "unable to find library `%S`", path);
     }
     goto exit;
@@ -1046,7 +1051,7 @@ lnk_has_pending_input_work(LNK_Inputer *inputer, LNK_Link *link)
 }
 
 internal LNK_InputPtrArray
-lnk_inputer_flush(Arena *arena, TP_Context *tp, LNK_Inputer *inputer, LNK_InputList *all_inputs, LNK_InputList *new_inputs)
+lnk_inputer_flush(Arena *arena, TP_Context *tp, LNK_Config *config, LNK_Inputer *inputer, LNK_InputList *all_inputs, LNK_InputList *new_inputs)
 {
   ProfBeginFunction();
   Temp scratch = scratch_begin(&arena, 1);
@@ -1078,18 +1083,18 @@ lnk_inputer_flush(Arena *arena, TP_Context *tp, LNK_Inputer *inputer, LNK_InputL
   ProfEnd();
 
   ProfBegin("Load Inputs From Disk"); 
-  B8           *thin_input_was_read = push_array(scratch.arena, B8, thin_input_paths.count);
-  String8Array  thin_input_datas    = lnk_read_data_from_file_path_parallel(tp, inputer->arena, thin_input_paths, thin_input_was_read);
+  File         *thin_input_handles = push_array(inputer->arena, File, thin_input_paths.count);
+  String8Array  thin_input_datas   = lnk_read_data_from_file_path_parallel_with_handles(tp, inputer->arena, thin_input_paths, thin_input_handles);
   for EachIndex(thin_input_idx, thin_inputs_count) {
-    thin_inputs[thin_input_idx]->has_disk_read_failed = !thin_input_was_read[thin_input_idx];
-    thin_inputs[thin_input_idx]->owns_file_map        = thin_input_datas.v[thin_input_idx].size != 0;
-    thin_inputs[thin_input_idx]->data                 = thin_input_datas.v[thin_input_idx];
+    thin_inputs[thin_input_idx]->handle        = thin_input_handles[thin_input_idx];
+    thin_inputs[thin_input_idx]->owns_file_map = thin_input_datas.v[thin_input_idx].size != 0;
+    thin_inputs[thin_input_idx]->data          = thin_input_datas.v[thin_input_idx];
   }
   ProfEnd();
 
   ProfScope("Disk Read Check") {
     for EachIndex(i, thin_inputs_count) {
-      if (thin_inputs[i]->has_disk_read_failed) {
+      if (file_match(thin_inputs[i]->handle, file_zero())) {
         lnk_error(LNK_Error_InvalidPath, "unable to find file \"%S\"", thin_inputs[i]->path);
       }
     }
@@ -1097,9 +1102,8 @@ lnk_inputer_flush(Arena *arena, TP_Context *tp, LNK_Inputer *inputer, LNK_InputL
 
   LNK_InputPtrArray result = lnk_array_from_input_list(arena, *new_inputs);
 
-  // archive files are validated together by the library loader
   if (all_inputs != &inputer->libs) {
-    // classify materialized object and member inputs
+    // classify materialized inputs
     for EachIndex(i, result.count) {
       LNK_Input *input = result.v[i];
       if (input->type == COFF_DataType_Null) {
@@ -1144,14 +1148,23 @@ lnk_inputer_flush(Arena *arena, TP_Context *tp, LNK_Inputer *inputer, LNK_InputL
   return result;
 }
 
-THREAD_POOL_TASK_FUNC(lnk_release_file_maps_task)
+internal void
+lnk_input_release_file_map(LNK_Input *input)
 {
-  LNK_ReleaseFileMapsTask *task = raw_task;
-  for (U64 input_idx; (input_idx = ins_atomic_u64_inc_eval(&task->next_input_idx) - 1) < task->inputs.count;) {
-    LNK_Input *input = task->inputs.v[input_idx];
+  if (input->owns_file_map) {
     file_map_view_close((FileMap){0}, input->data.str, r1u64(0, input->data.size));
     input->data          = str8_zero();
     input->owns_file_map = 0;
+  }
+}
+
+THREAD_POOL_TASK_FUNC(lnk_release_file_maps_task)
+{
+  LNK_ReleaseFileMapsTask *task = raw_task;
+  for (U64 input_idx;
+       (input_idx = ins_atomic_u64_inc_eval(&task->next_input_idx) - 1) < task->inputs.count;) {
+    LNK_Input *input = task->inputs.v[input_idx];
+    lnk_input_release_file_map(input);
   }
 }
 
@@ -1271,7 +1284,7 @@ lnk_apply_obj_directives(LNK_Config *config, LNK_ObjList objs)
       for EachNode(dir, LNK_Directive, directive_info.v[i].first) {
         // preserve all raw directives in the object; librarian only
         // consumes exports for an import-library operation
-        if (config->boot_mode == LNK_BootMode_Lib &&
+        if (config->tool == LNK_Tool_Lib &&
             (lnk_cmd_switch_type_from_string(dir->id) != LNK_CmdSwitch_Export || !config->build_imp_lib)) {
           continue;
         }
@@ -1330,22 +1343,28 @@ lnk_load_objs(TP_Context *tp, TP_Arena *arena, LNK_Config *config, LNK_Inputer *
 {
   ProfBeginV("Load Objs [Count %llu]", inputer->new_objs.count);
 
-  LNK_InputPtrArray inputs = lnk_inputer_flush(arena->v[0], tp, inputer, &inputer->objs, &inputer->new_objs);
-  String8List remove_sections = config->boot_mode == LNK_BootMode_Linker ? config->remove_sections : (String8List){0};
-  lnk_obj_from_input_many(tp, arena, inputs, remove_sections);
+  Temp scratch = scratch_begin(arena->v, arena->count);
+
+  // load inputs from the disk
+  LNK_InputPtrArray inputs = lnk_inputer_flush(arena->v[0], tp, config, inputer, &inputer->objs, &inputer->new_objs);
+
+  // load objects from inputs
+  lnk_obj_from_input_many(tp, arena, inputs, config->remove_sections);
+
+  // infer the machine from loaded objects
   lnk_resolve_machine(inputs, config);
 
+  // append inputs to the result object list
   LNK_ObjList objs = {0};
   for EachIndex(i, inputs.count) {
-    if (inputs.v[i]->type == COFF_DataType_Import) {
-      lnk_error_input_obj(LNK_Error_IllData, inputs.v[i], "expected an object, found a short import");
-      continue;
-    }
+    AssertAlways(inputs.v[i]->type == COFF_DataType_Obj || inputs.v[i]->type == COFF_DataType_BigObj);
     lnk_obj_list_push_node(&objs, inputs.v[i]->obj);
   }
 
+  // apply objects directries to the config
   lnk_apply_obj_directives(config, objs);
 
+  scratch_end(scratch);
   ProfEnd();
   return objs;
 }
@@ -1356,7 +1375,7 @@ lnk_load_libs(TP_Context *tp, TP_Arena *arena, LNK_Config *config, LNK_Inputer *
   for EachIndex(input_source, LNK_InputSource_Count) {
     ProfBegin("Input Libs [Count %llu]", inputer->new_libs[input_source].count);
 
-    LNK_InputPtrArray new_input_libs = lnk_inputer_flush(arena->v[0], tp, inputer, &inputer->libs, &inputer->new_libs[input_source]);
+    LNK_InputPtrArray new_input_libs = lnk_inputer_flush(arena->v[0], tp, config, inputer, &inputer->libs, &inputer->new_libs[input_source]);
 
     if (lnk_get_log_status(LNK_Log_InputLib) && new_input_libs.count) {
       U64 input_size = 0;
@@ -1409,14 +1428,59 @@ lnk_load_inputs(TP_Context *tp, TP_Arena *arena, LNK_Config *config, LNK_Inputer
   LNK_ObjList objs        = {0};
 
   // materialize inputs
-  LNK_InputPtrArray direct  = lnk_inputer_flush(arena->v[0], tp, inputer, &inputer->objs,    &inputer->new_objs);
-  LNK_InputPtrArray members = lnk_inputer_flush(arena->v[0], tp, inputer, &inputer->members, &inputer->new_members);
+  LNK_InputPtrArray direct  = lnk_inputer_flush(arena->v[0], tp, config, inputer, &inputer->objs,    &inputer->new_objs);
+  LNK_InputPtrArray members = lnk_inputer_flush(arena->v[0], tp, config, inputer, &inputer->members, &inputer->new_members);
   LNK_InputPtrArray all = {
     .count = direct.count + members.count,
     .v     = push_array(scratch.arena, LNK_Input *, direct.count + members.count),
   };
   MemoryCopy(all.v, direct.v, direct.count * sizeof(*all.v));
   MemoryCopy(all.v + direct.count, members.v, members.count * sizeof(*all.v));
+
+  {
+    // gather compressed objects
+    U64List compressed_inputs = {0};
+    for EachIndex(i, all.count) {
+      LNK_Input *input = all.v[i];
+      if (lnk_obj_codec_matches(input->data)) {
+        u64_list_push(scratch.arena, &compressed_inputs, i);
+      }
+    }
+
+    if (compressed_inputs.count > 0) {
+      // lazy init CFM when input has compressed objects
+      if (inputer->cfm == NULL) {
+        String8 sdk_paths[CMP_SdkType_Count] = { [CMP_SdkType_Oodle2] = config->oodle2_path };
+        inputer->cfm = cfm_alloc(config->cfm_cache_cap, config->cfm_prefetch_size, config->cfm_worker_count, 1, lnk_cobj_codec(), sdk_paths);
+
+        B32 is_handler_installed = cfm_install_fault_handler(inputer->cfm);
+        AssertAlways(is_handler_installed);
+      }
+
+      for EachNode(n, U64Node, compressed_inputs.first) {
+        LNK_Input *input = all.v[n->data];
+        AssertAlways(input->type == COFF_DataType_BigObj || input->type == COFF_DataType_Obj);
+
+        // release file map
+        lnk_input_release_file_map(input);
+
+        // reopen file map with compressed backing
+        CFM_Status status = cfm_map_open(inputer->cfm, input->handle, &input->cfm_map);
+        if (status != 0) {
+          if (status == CFM_MixedSegmentSizes) {
+            lnk_error(LNK_Error_MixedSegmentSizes, "mixed segment sizes is not a supported case; please compress objects with the same segment size; expected %llu, %S", inputer->cfm->first_segment_size, input->path);
+          } else {
+            lnk_error(LNK_Error_Cfm, "failed to open compressed file map, reason %s, path %S", cfm_status_string(status), input->path);
+          }
+          lnk_exit(1);
+        }
+
+        // update inputs data
+        Assert(input->data.size == 0 && input->data.str == NULL);
+        input->data = input->cfm_map->data;
+      }
+    }
+  }
 
   lnk_obj_from_input_many(tp, arena, all, config->remove_sections);
   lnk_resolve_machine(all, config);
@@ -2496,10 +2560,10 @@ lnk_link_image(TP_Context *tp, TP_Arena *arena, LNK_Config *config, LNK_Inputer 
     
     ProfBegin("Load .res files from disk");
     for EachNode(node, String8Node, config->input_list[LNK_Input_Res].first) {
-      B8      was_read = 0;
-      String8 res_data = lnk_read_data_from_file_path(scratch.arena, node->string, &was_read);
+      B8      was_res_read = 0;
+      String8 res_data     = lnk_read_data_from_file_path(scratch.arena, node->string, &was_res_read);
 
-      if (was_read == 0) {
+      if ( ! was_res_read) {
         lnk_error(LNK_Error_LoadRes, "unable to open res file: %S", node->string);
         continue;
       }
@@ -7239,7 +7303,7 @@ lnk_run_lib(LNK_Config *config)
       }
     }
 
-    inputs.members = lnk_inputer_flush(arena->v[0], tp, inputer, &inputer->members, &inputer->new_members);
+    inputs.members = lnk_inputer_flush(arena->v[0], tp, config, inputer, &inputer->members, &inputer->new_members);
     lnk_obj_from_input_many(tp, arena, inputs.members, (String8List){0});
     lnk_resolve_machine(inputs.members, config);
 
@@ -7369,6 +7433,110 @@ lnk_run_lib(LNK_Config *config)
 }
 
 internal void
+lnk_run_compress(LNK_Config *config)
+{
+  ProfBeginFunction();
+  Temp scratch = scratch_begin(0,0);
+
+  // open compression SDK
+  CMP_Ctx *sdk = 0;
+  char    *sdk_error = cmp_open(scratch.arena, CMP_SdkType_Oodle2, config->oodle2_path, &sdk);
+  if (sdk_error != 0) {
+    lnk_error(LNK_Error_InvalidPath, "Failed to open compression SDK; reason: %s", sdk_error);
+    lnk_exit(1);
+  }
+
+  TP_Context *tp    = tp_alloc(scratch.arena, config->worker_count, config->max_worker_count, config->shared_thread_pool_name);
+  TP_Arena   *arena = tp_arena_alloc(tp);
+
+  // load inputs
+  LNK_Inputer     *inputer = lnk_inputer_init();
+  LNK_SymbolTable *symtab  = lnk_symbol_table_init(arena);
+  LNK_Link        *link    = lnk_link_init(arena, config);
+  for EachNode(path, String8Node, config->input_list[LNK_Input_Obj].first) {
+    lnk_inputer_push_obj_thin(inputer, 0, path->string);
+  }
+
+  LNK_ObjList objs = lnk_load_objs(tp, arena, config, inputer);
+
+  for EachNode(n, LNK_ObjNode, objs.first) {
+    LNK_Obj *obj = &n->data;
+
+    // compress obj backing bytes
+    String8 compressed_obj = lnk_obj_codec_encode(scratch.arena, sdk, config->obj_segment_size, obj->coff.data);
+
+    // release backing file
+    lnk_input_release_file_map(obj->input);
+    file_close(obj->input->handle);
+
+    // overwrite obj with compressed version
+    lnk_write_data_to_file_path(obj->path, str8_zero(), compressed_obj);
+  }
+
+  cmp_close(sdk);
+  tp_release(tp);
+  tp_arena_release(&arena);
+  scratch_end(scratch);
+  ProfEnd();
+}
+
+internal void
+lnk_run_decompress(LNK_Config *config)
+{
+  ProfBeginFunction();
+  Temp scratch = scratch_begin(0,0);
+
+  // open compression SDK
+  CMP_Ctx *sdk = 0;
+  char    *sdk_error = cmp_open(scratch.arena, CMP_SdkType_Oodle2, config->oodle2_path, &sdk);
+  if (sdk_error != 0) {
+    lnk_error(LNK_Error_InvalidPath, "failed to open compression SDK; reason: %s", sdk_error);
+    lnk_exit(1);
+  }
+
+  // decompress object files
+  U64 scratch_buffer_size = 0;
+  U8 *scratch_buffer      = 0;
+  for EachNode(path_n, String8Node, config->input_list[LNK_Input_Obj].first) {
+    String8 path = path_n->string;
+
+    B8 was_read = 0;
+    String8 file_data = lnk_read_data_from_file_path(scratch.arena, path, &was_read);
+    if (was_read == 0) {
+      lnk_error(LNK_Error_FileNotFound, "failed to read file from path: %S", path);
+      continue;
+    }
+    
+    if (lnk_obj_codec_matches(file_data)) {
+      CMP_CompressorInfoUnpacked compressor_info = {0};
+      if (lnk_obj_codec_compressor_info(file_data, &compressor_info)) {
+        U8 *decode_buffer = push_array(scratch.arena, U8, compressor_info.v.raw_size);
+
+        U64 needed_decode_scratch_size = cmp_scratch(sdk, compressor_info.v.segment_size);
+        if (scratch_buffer_size < needed_decode_scratch_size) {
+          scratch_buffer      = push_array(scratch.arena, U8, needed_decode_scratch_size);
+          scratch_buffer_size = needed_decode_scratch_size;
+        }
+
+        B32 is_decoded = lnk_obj_codec_decode(sdk, &compressor_info, r1u64(0, compressor_info.v.segment_count), file_data, str8(decode_buffer, compressor_info.v.raw_size), str8(scratch_buffer, scratch_buffer_size));
+        if (is_decoded) {
+          file_map_view_close((FileMap){0}, file_data.str, r1u64(0, compressor_info.v.raw_size));
+          lnk_write_data_to_file_path(path, str8_zero(), str8(decode_buffer, compressor_info.v.raw_size));
+        }
+      } else {
+        lnk_error(LNK_Error_IllData, "failed to extract compressor info from %S", path);
+      }
+    } else {
+      lnk_error(LNK_Error_IllData, "input file is not compressed: %S", path);
+    }
+  }
+
+  cmp_close(sdk);
+  scratch_end(scratch);
+  ProfEnd();
+}
+
+internal void
 entry_point(CmdLine *cmdline)
 {
   Temp scratch = scratch_begin(0,0);
@@ -7378,10 +7546,13 @@ entry_point(CmdLine *cmdline)
   LNK_Config *config = lnk_config_init(cmdline->argc, cmdline->argv);
 
   // pick entry point
-  switch (config->boot_mode) {
-  case LNK_BootMode_Linker:     lnk_run_linker     (config); break;
-  case LNK_BootMode_TypeServer: lnk_run_type_server(config); break;
-  case LNK_BootMode_Lib:        lnk_run_lib        (config); break;
+  switch (config->tool) {
+  case LNK_Tool_Linker:     lnk_run_linker     (config); break;
+  case LNK_Tool_TypeServer: lnk_run_type_server(config); break;
+  case LNK_Tool_Lib:        lnk_run_lib        (config); break;
+  case LNK_Tool_Compress:   lnk_run_compress   (config); break;
+  case LNK_Tool_Decompress: lnk_run_decompress (config); break;
+  default: InvalidPath;
   }
 
   lnk_log_end();

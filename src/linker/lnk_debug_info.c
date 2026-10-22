@@ -193,10 +193,10 @@ THREAD_POOL_TASK_FUNC(lnk_read_type_servers_task)
   } break;
   case LNK_TypeServerKind_PDB: {
     // read PDB from disk
-    B8      msf_data_read = 0;
-    String8 msf_data      = lnk_read_data_from_file_path(scratch.arena, ts->ts_path, &msf_data_read);
+    B8      was_msf_read = 0;
+    String8 msf_data     = lnk_read_data_from_file_path(scratch.arena, ts->ts_path, &was_msf_read);
 
-    if ( ! msf_data_read) {
+    if ( ! was_msf_read) {
       LNK_Obj *dep_obj = 0;
       if (ts->obj_indices.count) {
         dep_obj = task->obj_arr[ts->obj_indices.first->data];
@@ -644,7 +644,7 @@ lnk_rrt_array_from_config(Arena *arena, LNK_Config *config)
     B8      was_rrt_read = 0;
     String8 rrt_path     = n->string;
     String8 raw_rrt      = lnk_read_data_from_file_path(arena, rrt_path, &was_rrt_read);
-    if (raw_rrt.size == 0 || was_rrt_read == 0) {
+    if ( ! was_rrt_read) {
       lnk_error(LNK_Error_IllData, "ERROR: failed to open \"%S\"", rrt_path);
       continue;
     }
@@ -2048,7 +2048,6 @@ lnk_merge_types(TP_Context *tp, Arena *arena, LNK_CodeViewInput *input, LNK_Merg
 internal void
 lnk_hash_type_name_lenient(U8 *raw_leaf, U64 hash_length, Arena *map_arena, String8List *map)
 {
-  ProfBeginFunction();
   B32 make_map = map_arena != 0;
 
   U64  hash_max_chars = hash_length*2;
@@ -2117,14 +2116,11 @@ lnk_hash_type_name_lenient(U8 *raw_leaf, U64 hash_length, Arena *map_arena, Stri
       }
     }
   }
-
-  ProfEnd();
 }
 
 internal void
 lnk_hash_type_name_full(U8 *raw_leaf, U64 hash_length, Arena *map_arena, String8List *map)
 {
-  ProfBeginFunction();
   B32 make_map = map_arena != 0;
 
   U64 hash_max_chars = hash_length*2;
@@ -2173,8 +2169,6 @@ lnk_hash_type_name_full(U8 *raw_leaf, U64 hash_length, Arena *map_arena, String8
       }
     }
   }
-
-  ProfEnd();
 }
 
 internal LNK_DebugRelocs
@@ -3647,15 +3641,15 @@ lnk_build_pdb(TP_Context *tp, Arena *arena, String8 image_data, LNK_Config *conf
     ProfBegin("Build NatVis");
     {
       String8Array  natvis_file_path_arr = str8_array_from_list(scratch.arena, &config->natvis_list);
-      B8           *natvis_was_read      = push_array(scratch.arena, B8, natvis_file_path_arr.count);
-      String8Array  natvis_file_data_arr = lnk_read_data_from_file_path_parallel(tp, scratch.arena, natvis_file_path_arr, natvis_was_read);
+      B8           *was_natvis_read      = push_array(scratch.arena, B8, natvis_file_path_arr.count);
+      String8Array  natvis_file_data_arr = lnk_read_data_from_file_path_parallel(tp, scratch.arena, natvis_file_path_arr, was_natvis_read);
 
       for EachIndex(i, natvis_file_data_arr.count) {
         String8 natvis_file_path = natvis_file_path_arr.v[i];
         String8 natvis_file_data = natvis_file_data_arr.v[i];
 
         // did we read the file?
-        if (natvis_was_read[i] == 0 || natvis_file_data.size == 0) {
+        if ( ! was_natvis_read[i]) {
           lnk_error(LNK_Warning_FileNotFound, "unable to open natvis file \"%S\"", natvis_file_path);
           continue;
         }

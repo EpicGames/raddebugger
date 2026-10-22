@@ -10920,6 +10920,119 @@ TEST(coff_section_name_offsets)
   T_Ok(coff_name_from_section_header(str8_zero(), &inline_header).size == 0);
 }
 
+TEST(compressed_obj)
+{
+  T_Ok(t_write_entry_obj());
+  T_Ok(t_invoke_linkerf("/compress entry.obj"));
+  T_Ok(t_invoke_linkerf("/subsystem:console /entry:entry /nod entry.obj"));
+}
+
+TEST(mixed_segment_sizes)
+{
+  // generate object files with mixed segment sizes, linker must allocate correct backing for each object
+  U64      segment_sizes[]  = { KB(64), KB(128), KB(512) };
+  U64      segment_counts[] = { 3, 3, 3 };
+  U64      segment_tails[]  = { 137, 11, 231 };
+  char    *obj_names[]      = { "small.obj", "medium.obj", "large.obj" };
+  char    *sect_names[]     = { ".small", ".medium", ".large" };
+  String8  expected[ArrayCount(segment_sizes)] = {0};
+  for EachElement(i, segment_sizes) {
+    U64 size = segment_counts[i] * segment_sizes[i] + segment_tails[i];
+    expected[i] = str8(push_array_no_zero(arena, U8, size), size);
+
+    // populate sections with deterministic data
+    U32 state = 0x12345678u + (U32)i;
+    for EachIndex(k, size) {
+      state ^= state << 13;
+      state ^= state >> 17;
+      state ^= state << 5;
+      expected[i].str[k] = (U8)state;
+    }
+
+    T_Ok(t_write_def_obj(obj_names[i], (T_COFF_DefObj){
+                         .machine = T_COFF_DefSetMachine(X64),
+                         .sections = (T_COFF_DefSection[]){
+                            { "payload", sect_names[i], expected[i], .flags = "rw:data@1" },
+                            {0},
+                         },
+                        }));
+
+    T_Ok(t_invoke_linkerf("/compress /rad_obj_segment_size:%llu %s", segment_sizes[i], obj_names[i]));
+  }
+
+  T_Ok(t_write_entry_obj());
+
+  t_invoke_linkerf("/rad_log:debug /subsystem:console /entry:entry /nod /opt:noref /opt:noicf /rad_cfm_cache_cap:%llu /rad_cfm_worker_count:1 /out:a.exe entry.obj small.obj large.obj medium.obj", MB(8));
+
+  // verify that linker prints correct error message on mixed segment sizes
+  String8 output      = g_errors;
+  U64     match_count = 0;
+  while (output.size) {
+    if (t_match_line(&output, str8_lit("Error(*): mixed segment sizes is not a supported case; please compress objects with the same segment size;*"))) {
+      match_count += 1;
+    }
+  }
+  T_Ok(match_count == 1);
+}
+
+TEST(pressure_cfm_cache)
+{
+  // generate object files with mixed segment sizes, linker must allocate correct backing for each object
+  U64      segment_counts[] = { 30, 40, 30 };
+  U64      segment_tails[]  = { 137, 11, 231 };
+  char    *obj_names[]      = { "small.obj", "medium.obj", "large.obj" };
+  char    *sect_names[]     = { ".small", ".medium", ".large" };
+  String8  expected[ArrayCount(segment_counts)] = {0};
+
+  U64 segment_size = KB(512);
+  for EachElement(i, segment_counts) {
+    U64 size = segment_counts[i] * segment_size + segment_tails[i];
+    expected[i] = str8(push_array_no_zero(arena, U8, size), size);
+
+    // populate sections with deterministic data
+    U32 state = 0x12345678u + (U32)i;
+    for EachIndex(k, size) {
+      state ^= state << 13;
+      state ^= state >> 17;
+      state ^= state << 5;
+      expected[i].str[k] = (U8)state;
+    }
+
+    T_Ok(t_write_def_obj(obj_names[i], (T_COFF_DefObj){
+                         .machine = T_COFF_DefSetMachine(X64),
+                         .sections = (T_COFF_DefSection[]){
+                            { "payload", sect_names[i], expected[i], .flags = "rw:data@1" },
+                            {0},
+                         },
+                        }));
+
+    T_Ok(t_invoke_linkerf("/compress /rad_obj_segment_size:%llu %s", segment_size, obj_names[i]));
+  }
+
+  String8List objs_list = {0};
+  for EachElement(i, obj_names) { str8_list_pushf(arena, &objs_list, obj_names[i]); }
+  String8 objs = str8_list_join(arena, &objs_list, &(StringJoin){.sep=str8_lit(" ")});
+
+  T_Ok(t_write_entry_obj());
+
+  // retained payloads require the linker to read more segments than the CFM cache can hold;
+  // by forcing a small cache cap, successful linking requires eviction
+  T_Ok(t_invoke_linkerf("/rad_log:debug /subsystem:console /entry:entry /nod /opt:noref,noicf /rad_workers:1 /rad_cfm_worker_count:1 /rad_cfm_prefetch_size:0 /rad_cfm_cache_cap:%llu /out:a.exe entry.obj %S", 4 * segment_size, objs));
+
+  // segment sizes that are greater than cache size must produce a linker error
+  {
+    t_invoke_linkerf("/rad_log:debug /subsystem:console /entry:entry /nod /opt:noref,noicf /rad_workers:1 /rad_cfm_worker_count:1 /rad_cfm_prefetch_size:0 /rad_cfm_cache_cap:%llu /out:a.exe entry.obj %S", KB(64), objs);
+
+    U64 match_count = 0;
+    for (String8 output = g_errors; output.size; ) {
+      if (t_match_line(&output, str8_lit("Error(*): failed to open compressed file map, reason OutOfMemory, path *"))) {
+        match_count += 1;
+      }
+    }
+    T_Ok(match_count == 1);
+  }
+}
+
 // TODO: linker currenlty skips over the IFC records and should instead load the .ifc; type merger also has to expand type index space with the help of IFC records
 #if 0 && OS_WINDOWS
 TEST(msvc_cpp_module)

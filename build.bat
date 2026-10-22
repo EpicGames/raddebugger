@@ -160,6 +160,7 @@ if not exist build\blake3.lib if "%VSCMD_ARG_TGT_ARCH%" equ "x64" (
 )
 
 :: --- Set up Oodle SDK -------------------------------------------------------
+if "%radcobj%"=="1" set oodle=1
 if "%oodle%"=="1" (
   set "oodle_sdk_path=%OODLE_SDK_DIR%"
   if not defined oodle_sdk_path (
@@ -219,6 +220,13 @@ if "%mule_peb_trample%"=="1" (
   if exist mule_peb_trample_new.rdi move mule_peb_trample_new.rdi mule_peb_trample_old_%random%.rdi
   %compile% ..\src\mule\mule_peb_trample.c %compile_link% %out%mule_peb_trample_new.exe || exit /b 1
   move mule_peb_trample_new.exe mule_peb_trample.exe
+)
+if "%radcobj%"=="1" (
+  set didbuild=1
+  set radcobj_crt=
+  if "%msvc%"=="1" set radcobj_crt=/Zl
+  %compile% !radcobj_crt! -DOODLE_STATIC=1 %only_compile% ..\src\linker\radcobj_main.c %obj_out%radcobj.obj || exit /b 1
+  %mklib% -out:radcobj.lib radcobj.obj || exit /b 1
 )
 popd
 

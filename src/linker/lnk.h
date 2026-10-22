@@ -35,10 +35,11 @@ typedef struct LNK_Input
   B32      disallow;
   B32      is_thin;
   B32      owns_file_map;
-  B32      has_disk_read_failed;
+  File     handle;
   B32      exclude_from_debug_info;
   LNK_Lib *lib;
   U32      member_idx;
+  CFM_Map *cfm_map;
 
   COFF_DataType type;
   union {
@@ -78,6 +79,8 @@ typedef struct LNK_Inputer
   HashTable     *missing_lib_ht;
   LNK_InputList  libs;
   LNK_InputList  new_libs[LNK_InputSource_Count];
+
+  CFM_Context *cfm;
 } LNK_Inputer;
 
 typedef struct LNK_LibrarianInputs
@@ -415,7 +418,7 @@ internal LNK_Input * lnk_inputer_push_lib_linkgen(LNK_Inputer *inputer, LNK_Inpu
 internal LNK_Input * lnk_inputer_push_lib_thin(LNK_Inputer *inputer, LNK_Config *config, LNK_InputSourceType input_source, String8 lib_path);
 
 internal B32               lnk_has_pending_input_work(LNK_Inputer *inputer, LNK_Link *link);
-internal LNK_InputPtrArray lnk_inputer_flush(Arena *arena, TP_Context *tp, LNK_Inputer *inputer, LNK_InputList *all_inputs, LNK_InputList *new_inputs);
+internal LNK_InputPtrArray lnk_inputer_flush(Arena *arena, TP_Context *tp, LNK_Config *config, LNK_Inputer *inputer, LNK_InputList *all_inputs, LNK_InputList *new_inputs);
 internal void              lnk_inputer_release_file_maps(TP_Context *tp, LNK_Inputer *inputer);
 
 // --- Link Context ------------------------------------------------------------

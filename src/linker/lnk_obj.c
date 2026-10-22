@@ -480,6 +480,7 @@ THREAD_POOL_TASK_FUNC(lnk_obj_initer)
   obj->exclude_from_debug_info = input->exclude_from_debug_info;
   obj->self                    = &task->objs[task_id];
   obj->lib                     = input->lib;
+  obj->input                   = input;
 
   for EachIndex(i, header.section_count_no_null) {
     COFF_SectionHeader *section = &section_headers[i + 1];
