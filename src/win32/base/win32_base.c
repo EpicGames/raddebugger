@@ -2118,6 +2118,7 @@ win32_exception_filter(EXCEPTION_POINTERS* exception_ptrs)
 #undef OS_WINDOWS // shlwapi uses its own OS_WINDOWS include inside
 #define OS_WINDOWS 1
 
+#if !BASE_NOENTRY
 internal void
 w32_entry_point_caller(int argc, WCHAR **wargv)
 {
@@ -2325,3 +2326,4 @@ int wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPWSTR lpCmdLine, int
   return 0;
 }
 #endif
+#endif // !BASE_NOENTRY

@@ -11,6 +11,7 @@ global B32 async_loop_again_high_priority = 0;
 global B32 global_async_exit = 0;
 thread_static B32 is_async_thread = 0;
 
+#if !BASE_NOENTRY
 // NOTE(rjf): defined by target
 raddbg_entry_point(entry_point);
 internal void entry_point(CmdLine *cmdline);
@@ -159,6 +160,8 @@ main_thread_base_entry_point(int arguments_count, char **arguments)
   
   scratch_end(scratch);
 }
+
+#endif // !BASE_NOENTRY
 
 internal void
 supplement_thread_base_entry_point(void (*entry_point)(void *params), void *params)
