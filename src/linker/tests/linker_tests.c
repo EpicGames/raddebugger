@@ -8808,6 +8808,56 @@ TEST(ghash_basic)
   }
 }
 
+// Empty translation units can carry C13 file information without any symbol
+// records. The module then starts with a FileChksms header, not a CV signature
+// followed by a symbol stream.
+TEST(pdb_c13_without_symbols)
+{
+  CV_DebugS debug_s = {0};
+  CV_C13Checksum checksum = { .name_off = 1, .kind = CV_C13ChecksumKind_Null };
+  U64 checksum_size = AlignPow2(sizeof(checksum), CV_C13SubSectionAlign);
+  String8 checksums = cv_debug_s_alloc_subsection(arena, &debug_s, CV_C13SubSectionKind_FileChksms, checksum_size);
+  MemoryCopy(checksums.str, &checksum, sizeof(checksum));
+
+  String8 file_names = str8_lit("\0checksums_only.c\0");
+  String8 strings = cv_debug_s_alloc_subsection(arena, &debug_s, CV_C13SubSectionKind_StringTable, file_names.size);
+  MemoryCopyStr8(strings.str, file_names);
+
+  String8List debug_data = cv_data_from_debug_s_c13(arena, &debug_s, 1);
+  T_Ok(t_write_def_obj("checksums_only.obj", (T_COFF_DefObj){
+    .machine = T_COFF_DefSetMachine(X64),
+    .sections = (T_COFF_DefSection[]){
+      { "debug_s", ".debug$S", str8_list_join(arena, &debug_data, 0), .flags = "r:data@4", .raw_flags = COFF_SectionFlag_MemDiscardable },
+      {0}
+    },
+  }));
+  T_Ok(t_write_entry_obj());
+
+  t_invoke_linkerf("/subsystem:console /entry:entry /nodefaultlib /debug:full /out:a.exe entry.obj checksums_only.obj");
+  T_Ok(g_last_exit_code == 0);
+
+  String8 raw_pdb = t_read_file(arena, str8_lit("a.pdb"));
+  MSF_Parsed *msf = msf_parsed_from_data(arena, raw_pdb);
+  PDB_DbiParsed *dbi = pdb_dbi_from_data(arena, msf_data_from_stream(msf, PDB_FixedStream_Dbi));
+  PDB_CompUnitArray *modules = pdb_comp_unit_array_from_data(arena, pdb_data_from_dbi_range(dbi, PDB_DbiRange_ModuleInfo));
+  B32 found = 0;
+  for EachIndex(i, modules->count) {
+    PDB_CompUnit *mod = modules->units[i];
+    if (str8_match(str8_skip_last_slash(mod->obj_name), str8_lit("checksums_only.obj"), 0)) {
+      found = 1;
+      T_Ok(mod->range_off[PDB_DbiCompUnitRange_Symbols] == mod->range_off[PDB_DbiCompUnitRange_Symbols + 1]);
+      T_Ok(mod->range_off[PDB_DbiCompUnitRange_C13] == 0);
+      String8 module = msf_data_from_stream(msf, mod->sn);
+      T_Ok(module.size >= sizeof(CV_C13SubSectionHeader) + checksum_size);
+      CV_C13SubSectionHeader header;
+      MemoryCopy(&header, module.str, sizeof(header));
+      T_Ok(header.kind == CV_C13SubSectionKind_FileChksms);
+      T_Ok(header.size == checksum_size);
+    }
+  }
+  T_Ok(found);
+}
+
 TEST(patch_cv_symbol_tree)
 {
   String8List raw_symbols = {0};

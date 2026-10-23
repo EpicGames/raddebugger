@@ -3125,8 +3125,11 @@ lnk_write_debug_s_to_pdb_module(LNK_BuildPdb *task, U32 obj_idx, String8 module)
   for EachElement(i, ss_ranges) { Assert(ss_ranges[i].min == ss_ranges[i].max); }
 
   // patch code view tree offsets in symbols
-  String8 symbols = str8_substr(module, r1u64(sizeof(CV_Signature), mod->sym_data_size));
-  cv_patch_symbol_tree_offsets(symbols, sizeof(CV_Signature), PDB_SYMBOL_ALIGN);
+  if (mod->sym_data_size) {
+    Assert(mod->sym_data_size >= sizeof(CV_Signature));
+    String8 symbols = str8_substr(module, r1u64(sizeof(CV_Signature), mod->sym_data_size));
+    cv_patch_symbol_tree_offsets(symbols, sizeof(CV_Signature), PDB_SYMBOL_ALIGN);
+  }
 
   return module_size;
 }
