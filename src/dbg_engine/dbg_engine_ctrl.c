@@ -3668,6 +3668,13 @@ d_ctrl_thread__next_dmn_event(Arena *arena, DMN_CtrlCtx *ctrl_ctx, D_Msg *msg, D
               }
               ss->run_state = 0;
             }
+            
+            // rjf: if ss has group halt set, consume extra response
+            if(ss != 0 && ss->group_halt)
+            {
+              ss->group_halt = 0;
+              d_server_io_recv_response(scratch.arena, server_io_ctx);
+            }
           }
         }
         
