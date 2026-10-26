@@ -12290,8 +12290,6 @@ rd_frame(void)
     {
       if(event->kind == WM_EventKind_Press &&
          event->key != WM_Key_Esc &&
-         event->key != WM_Key_Return &&
-         event->key != WM_Key_Backspace &&
          event->key != WM_Key_Delete &&
          event->key != WM_Key_LeftMouseButton &&
          event->key != WM_Key_RightMouseButton &&
@@ -14064,6 +14062,7 @@ rd_frame(void)
                   str8_list_pushf(scratch.arena, &state_parts, "  {file: \"%S\", line: %I64d}\n", escaped_from_raw_str8(scratch.arena, loc.file_path), loc.pt.line);
                 }
               }
+              str8_list_pushf(scratch.arena, &state_parts, " }\n");
             }
             str8_list_pushf(scratch.arena, &state_parts, "}\n");
             String8 state = str8_list_join(rd_state->cmd_output_arena, &state_parts, 0);
