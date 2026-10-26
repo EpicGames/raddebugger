@@ -14049,6 +14049,22 @@ rd_frame(void)
               }
               str8_list_pushf(scratch.arena, &state_parts, " }\n");
             }
+            {
+              str8_list_pushf(scratch.arena, &state_parts, " breakpoints:\n {\n");
+              CFG_NodePtrList bps = cfg_node_top_level_list_from_string(scratch.arena, str8_lit("breakpoint"));
+              for EachNode(n, CFG_NodePtrNode, bps.first)
+              {
+                RD_Location loc = rd_location_from_cfg(n->v);
+                if(loc.expr.size != 0)
+                {
+                  str8_list_pushf(scratch.arena, &state_parts, "  {address: \"%S\"}\n", escaped_from_raw_str8(scratch.arena, loc.expr));
+                }
+                else if(loc.file_path.size != 0)
+                {
+                  str8_list_pushf(scratch.arena, &state_parts, "  {file: \"%S\", line: %I64d}\n", escaped_from_raw_str8(scratch.arena, loc.file_path), loc.pt.line);
+                }
+              }
+            }
             str8_list_pushf(scratch.arena, &state_parts, "}\n");
             String8 state = str8_list_join(rd_state->cmd_output_arena, &state_parts, 0);
             str8_list_push(rd_state->cmd_output_arena, &rd_state->cmd_outputs, state);
