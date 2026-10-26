@@ -243,6 +243,16 @@ d_dump_handle_make(D_ServerID server_id, U64 id)
   return result;
 }
 
+internal D_Handle
+d_handle_from_server_id(D_ServerID server_id)
+{
+  D_Handle handle = {0};
+  {
+    handle.server_id = server_id;
+  }
+  return handle;
+}
+
 ////////////////////////////////
 //~ rjf: Trap Type Functions
 
@@ -3197,6 +3207,14 @@ d_ctrl_thread__server_run_ctrls_from_id(D_RunCtrls *ctrls, D_ServerID server_id)
   return result;
 }
 
+internal B32
+d_ctrl_thread__server_is_scheduled(D_ServerState *ss, D_ServerRunCtrls *ctrls)
+{
+  B32 result = (ss->launch_or_attach_counter > 0 || ss->process_counter > 0);
+  // TODO(rjf): we can avoid no-op runs by checking if there are any unfrozen threads on `ctrls`
+  return result;
+}
+
 //- rjf: attached process running/event gathering
 
 internal DMN_Event *
@@ -3227,7 +3245,7 @@ d_ctrl_thread__next_dmn_event(Arena *arena, DMN_CtrlCtx *ctrl_ctx, D_Msg *msg, D
         //- rjf: if this server is not scheduled, never return debug events from it
         {
           D_ServerRunCtrls *server_run_ctrls = d_ctrl_thread__server_run_ctrls_from_id(run_ctrls, ss->server_id);
-          B32 is_server_scheduled = (server_run_ctrls != 0 || !run_ctrls->run_entities_are_unfrozen);
+          B32 is_server_scheduled = d_ctrl_thread__server_is_scheduled(ss, server_run_ctrls);
           if(!is_server_scheduled)
           {
             continue;
@@ -3445,7 +3463,7 @@ d_ctrl_thread__next_dmn_event(Arena *arena, DMN_CtrlCtx *ctrl_ctx, D_Msg *msg, D
             {
               // rjf: is this server being scheduled?
               D_ServerRunCtrls *server_run_ctrls = d_ctrl_thread__server_run_ctrls_from_id(run_ctrls, ss->server_id);
-              B32 is_server_scheduled = (server_run_ctrls != 0 || !run_ctrls->run_entities_are_unfrozen);
+              B32 is_server_scheduled = d_ctrl_thread__server_is_scheduled(ss, server_run_ctrls);
               
               // rjf: if this server is not being scheduled, skip
               if(!is_server_scheduled)
@@ -3462,8 +3480,10 @@ d_ctrl_thread__next_dmn_event(Arena *arena, DMN_CtrlCtx *ctrl_ctx, D_Msg *msg, D
               // rjf: form run message
               DS_Msg msg = {0};
               {
-                msg.kind   = DS_MsgKind_Run;
+                msg.kind   = (!d_handle_match(run_ctrls->single_step_thread, d_handle_zero()) ? DS_MsgKind_SingleStep : DS_MsgKind_Run);
                 msg.flags |= (DS_MsgFlag_IgnorePreviousException*(server_run_ctrls ? (!!server_run_ctrls->ignore_previous_exception) : 0));
+                msg.flags |= (DS_MsgFlag_RunEntitiesAreUnfrozen*!!run_ctrls->run_entities_are_unfrozen);
+                msg.flags |= (DS_MsgFlag_RunEntitiesAreProcesses*!!run_ctrls->run_entities_are_processes);
                 msg.entity = (run_ctrls->single_step_thread.server_id == ss->server_id ? d_dmn_from_handle(run_ctrls->single_step_thread) : 
                               run_ctrls->priority_thread.server_id == ss->server_id ? d_dmn_from_handle(run_ctrls->priority_thread) : 
                               dmn_handle_zero());
@@ -3472,8 +3492,6 @@ d_ctrl_thread__next_dmn_event(Arena *arena, DMN_CtrlCtx *ctrl_ctx, D_Msg *msg, D
                 {
                   msg.traps        = server_run_ctrls->traps;
                   msg.run_entities = server_run_ctrls->run_entities;
-                  msg.flags |= (DS_MsgFlag_RunEntitiesAreUnfrozen*!!run_ctrls->run_entities_are_unfrozen);
-                  msg.flags |= (DS_MsgFlag_RunEntitiesAreProcesses*!!run_ctrls->run_entities_are_processes);
                 }
               }
               
@@ -3741,6 +3759,19 @@ d_ctrl_thread__next_dmn_event(Arena *arena, DMN_CtrlCtx *ctrl_ctx, D_Msg *msg, D
         }
       }
       
+      // rjf: was this process launched by us? -> tick the 'launch' counter down
+      if(msg_id != 0)
+      {
+        D_ServerState *ss = d_server_state_from_id(server_id);
+        ss->launch_or_attach_counter -= 1;
+      }
+      
+      // rjf: count this process
+      {
+        D_ServerState *ss = d_server_state_from_id(server_id);
+        ss->process_counter += 1;
+      }
+      
       // rjf: push
       D_Event *out_evt = d_event_list_push(scratch.arena, &evts);
       out_evt->kind      = D_EventKind_NewProc;
@@ -3936,6 +3967,11 @@ d_ctrl_thread__next_dmn_event(Arena *arena, DMN_CtrlCtx *ctrl_ctx, D_Msg *msg, D
     //- rjf: exit process
     case DMN_EventKind_ExitProcess:
     {
+      // rjf: uncount this process
+      D_ServerState *ss = d_server_state_from_id(server_id);
+      ss->process_counter -= 1;
+      
+      // rjf: push
       D_Event *out_evt = d_event_list_push(scratch.arena, &evts);
       out_evt->kind       = D_EventKind_EndProc;
       out_evt->msg_id     = msg->msg_id;
@@ -4505,6 +4541,22 @@ d_ctrl_thread__handle_from_addr_or_connect(String8 addr)
   return handle;
 }
 
+internal D_ServerState *
+d_server_state_from_id(D_ServerID id)
+{
+  D_ServerState *result = 0;
+  U64 slot_idx = id%d_ctrl_state->server_slots_count;
+  for(D_ServerState *ss = d_ctrl_state->server_slots[slot_idx].first; ss != 0; ss = ss->hash_next)
+  {
+    if(ss->server_id == id)
+    {
+      result = ss;
+      break;
+    }
+  }
+  return result;
+}
+
 //- rjf: control system socket wakeup function
 
 internal void
@@ -4582,14 +4634,6 @@ d_ctrl_thread__launch(DMN_CtrlCtx *ctrl_ctx, D_Msg *msg)
   };
   
   //////////////////////////////
-  //- rjf: remote? -> connect to server
-  //
-  if(msg->address.size != 0)
-  {
-    d_ctrl_thread__handle_from_addr_or_connect(msg->address);
-  }
-  
-  //////////////////////////////
   //- rjf: remote? -> send message to launch, wait on new PID
   //
   U64 pid = 0;
@@ -4609,6 +4653,17 @@ d_ctrl_thread__launch(DMN_CtrlCtx *ctrl_ctx, D_Msg *msg)
   else
   {
     pid = ds_ctrl_launch(ctrl_ctx, &launch_params);
+  }
+  
+  //////////////////////////////
+  //- rjf: connect to server if needed, tick up launch/attach counter
+  //
+  if(pid != 0)
+  {
+    D_Handle server_handle = d_ctrl_thread__handle_from_addr_or_connect(msg->address);
+    D_ServerID server_id = server_handle.server_id;
+    D_ServerState *ss = d_server_state_from_id(server_id);
+    ss->launch_or_attach_counter += 1;
   }
   
   //////////////////////////////
@@ -4657,6 +4712,15 @@ d_ctrl_thread__attach(DMN_CtrlCtx *ctrl_ctx, D_Msg *msg)
     DS_Msg attach_msg = {DS_MsgKind_Attach, .pid = msg->entity_id};
     DS_Response response = d_server_msg(scratch.arena, endpoint, &attach_msg);
     attach_good = response.good;
+  }
+  
+  //- rjf: connect to server if needed & inc launch/attach counter
+  if(attach_good)
+  {
+    D_Handle server_handle = d_ctrl_thread__handle_from_addr_or_connect(msg->address);
+    D_ServerID server_id = server_handle.server_id;
+    D_ServerState *ss = d_server_state_from_id(server_id);
+    ss->launch_or_attach_counter += 1;
   }
   
   //- rjf: run to handshake
