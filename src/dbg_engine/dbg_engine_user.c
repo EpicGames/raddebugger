@@ -1919,6 +1919,10 @@ d_tick(Arena *arena, D_TargetArray *targets, D_BreakpointArray *breakpoints, D_P
               log_user_error(s("Cannot run with all threads frozen."));
             }
           }
+          else
+          {
+            log_user_error(s("Cannot run with no attached processes."));
+          }
         }break;
         case D_CmdKind_StepIntoInst:
         case D_CmdKind_StepOverInst:

@@ -404,6 +404,10 @@ struct D_ServerState
   // rjf: server identifier
   D_ServerID server_id;
   
+  // rjf: schedule state (any launches / attaches / entities?)
+  U64 launch_or_attach_counter;
+  U64 process_counter;
+  
   // rjf: run state
   B32 run_state;
   B32 group_halt;
@@ -561,6 +565,7 @@ internal D_Handle d_handle_from_string(String8 string);
 internal DMN_Handle d_dmn_from_handle(D_Handle handle);
 internal D_Handle d_handle_from_dmn(D_ServerID server_id, DMN_Handle handle);
 internal D_Handle d_dump_handle_make(D_ServerID server_id, U64 id);
+internal D_Handle d_handle_from_server_id(D_ServerID server_id);
 
 ////////////////////////////////
 //~ rjf: Trap Type Functions
@@ -767,6 +772,7 @@ internal void d_ctrl_thread__close_dump_process(D_MsgID msg_id, D_Handle process
 internal D_RunCtrls *d_ctrl_thread__run_ctrls(Arena *arena);
 internal D_ServerRunCtrls *d_ctrl_thread__server_run_ctrls_from_id_or_push(Arena *arena, D_RunCtrls *ctrls, D_ServerID server_id);
 internal D_ServerRunCtrls *d_ctrl_thread__server_run_ctrls_from_id(D_RunCtrls *ctrls, D_ServerID server_id);
+internal B32 d_ctrl_thread__server_is_scheduled(D_ServerState *ss, D_ServerRunCtrls *ctrls);
 
 //- rjf: attached process running/event gathering
 internal DMN_Event *d_ctrl_thread__next_dmn_event(Arena *arena, DMN_CtrlCtx *ctrl_ctx, D_Msg *msg, D_RunCtrls *run_ctrls, D_Spoof *spoof, D_ServerID *server_id_out);
@@ -781,6 +787,7 @@ internal void d_ctrl_thread__eval_scope_end(D_EvalScope *scope);
 
 //- rjf: server connection lookups
 internal D_Handle d_ctrl_thread__handle_from_addr_or_connect(String8 addr);
+internal D_ServerState *d_server_state_from_id(D_ServerID id);
 
 //- rjf: control system socket wakeup function
 internal void d_ctrl_sock_wakeup(void);
