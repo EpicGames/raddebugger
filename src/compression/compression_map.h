@@ -35,13 +35,14 @@ typedef enum
 
 typedef struct
 {
-  CFM_SegmentState  state;
+  CFM_SegmentState  state;       // written by decoder under ready_mutex (write)
   U64               index;
-  CondVar          *ready_cond;
+  RWMutex           ready_mutex; // per-backing lock protecting state transitions & ready_cond; waiters hold it shared, the decoder exclusive
+  CondVar           ready_cond;
   SharedMemory      memory;
   U8               *write;
   U64               size;
-  U64               refs;
+  U64               refs;        // protected by CFM_Context.mutex
   CFM_Map          *map;
 } CFM_SegmentInfo;
 
@@ -55,7 +56,17 @@ struct CFM_SegmentNode
 
 typedef struct
 {
+  CFM_Map         *map;
   CFM_SegmentInfo *segment;
+} CFM_Job;
+
+typedef struct
+{
+  CFM_SegmentInfo *segment;
+  B32              has_job;
+  CFM_Job          job;
+  void            *evict_target;
+  U64              evict_size;
 } CFM_Lease;
 
 typedef struct
@@ -85,19 +96,6 @@ struct CFM_MapNode
 
 typedef struct
 {
-  CFM_Map         *map;
-  CFM_SegmentInfo *segment;
-} CFM_Job;
-
-typedef struct CFM_CondVar CFM_CondVar;
-struct CFM_CondVar
-{
-  CFM_CondVar *next;
-  CondVar v;
-};
-
-typedef struct
-{
   CFM_Map *map;
   U64      segment_idx;
 } CFM_SegmentKey;
@@ -121,7 +119,7 @@ struct CFM_Context
   String8     sdk_paths[CMP_SdkType_Count];
   CMP_Ctx    *sdks[CMP_SdkType_Count];
   Arena      *arena;
-  Mutex       mutex;
+  RWMutex     mutex; // guards registry, maps, segment list/tracker, refs
   CFM_Worker *workers_ctxs;
   CondVar     work;
 
@@ -129,7 +127,7 @@ struct CFM_Context
   B32 stop;
   B32 handler_installed;
 
-  CFM_CondVar *free_cond_vars;
+  U64 cache_waiters; // threads blocked in "CFM wait cache" (protected by mutex)
 
   CFM_Registry     *registry;
   CFM_RegistryNode *all_registry;

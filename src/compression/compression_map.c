@@ -123,6 +123,8 @@ cfm_acquire_locked(CFM_Context *ctx, CFM_Map *map, U64 segment_idx, CFM_Lease *l
 
   if (segment == NULL) {
     CFM_SegmentNode *segment_node = NULL;
+    void            *evict_target = NULL;
+    U64              evict_size   = 0;
 
     // find empty segment
     for (;;) {
@@ -139,9 +141,11 @@ cfm_acquire_locked(CFM_Context *ctx, CFM_Map *map, U64 segment_idx, CFM_Lease *l
       if (new_cache_size <= ctx->cache_cap) {
         ProfBegin("CFM allocate backing");
         segment_node = push_array(ctx->arena, CFM_SegmentNode, 1);
-        segment_node->v.size   = map->compressor_info.v.segment_size;
-        segment_node->v.memory = shared_memory_alloc(map->compressor_info.v.segment_size, str8_zero());
-        segment_node->v.write  = shared_memory_view_open(segment_node->v.memory, r1u64s(0, map->compressor_info.v.segment_size));
+        segment_node->v.size        = map->compressor_info.v.segment_size;
+        segment_node->v.memory      = shared_memory_alloc(map->compressor_info.v.segment_size, str8_zero());
+        segment_node->v.write       = shared_memory_view_open(segment_node->v.memory, r1u64s(0, map->compressor_info.v.segment_size));
+        segment_node->v.ready_mutex = rw_mutex_alloc();
+        segment_node->v.ready_cond  = cond_var_alloc();
         AssertAlways( ! MemoryIsZeroStruct(&segment_node->v.memory));
         AssertAlways(segment_node->v.write != NULL);
 
@@ -159,12 +163,10 @@ cfm_acquire_locked(CFM_Context *ctx, CFM_Map *map, U64 segment_idx, CFM_Lease *l
       for EachNode(n, CFM_SegmentNode, ctx->first_segment) {
         if (n->v.refs == 0) {
           segment = &n->v;
+          AssertAlways(segment->state == CFM_SegmentState_Live);
 
-          ProfBegin("CFM unmap");
-          void *target      = segment->map->data.str + segment->index * segment->map->compressor_info.v.segment_size;
-          B32   is_unmapped = unmap_memory_preserve_placeholder(target, segment->map->compressor_info.v.segment_size);
-          ProfEnd();
-          AssertAlways(is_unmapped);
+          evict_target = segment->map->data.str + segment->index * segment->map->compressor_info.v.segment_size;
+          evict_size   = segment->map->compressor_info.v.segment_size;
 
           ProfBegin("CFM purge tracker");
           B32 is_purged = hash_map_purge_string(&ctx->segment_tracker, str8_struct((&(CFM_SegmentKey){ segment->map, segment->index })));
@@ -186,7 +188,9 @@ cfm_acquire_locked(CFM_Context *ctx, CFM_Map *map, U64 segment_idx, CFM_Lease *l
 
       // no backing available and every resident is referenced
       ProfBegin("CFM wait cache");
-      cond_var_wait(ctx->work, ctx->mutex, max_U64);
+      ctx->cache_waiters += 1;
+      cond_var_wait_rw_w(ctx->work, ctx->mutex, max_U64);
+      ctx->cache_waiters -= 1;
       ProfEnd();
       goto retry;
     }
@@ -194,46 +198,21 @@ cfm_acquire_locked(CFM_Context *ctx, CFM_Map *map, U64 segment_idx, CFM_Lease *l
 
     segment = &segment_node->v;
 
-    // create cond var for waiting on segment decode
-    CFM_CondVar *ready_cond = ctx->free_cond_vars;
-    if (ready_cond) { SLLStackPop(ctx->free_cond_vars); }
-    else {
-      ready_cond    = push_array(ctx->arena, CFM_CondVar, 1);
-      ready_cond->v = cond_var_alloc();
-    }
-
-    // record resident segment info
-    segment->state      = CFM_SegmentState_Pending;
-    segment->refs       = 1;
-    segment->ready_cond = &ready_cond->v;
-    segment->index      = segment_idx;
-    segment->map        = map;
+    // record resident segment info; the backing is pinned (refs > 0) until the caller
+    // releases its lease, so the decoder worker may safely operate on it lock-free
+    ins_atomic_u32_eval_assign(&segment->state, CFM_SegmentState_Pending);
+    segment->refs  = 1;
+    segment->index = segment_idx;
+    segment->map   = map;
 
     hash_map_push_string_raw(ctx->arena, &ctx->segment_tracker, str8_struct(&segment_key), segment);
 
-    // request decoder threads to decompress the segment
-    {
-      AssertAlways(segment->state == CFM_SegmentState_Pending);
-      AssertAlways(segment->refs > 0);
-
-      // round-robin jobs between workers
-      CFM_Job     job        = { map, segment };
-      U64         worker_idx = ins_atomic_u64_inc_eval(&ctx->next_job_worker);
-      CFM_Worker *worker     = &ctx->workers_ctxs[worker_idx % ctx->worker_count];
-
-      // send request to the decoder threads
-      mutex_drop(ctx->mutex);
-      ProfBegin("CFM enqueue");
-      RingGuard guard = guarded_ring_open(worker->job_ring);
-      B32 is_queued = guarded_ring_write_struct_or_wait(&guard, &job, max_U64);
-      guarded_ring_close(&guard);
-      AssertAlways(is_queued);
-      ProfEnd();
-      
-      ProfBegin("CFM enqueue relock");
-      mutex_take(ctx->mutex);
-      ProfEnd();
-    }
+    // hand decode request to the caller, which enqueues it after dropping ctx->mutex
+    lease_out->has_job      = 1;
+    lease_out->job.map      = map;
+    lease_out->job.segment  = segment;
+    lease_out->evict_target = evict_target;
+    lease_out->evict_size   = evict_size;
   } else {
     // segment already was decoded or being decoded -- increment ref count and leave
     segment->refs += 1;
@@ -246,22 +225,19 @@ cfm_acquire_locked(CFM_Context *ctx, CFM_Map *map, U64 segment_idx, CFM_Lease *l
 internal void
 cfm_lease_release(CFM_Context *ctx, CFM_Lease *lease)
 {
-  MutexScope(ctx->mutex) {
+  AssertAlways(lease->has_job == 0);
+  ProfBegin("CFM release lock wait");
+  MutexScopeW(ctx->mutex) {
+    ProfEnd();
     CFM_SegmentInfo *segment = lease->segment;
 
     AssertAlways(segment->refs > 0);
     segment->refs -= 1;
 
-    // recycle cond var on last release so it can be reused on next lease acquire
-    if (segment->refs == 0 && segment->ready_cond) {
-      AssertAlways(segment->state == CFM_SegmentState_Live);
-      CFM_CondVar *cond_var_node = CastFromMember(CFM_CondVar, v, segment->ready_cond);
-      segment->ready_cond = 0;
-      SLLStackPush(ctx->free_cond_vars, cond_var_node);
+    // this backing has become eligible for eviction; wake threads starved for cache only
+    if (segment->refs == 0 && ctx->cache_waiters > 0) {
+      cond_var_broadcast(ctx->work);
     }
-
-    // this backing has become eligible for eviction
-    cond_var_broadcast(ctx->work);
 
     MemoryZeroStruct(lease);
   }
@@ -293,6 +269,7 @@ cfm_worker(void *raw_ctx)
     guarded_ring_close(&job_ring);
 
     ProfBegin("CFM job");
+
     // pick decoder SDK for the job
     CMP_Ctx *sdk = ctx->sdks[job.map->compressor_info.v.sdk_type];
 
@@ -331,14 +308,13 @@ cfm_worker(void *raw_ctx)
     ProfEnd();
 
     // finalize job
-    ProfBegin("CFM finalize job lock wait");
-    MutexScope(ctx->mutex) {
-      ProfEnd();
-      ProfBegin("CFM finalize job");
-      job.segment->state = CFM_SegmentState_Live;   // update segment state
-      cond_var_broadcast(*job.segment->ready_cond); // notify waiters
-      ProfEnd();
-    }
+    ProfBegin("CFM finalize job");
+    rw_mutex_take_w(job.segment->ready_mutex);
+    ins_atomic_u32_eval_assign(&job.segment->state, CFM_SegmentState_Live);
+    cond_var_broadcast(job.segment->ready_cond);
+    rw_mutex_drop_w(job.segment->ready_mutex);
+    ProfEnd();
+
     ProfEnd();
   }
 
@@ -368,7 +344,7 @@ cfm_alloc(U64        cache_cap,
   ctx->codecs         = codecs;
   MemoryCopyArray(ctx->sdk_paths, sdk_paths);
   ctx->arena          = arena;
-  ctx->mutex          = mutex_alloc();
+  ctx->mutex          = rw_mutex_alloc();
   ctx->work           = cond_var_alloc();
   ctx->workers_ctxs   = push_array(arena, CFM_Worker, worker_count);
 
@@ -399,35 +375,71 @@ cfm_read_fault(void *address, void *user_data)
 
   CFM_Context *ctx = user_data;
 
+  // acquire segment lease under the global lock; no syscalls or waits happen while it's held
+  CFM_Lease  lease  = {0};
+  CFM_Status status = CFM_Unknown;
   ProfBegin("CFM fault lock wait");
-  mutex_take(ctx->mutex);
+  rw_mutex_take_w(ctx->mutex);
   ProfEnd();
   {
     CFM_Map *map = cfm_find_locked(ctx, address);
     if (map) {
-      // acquire segment lease, which foces the segment to be decoded if not it's not ready
-      U64       offset      = IntFromPtr(address) - IntFromPtr(map->data.str);
-      U64       segment_idx = offset / map->compressor_info.v.segment_size;
-      CFM_Lease lease;
+      // acquire segment lease, which forces the segment to be decoded if it's not ready
+      U64 offset      = IntFromPtr(address) - IntFromPtr(map->data.str);
+      U64 segment_idx = offset / map->compressor_info.v.segment_size;
       ProfBegin("CFM acquire");
-      CFM_Status status = cfm_acquire_locked(ctx, map, segment_idx, &lease);
+      status = cfm_acquire_locked(ctx, map, segment_idx, &lease);
       ProfEnd();
-
-      if (status == CFM_Ok) {
-        // wait for segment to be decoded
-        ProfBegin("CFM wait decode");
-        while (lease.segment->state == CFM_SegmentState_Pending) {
-          cond_var_wait(*lease.segment->ready_cond, ctx->mutex, max_U64);
-        }
-        ProfEnd();
-
-        // release the segment lease
-        cfm_lease_release(ctx, &lease);
-        was_memory_paged_in = 1;
-      }
     }
   }
-  mutex_drop(ctx->mutex);
+  rw_mutex_drop_w(ctx->mutex);
+
+  if (status == CFM_Ok) {
+    // send decode request if we were the first to touch the segment
+    if (lease.has_job) {
+      AssertAlways(lease.job.segment->refs > 0);
+
+      if (lease.evict_target) {
+        ProfBegin("CFM unmap");
+        B32 is_unmapped = unmap_memory_preserve_placeholder(lease.evict_target, lease.evict_size);
+        ProfEnd();
+        AssertAlways(is_unmapped);
+        lease.evict_target = 0;
+        lease.evict_size   = 0;
+      }
+
+      // round-robin jobs between workers
+      U64         worker_idx = ins_atomic_u64_inc_eval(&ctx->next_job_worker);
+      CFM_Worker *worker     = &ctx->workers_ctxs[worker_idx % ctx->worker_count];
+
+      ProfBegin("CFM enqueue");
+      RingGuard guard = guarded_ring_open(worker->job_ring);
+      B32 is_queued = guarded_ring_write_struct_or_wait(&guard, &lease.job, max_U64);
+      guarded_ring_close(&guard);
+      AssertAlways(is_queued);
+      ProfEnd();
+
+      lease.has_job = 0;
+    }
+
+    // wait for the segment to be decoded
+    {
+      CFM_SegmentInfo *segment = lease.segment;
+      if (ins_atomic_u32_eval(&segment->state) != CFM_SegmentState_Live) {
+        ProfBegin("CFM wait decode");
+        rw_mutex_take_r(segment->ready_mutex);
+        while (ins_atomic_u32_eval(&segment->state) != CFM_SegmentState_Live) {
+          cond_var_wait_rw_r(segment->ready_cond, segment->ready_mutex, max_U64);
+        }
+        rw_mutex_drop_r(segment->ready_mutex);
+        ProfEnd();
+      }
+    }
+
+    // release the segment lease
+    cfm_lease_release(ctx, &lease);
+    was_memory_paged_in = 1;
+  }
 
   ProfEnd();
   return was_memory_paged_in;
@@ -446,9 +458,9 @@ internal CFM_Map *
 cfm_map_from_address(CFM_Context *ctx, void *address)
 {
   if (ctx == NULL) { return 0; }
-  mutex_take(ctx->mutex);
+  rw_mutex_take_r(ctx->mutex);
   CFM_Map *map = cfm_find_locked(ctx, address);
-  mutex_drop(ctx->mutex);
+  rw_mutex_drop_r(ctx->mutex);
   return map;
 }
 
@@ -537,7 +549,7 @@ cfm_map_open_batch(Arena *arena, CFM_Context *ctx, U64 file_count, File *files, 
     String8  placeholders_data = str8(placeholders_ptr, placeholders_size);
     AssertAlways(placeholders_ptr); // TODO: error handling
 
-    MutexScope(ctx->mutex) {
+    MutexScopeW(ctx->mutex) {
       CFM_MapNode *map_node = ctx->free_maps;
       if (map_node) { SLLStackPop(ctx->free_maps);                       }
       else          { map_node = push_array(ctx->arena, CFM_MapNode, 1); }
@@ -565,7 +577,7 @@ cfm_map_open_batch(Arena *arena, CFM_Context *ctx, U64 file_count, File *files, 
     file_map_close(storage);
   }
 
-  MutexScope(ctx->mutex) {
+  MutexScopeW(ctx->mutex) {
     if (ctx->registry == NULL) {
       U64 capacity = Max(batch_count * 2, 256);
       ctx->registry = cfm_make_registry(ctx, capacity);
