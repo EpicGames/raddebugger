@@ -197,6 +197,13 @@ radcobj_encode(CMP_Ctx *cmp, uint32_t segment_size, const void *raw, uint64_t ra
     return "invalid encoder input or allocator";
   }
 
+  U64 full_count     = raw_size / segment_size;
+  U64 tail_size      = raw_size % segment_size;
+  U64 segments_count = full_count + (tail_size != 0);
+  if (segments_count > (max_U32 - sizeof(RADCOBJ_Header)) / sizeof(RADCOBJ_Segment)) {
+    return "segment directory exceeds the format size limit";
+  }
+
   typedef struct RADCOBJ_Types {
     Arena     *arena;
     B32        present[2];
@@ -204,9 +211,10 @@ radcobj_encode(CMP_Ctx *cmp, uint32_t segment_size, const void *raw, uint64_t ra
   } RADCOBJ_Types;
 
   RADCOBJ_Types types = {0};
+  U32Array uncompressed_segments = {0};
   const char *error = 0;
 
-  // find sections with debug types
+  // find debug types and segments overlapping hash sections
   {
     String8             raw_obj     = str8((U8 *)raw, raw_size);
     COFF_FileHeaderInfo file_header = coff_file_header_info_from_data(raw_obj);
@@ -221,6 +229,28 @@ radcobj_encode(CMP_Ctx *cmp, uint32_t segment_size, const void *raw, uint64_t ra
         String8             name   = coff_name_from_section_header(string_table, header);
         for EachElement(k, sections) {
           if (str8_match(names[k], name, 0)) { sections[k] = header; }
+        }
+
+        if (str8_match(name, str8_lit(".debug$H"), 0) &&
+            header->fsize &&
+            header->foff <= raw_obj.size &&
+            header->fsize <= raw_obj.size - header->foff) {
+          if (types.arena == NULL) {
+#if RADCOBJ_LIB && OS_WINDOWS
+            radcobj_init_system_info();
+#endif
+            types.arena = arena_alloc(.reserve_size = KB(64), .commit_size = KB(64));
+          }
+
+          if (uncompressed_segments.v == NULL) {
+            uncompressed_segments = bit_array_init32(types.arena, segments_count);
+          }
+
+          U64 first_segment = header->foff / segment_size;
+          U64 last_segment  = ((U64)header->foff + header->fsize - 1) / segment_size;
+          for (U64 segment_idx = first_segment; segment_idx <= last_segment; segment_idx += 1) {
+            bit_array_set_bit32(uncompressed_segments, segment_idx, 1);
+          }
         }
       }
 
@@ -267,14 +297,6 @@ radcobj_encode(CMP_Ctx *cmp, uint32_t segment_size, const void *raw, uint64_t ra
 
   if (cmp == 0 || cmp->sdk_type != CMP_SdkType_Oodle2) {
     error = "invalid encoder input or compression SDK";
-    goto exit;
-  }
-
-  U64 full_count     = raw_size / segment_size;
-  U64 tail_size      = raw_size % segment_size;
-  U64 segments_count = full_count + (tail_size != 0);
-  if (segments_count > (max_U32 - sizeof(RADCOBJ_Header)) / sizeof(RADCOBJ_Segment)) {
-    error = "segment directory exceeds the format size limit";
     goto exit;
   }
 
@@ -382,16 +404,21 @@ radcobj_encode(CMP_Ctx *cmp, uint32_t segment_size, const void *raw, uint64_t ra
     U64     src_size        = Min(segment_size, raw_size - data_cursor);
     U64     bound_size      = src_size == segment_size ? full_bound : tail_bound;
     String8 src             = { (U8 *)raw + data_cursor, src_size };
-    String8 encoded_segment = { output + cursor, bound_size };
-    U64     encode_size     = cmp_encode(cmp, src, encoded_segment);
-    if (encode_size == 0 || encode_size > bound_size) {
-      allocator->free(allocator->user, output);
-      error = "failed to encode RADCOBJ segment";
-      goto exit;
+    B32     store_raw       = uncompressed_segments.v && bit_array_get_bit32(uncompressed_segments, segment_idx);
+    U64     encode_size     = src_size;
+    if ( ! store_raw) {
+      String8 encoded_segment = { output + cursor, bound_size };
+      encode_size = cmp_encode(cmp, src, encoded_segment);
+      if (encode_size == 0 || encode_size > bound_size) {
+        allocator->free(allocator->user, output);
+        error = "failed to encode RADCOBJ segment";
+        goto exit;
+      }
+      store_raw = encode_size >= src_size;
     }
 
     RADCOBJ_Segment segment = { (U32)cursor, (U32)encode_size, 0 };
-    if (encode_size >= src_size) {
+    if (store_raw) {
       U64 raw_cursor = AlignPow2(cursor, 8);
       MemoryZero(output + cursor, raw_cursor - cursor);
       MemoryCopy(output + raw_cursor, src.str, src.size);

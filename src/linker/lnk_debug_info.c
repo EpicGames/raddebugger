@@ -81,10 +81,27 @@ THREAD_POOL_TASK_FUNC(lnk_parse_debug_h_task)
 {
   U64                obj_idx = task_id;
   LNK_CodeViewInput *task    = raw_task;
+  LNK_Obj           *obj     = task->obj_arr[obj_idx];
 
-  LNK_Obj *obj = task->obj_arr[obj_idx];
   if (obj->coff.debug_h_section_number > 0) {
-    String8    raw_debug_h     = lnk_obj_section_data_from_number(obj, obj->coff.debug_h_section_number);
+    String8 raw_debug_h  = {0};
+    B32     has_raw_view = 0;
+
+    if (obj->input && obj->input->cfm_map) {
+      COFF_SectionHeader *section = lnk_coff_section_header_from_section_number(obj, obj->coff.debug_h_section_number);
+      ProfBegin("GHASH raw view lookup");
+      has_raw_view = cfm_raw_view(obj->input->cfm_map, r1u64s(section->foff, section->fsize), &raw_debug_h);
+      ProfEnd();
+    }
+
+    if (has_raw_view) {
+      ProfBegin("GHASH raw view hit");
+      ProfEnd();
+    }
+    if ( ! has_raw_view) {
+      raw_debug_h = lnk_obj_section_data_from_number(obj, obj->coff.debug_h_section_number);
+    }
+
     CV_DebugH *debug_h         = &task->debug_h_arr[obj_idx];
     LLVM_GHash ghash           = {0};
     U64        ghash_read_size = str8_deserial_read_struct(raw_debug_h, 0, &ghash);
