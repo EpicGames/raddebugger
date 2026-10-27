@@ -186,6 +186,17 @@ struct CV_C13InlineeLinesParsedNode
   CV_C13InlineeLinesParsed      v;
 };
 
+typedef struct CV_C13SubSection CV_C13SubSection;
+struct CV_C13SubSection
+{
+  CV_C13SubSectionKind kind;
+  U32                  declared_size;
+  U64                  data_offset;
+  String8              data;
+  U64                  next_offset;
+  B32                  truncated;
+};
+
 typedef struct CV_C13SubSectionNode CV_C13SubSectionNode;
 struct CV_C13SubSectionNode
 {
@@ -311,6 +322,7 @@ internal CV_SymParsed * cv_sym_from_data(Arena *arena, String8 sym_data, U64 sym
 
 //- rjf: leaf stream parsing
 internal CV_LeafParsed * cv_leaf_from_data(Arena *arena, String8 leaf_data, CV_TypeId first);
+internal B32 cv_c13_sub_section_from_data(String8 data, U64 offset, CV_C13SubSection *out);
 internal CV_C13Parsed  * cv_c13_parsed_from_data(Arena *arena, String8 c13_data, String8 strtbl, COFF_SectionHeaderArray sections);
 
 //- rjf: record iterator

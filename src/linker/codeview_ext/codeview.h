@@ -220,10 +220,8 @@ typedef struct CV_C13SubSectionList
 
 typedef struct CV_DebugS
 {
-  // Each block contains complete C13 subsections, including headers and padding,
-  // without a leading CV_Signature. Payload bytes may be borrowed from input.
-  String8List data;
-  U32         excluded_kinds;
+  String8List data; // contains complete C13 subsections, including headers and padding, without a leading CV_Signature
+  U32         ignored_kinds;
 } CV_DebugS;
 
 typedef struct CV_DebugS_Iter
@@ -414,12 +412,13 @@ internal CV_C13SubSectionKind    cv_c13_sub_section_kind_from_idx(CV_C13SubSecti
 internal CV_C13SubSectionIdxKind cv_c13_sub_section_idx_from_kind(CV_C13SubSectionKind kind);
 
 internal String8 cv_debug_s_alloc_subsection(Arena *arena, CV_DebugS *debug_s, CV_C13SubSectionKind kind, U64 size);
-internal void    cv_debug_s_exclude_kind(CV_DebugS *debug_s, CV_C13SubSectionKind kind);
+internal void    cv_debug_s_ignore_kind(CV_DebugS *debug_s, CV_C13SubSectionKind kind);
 
 // .debug$S iterator: next_block selects a block, next walks that block's
 // subsections, and next_kind searches across all remaining blocks.
 internal CV_DebugS_Iter cv_debug_s_iter_init      (CV_DebugS *debug_s);
 internal B32            cv_debug_s_iter_next_block(CV_DebugS_Iter *it);
+internal B32            cv_debug_s_iter_next_raw  (CV_DebugS_Iter *it);
 internal B32            cv_debug_s_iter_next      (CV_DebugS_Iter *it);
 internal B32            cv_debug_s_iter_next_kind (CV_DebugS_Iter *it, CV_C13SubSectionKind kind);
 

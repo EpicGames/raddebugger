@@ -1380,6 +1380,33 @@ cv_leaf_from_data(Arena *arena, String8 leaf_data, CV_TypeId itype_first)
   return result;
 }
 
+internal B32
+cv_c13_sub_section_from_data(String8 data, U64 offset, CV_C13SubSection *out)
+{
+  MemoryZeroStruct(out);
+
+  if (offset > data.size || sizeof(CV_C13SubSectionHeader) > data.size - offset) {
+    return 0;
+  }
+
+  CV_C13SubSectionHeader header;
+  MemoryCopy(&header, data.str + offset, sizeof(header));
+
+  U64 data_offset = offset + sizeof(header);
+  U64 size        = Min(header.size, data.size - data_offset);
+  U64 end         = data_offset + size;
+  U64 pad         = AlignPadPow2(end, CV_C13SubSectionAlign);
+
+  out->kind          = header.kind;
+  out->declared_size = header.size;
+  out->data_offset   = data_offset;
+  out->data          = str8_substr(data.str, r1u64s(data_offset, size));
+  out->next_offset   = pad <= data.size - end ? end + pad : data.size;
+  out->truncated     = size != header.size;
+
+  return 1;
+}
+
 internal CV_C13Parsed *
 cv_c13_parsed_from_data(Arena *arena, String8 c13_data, String8 strtbl, COFF_SectionHeaderArray sections)
 {
@@ -1393,36 +1420,28 @@ cv_c13_parsed_from_data(Arena *arena, String8 c13_data, String8 strtbl, COFF_Sec
   CV_C13SubSectionNode *last = 0;
   U64 count = 0;
   {
-    U32 cursor = 0;
-    for(; cursor + sizeof(CV_C13SubSectionHeader) <= c13_data.size;)
+    U64 cursor = 0;
+    CV_C13SubSection subsection;
+    while(cv_c13_sub_section_from_data(c13_data, cursor, &subsection))
     {
-      // read header
-      CV_C13SubSectionHeader *hdr = (CV_C13SubSectionHeader*)(c13_data.str + cursor);
+      if(subsection.data_offset > max_U32) { break; }
       
-      // get sub section info
-      U32 sub_section_off = cursor + sizeof(*hdr);
-      U32 sub_section_size_raw = hdr->size;
-      U32 after_sub_section_off_unclamped = sub_section_off + sub_section_size_raw;
-      U32 after_sub_section_off = ClampTop(after_sub_section_off_unclamped, c13_data.size);
-      U32 sub_section_size = after_sub_section_off - sub_section_off;
-      
-      // emit sub section
-      if(!(hdr->kind & CV_C13SubSectionKind_IgnoreFlag))
+      if( ! (subsection.kind & CV_C13SubSectionKind_IgnoreFlag))
       {
         CV_C13SubSectionNode *node = push_array(arena, CV_C13SubSectionNode, 1);
         SLLQueuePush(first, last, node);
         count += 1;
-        node->kind = hdr->kind;
-        node->off = sub_section_off;
-        node->size = sub_section_size;
-        if(hdr->kind == CV_C13SubSectionKind_FileChksms)
+        node->kind = subsection.kind;
+        node->off = (U32)subsection.data_offset;
+        node->size = (U32)subsection.data.size;
+        if(subsection.kind == CV_C13SubSectionKind_FileChksms)
         {
           file_chksms = node;
         }
       }
       
       // move cursor
-      cursor = AlignPow2(after_sub_section_off, 4);
+      cursor = subsection.next_offset;
     }
   }
   

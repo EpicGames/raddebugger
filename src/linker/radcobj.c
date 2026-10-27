@@ -162,6 +162,7 @@ radcobj_validate(const void *data, uint64_t size, RADCOBJ_Header *header_out)
           types.source_counts[0] != types.leaf_count - types.source_counts[1]) {
         return "invalid type source bitmap size or counts";
       }
+      
       U64 ipi_count = 0;
       for EachIndex(word_idx, word_count) {
         U32 word;
@@ -171,7 +172,63 @@ radcobj_validate(const void *data, uint64_t size, RADCOBJ_Header *header_out)
         }
         ipi_count += count_bits_set32(word);
       }
-      if (ipi_count != types.source_counts[1]) { return "type source bitmap does not match IPI count"; }
+      
+      if (ipi_count != types.source_counts[1]) {
+        return "type source bitmap does not match IPI count";
+      }
+    }
+  }
+
+  RADCOBJ_Directory debug_s_dir = header.dirs[RADCOBJ_DirectoryKind_DebugS_Index];
+  if (debug_s_dir.size) {
+    if (debug_s_dir.offset % sizeof(U32) || debug_s_dir.size < sizeof(RADCOBJ_DebugSIndexHeader)) {
+      return "invalid debug section index header";
+    }
+    
+    U8 *index_data = (U8 *)data + debug_s_dir.offset;
+    RADCOBJ_DebugSIndexHeader index;
+    MemoryCopy(&index, index_data, sizeof(index));
+
+    U64 subsections_offset = sizeof(index) + (U64)index.section_count * sizeof(RADCOBJ_DebugSSection);
+    U64 index_size         = subsections_offset + (U64)index.subsection_count * sizeof(RADCOBJ_DebugSSubsection);
+    if (index_size != debug_s_dir.size) {
+      return "invalid debug section index size";
+    }
+    
+    U32 previous_section  = 0;
+    U64 subsection_cursor = 0;
+    for EachIndex(i, index.section_count) {
+      RADCOBJ_DebugSSection section;
+      MemoryCopy(&section, index_data + sizeof(index) + i * sizeof(section), sizeof(section));
+      
+      if (section.section_number <= previous_section ||
+          section.section_number > header.compressor.raw_size / sizeof(COFF_SectionHeader) ||
+          section.subsection_base_idx != subsection_cursor ||
+          section.subsection_count > index.subsection_count - subsection_cursor) {
+        return "invalid debug section index range";
+      }
+
+      U64 expected_offset = sizeof(CV_C13SubSectionHeader);
+      for EachIndex(j, section.subsection_count) {
+        RADCOBJ_DebugSSubsection subsection;
+        MemoryCopy(&subsection, index_data + subsections_offset + (subsection_cursor + j) * sizeof(subsection), sizeof(subsection));
+      
+        U64 end = (U64)subsection.data_offset + subsection.data_size;
+        if (subsection.data_offset != expected_offset ||
+            end > header.compressor.raw_size ||
+            end > max_U32 - sizeof(CV_Signature)) {
+          return "invalid debug subsection payload range";
+        }
+
+        expected_offset = AlignPow2(end, CV_C13SubSectionAlign) + sizeof(CV_C13SubSectionHeader);
+      }
+      
+      subsection_cursor += section.subsection_count;
+      previous_section = section.section_number;
+    }
+
+    if (subsection_cursor != index.subsection_count) {
+      return "unreferenced debug subsections";
     }
   }
 
@@ -210,15 +267,27 @@ radcobj_encode(CMP_Ctx *cmp, uint32_t segment_size, const void *raw, uint64_t ra
     CV_DebugT  debug[2];
   } RADCOBJ_Types;
 
-  RADCOBJ_Types types = {0};
-  U32Array uncompressed_segments = {0};
+  typedef struct RADCOBJ_DebugSSectionNode {
+    struct RADCOBJ_DebugSSectionNode *next;
+    RADCOBJ_DebugSSection  v;
+    COFF_SectionHeader    *header;
+  } RADCOBJ_DebugSSectionNode;
+  
   const char *error = 0;
+
+  RADCOBJ_Types             types                 = {0};
+  U32Array                  uncompressed_segments = {0};
+  RADCOBJ_DebugSIndexHeader debug_s_index         = {0};
+  RADCOBJ_DebugSSectionNode *debug_s_first        = 0;
+  RADCOBJ_DebugSSectionNode *debug_s_last         = 0;
 
   // find debug types and segments overlapping hash sections
   {
     String8             raw_obj     = str8((U8 *)raw, raw_size);
     COFF_FileHeaderInfo file_header = coff_file_header_info_from_data(raw_obj);
-    if (file_header.header_range.max && file_header.section_table_range.max <= raw_obj.size && file_header.symbol_table_range.max <= raw_obj.size) {
+    if (file_header.header_range.max &&
+        file_header.section_table_range.max <= raw_obj.size &&
+        file_header.symbol_table_range.max <= raw_obj.size) {
       String8             string_table  = str8_substr(raw_obj, file_header.string_table_range);
       COFF_SectionHeader *section_table = (COFF_SectionHeader *)(raw_obj.str + file_header.section_table_range.min);
       String8             names[]       = { str8_lit_comp(".debug$T"), str8_lit_comp(".debug$P") };
@@ -229,6 +298,59 @@ radcobj_encode(CMP_Ctx *cmp, uint32_t segment_size, const void *raw, uint64_t ra
         String8             name   = coff_name_from_section_header(string_table, header);
         for EachElement(k, sections) {
           if (str8_match(names[k], name, 0)) { sections[k] = header; }
+        }
+
+        if (str8_match(name, str8_lit(".debug$S"), 0) &&
+            header->fsize >= sizeof(CV_Signature) &&
+            header->foff <= raw_obj.size &&
+            header->fsize <= raw_obj.size - header->foff) {
+          String8 section_data = str8_substr(raw_obj, r1u64s(header->foff, header->fsize));
+          if (cv_signature_from_debug_s(section_data) == CV_Signature_C13) {
+            String8          data             = str8_skip(section_data, sizeof(CV_Signature));
+            U64              cursor           = 0;
+            U64              subsection_count = 0;
+            B32              malformed        = 0;
+            CV_C13SubSection subsection;
+            while (cv_c13_sub_section_from_data(data, cursor, &subsection)) {
+              if (subsection.truncated) {
+                malformed = 1;
+                break;
+              }
+              subsection_count += 1;
+              cursor = subsection.next_offset;
+            }
+
+            // do not cache a malformed prefix: the linker's normal parser must still diagnose the section
+            if ( ! malformed) {
+              U64 index_size = sizeof(debug_s_index) +
+                               ((U64)debug_s_index.section_count + 1) * sizeof(RADCOBJ_DebugSSection) +
+                               ((U64)debug_s_index.subsection_count + subsection_count) * sizeof(RADCOBJ_DebugSSubsection);
+              
+              if (index_size > max_U32) {
+                error = "debug section index exceeds the format size limit";
+                goto exit;
+              }
+
+              if (types.arena == NULL) {
+#if RADCOBJ_LIB && OS_WINDOWS
+                radcobj_init_system_info();
+#endif
+                types.arena = arena_alloc(.reserve_size = KB(64), .commit_size = KB(64));
+              }
+
+              RADCOBJ_DebugSSectionNode *node = push_array(types.arena, RADCOBJ_DebugSSectionNode, 1);
+              node->v = (RADCOBJ_DebugSSection){
+                (U32)(i + 1),
+                debug_s_index.subsection_count,
+                (U32)subsection_count
+              };
+              node->header = header;
+              SLLQueuePush(debug_s_first, debug_s_last, node);
+              
+              debug_s_index.section_count += 1;
+              debug_s_index.subsection_count += (U32)subsection_count;
+            }
+          }
         }
 
         if (str8_match(name, str8_lit(".debug$H"), 0) &&
@@ -331,6 +453,22 @@ radcobj_encode(CMP_Ctx *cmp, uint32_t segment_size, const void *raw, uint64_t ra
     }
   }
 
+  if (debug_s_index.section_count) {
+    metadata_end = AlignPow2(metadata_end, 4);
+    
+    U64 index_size = sizeof(debug_s_index) +
+                     (U64)debug_s_index.section_count * sizeof(RADCOBJ_DebugSSection) +
+                     (U64)debug_s_index.subsection_count * sizeof(RADCOBJ_DebugSSubsection);
+    
+    if (metadata_end > max_U32 || index_size > max_U32 - metadata_end) {
+      error = "debug section index exceeds the format size limit";
+      goto exit;
+    }
+    
+    header.dirs[RADCOBJ_DirectoryKind_DebugS_Index] = (RADCOBJ_Directory){ (U32)metadata_end, (U32)index_size };
+    metadata_end += index_size;
+  }
+
   U64 capacity   = metadata_end;
   U64 full_bound = full_count ? cmp_bound(cmp, segment_size) : 0;
   if (full_count) {
@@ -397,6 +535,35 @@ radcobj_encode(CMP_Ctx *cmp, uint32_t segment_size, const void *raw, uint64_t ra
         MemoryCopy(output + bitmap.offset, debug->ipi_bits.v, bitmap.size);
       }
     }
+  }
+
+  if (debug_s_index.section_count) {
+    U8 *index_data = output + header.dirs[RADCOBJ_DirectoryKind_DebugS_Index].offset;
+    MemoryCopy(index_data, &debug_s_index, sizeof(debug_s_index));
+
+    U64 section_cursor = sizeof(debug_s_index);
+    U64 subsection_cursor = section_cursor + (U64)debug_s_index.section_count * sizeof(RADCOBJ_DebugSSection);
+    
+    // write descriptors directly to the output
+    for EachNode(node, RADCOBJ_DebugSSectionNode, debug_s_first) {
+      MemoryCopy(index_data + section_cursor, &node->v, sizeof(node->v));
+      section_cursor += sizeof(node->v);
+
+      String8 data   = str8_substr(raw, r1u64s(node->header->foff, node->header->fsize - sizeof(CV_Signature)));
+      U64     cursor = 0;
+      for EachIndex(i, node->v.subsection_count) {
+        CV_C13SubSection parsed_subsection;
+        B32              parsed = cv_c13_sub_section_from_data(data, cursor, &parsed_subsection);
+        AssertAlways(parsed && ! parsed_subsection.truncated);
+
+        RADCOBJ_DebugSSubsection subsection = { parsed_subsection.kind, (U32)parsed_subsection.data_offset, parsed_subsection.declared_size };
+        MemoryCopy(index_data + subsection_cursor, &subsection, sizeof(subsection));
+        
+        subsection_cursor += sizeof(subsection);
+        cursor = parsed_subsection.next_offset;
+      }
+    }
+    Assert(subsection_cursor == header.dirs[RADCOBJ_DirectoryKind_DebugS_Index].size);
   }
 
   for EachIndex(segment_idx, segments_count) {

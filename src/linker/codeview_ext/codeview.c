@@ -600,11 +600,11 @@ cv_debug_s_from_data_c13_(Arena *arena, CV_DebugS *debug_s, String8 raw_debug_s)
 }
 
 internal void
-cv_debug_s_exclude_kind(CV_DebugS *debug_s, CV_C13SubSectionKind kind)
+cv_debug_s_ignore_kind(CV_DebugS *debug_s, CV_C13SubSectionKind kind)
 {
   U32 idx = cv_c13_sub_section_idx_from_kind(kind);
   Assert(idx != CV_C13SubSectionIdxKind_NULL && idx < 32);
-  debug_s->excluded_kinds |= 1u << idx;
+  debug_s->ignored_kinds |= 1u << idx;
 }
 
 internal CV_DebugS_Iter
@@ -625,34 +625,38 @@ cv_debug_s_iter_next_block(CV_DebugS_Iter *it)
 }
 
 internal B32
+cv_debug_s_iter_next_raw(CV_DebugS_Iter *it)
+{
+  CV_C13SubSection subsection;
+  if ( ! cv_c13_sub_section_from_data(it->block, it->cursor, &subsection)) {
+    return 0;
+  }
+  
+  if (subsection.truncated) {
+    it->malformed = 1;
+    it->block.size = it->cursor;
+    return 0;
+  }
+  
+  it->cursor      = subsection.next_offset;
+  it->kind        = subsection.kind;
+  it->data        = subsection.data;
+  it->data_offset = subsection.data_offset;
+  
+  return 1;
+}
+
+internal B32
 cv_debug_s_iter_next(CV_DebugS_Iter *it)
 {
-  String8 data = it->block;
-  while (it->cursor <= data.size && sizeof(CV_C13SubSectionHeader) <= data.size - it->cursor) {
-    CV_C13SubSectionHeader header;
-    str8_deserial_read_struct(data, it->cursor, &header);
-    U64 off = it->cursor + sizeof(header);
-    if (header.size > data.size - off) {
-      it->malformed = 1;
-      it->block.size = it->cursor;
-      return 0;
-    }
+  while (cv_debug_s_iter_next_raw(it)) {
+    if (it->kind & CV_C13SubSectionKind_IgnoreFlag) { continue; }
 
-    U64 end = off + header.size;
-    U64 pad = AlignPadPow2(end, CV_C13SubSectionAlign);
-
-    it->cursor = pad <= data.size - end ? end + pad : data.size;
-    if (header.kind & CV_C13SubSectionKind_IgnoreFlag) { continue; }
-
-    U32 idx = cv_c13_sub_section_idx_from_kind(header.kind);
-    if (it->debug_s->excluded_kinds & (1u << idx)) { continue; }
-
-    it->kind        = header.kind;
-    it->data        = str8(data.str + off, header.size);
-    it->data_offset = off;
+    U32 idx = cv_c13_sub_section_idx_from_kind(it->kind);
+    if (it->debug_s->ignored_kinds & (1u << idx)) { continue; }
+    
     return 1;
   }
-
   return 0;
 }
 
@@ -740,8 +744,8 @@ internal void
 cv_debug_s_concat_in_place(CV_DebugS *dst, CV_DebugS *src)
 {
   Assert(dst != src);
-  if (dst->data.node_count == 0) { dst->excluded_kinds = src->excluded_kinds; }
-  Assert(src->data.node_count == 0 || dst->excluded_kinds == src->excluded_kinds);
+  if (dst->data.node_count == 0) { dst->ignored_kinds = src->ignored_kinds; }
+  Assert(src->data.node_count == 0 || dst->ignored_kinds == src->ignored_kinds);
   str8_list_concat_in_place(&dst->data, &src->data);
   MemoryZeroStruct(src);
 }

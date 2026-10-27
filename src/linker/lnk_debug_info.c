@@ -19,10 +19,10 @@ lnk_discard_cv_debug_info(LNK_CodeViewInput *input, U64 obj_idx)
   MemoryZeroStruct(&input->debug_t_arr[obj_idx]);
 
   // discard symbols
-  cv_debug_s_exclude_kind(&input->debug_s_arr[obj_idx], CV_C13SubSectionKind_Symbols);
+  cv_debug_s_ignore_kind(&input->debug_s_arr[obj_idx], CV_C13SubSectionKind_Symbols);
 
   // discard inline sites
-  cv_debug_s_exclude_kind(&input->debug_s_arr[obj_idx], CV_C13SubSectionKind_InlineeLines);
+  cv_debug_s_ignore_kind(&input->debug_s_arr[obj_idx], CV_C13SubSectionKind_InlineeLines);
 }
 
 THREAD_POOL_TASK_FUNC(lnk_parse_debug_s_task)
