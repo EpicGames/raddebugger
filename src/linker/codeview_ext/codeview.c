@@ -582,6 +582,7 @@ cv_obj_info_from_symbol(CV_Symbol symbol)
 internal String8
 cv_debug_s_alloc_subsection(Arena *arena, CV_DebugS *debug_s, CV_C13SubSectionKind kind, U64 size)
 {
+  debug_s->index = 0;
   CV_C13SubSectionHeader header = { .kind = kind, .size = safe_cast_u32(size) };
   U64  block_size = AlignPow2(sizeof(header) + size, CV_C13SubSectionAlign);
   U8  *block      = push_array(arena, U8, block_size);
@@ -593,6 +594,7 @@ cv_debug_s_alloc_subsection(Arena *arena, CV_DebugS *debug_s, CV_C13SubSectionKi
 internal void
 cv_debug_s_from_data_c13_(Arena *arena, CV_DebugS *debug_s, String8 raw_debug_s)
 {
+  debug_s->index = 0;
   CV_DebugS_Iter it = { .debug_s = debug_s, .block = raw_debug_s };
   while (cv_debug_s_iter_next(&it)) {}
   if (it.malformed) { raw_debug_s.size = it.cursor; }
@@ -607,33 +609,87 @@ cv_debug_s_ignore_kind(CV_DebugS *debug_s, CV_C13SubSectionKind kind)
   debug_s->ignored_kinds |= 1u << idx;
 }
 
+internal CV_DebugS_Index *
+cv_debug_s_index_from_debug_s(CV_DebugS *debug_s)
+{
+  CV_DebugS_Index *index = debug_s->index;
+  if (index && (index->block_count != debug_s->data.node_count || index->last_block != debug_s->data.last || (debug_s->data.last && debug_s->data.last->next))) {
+    index = 0;
+  }
+  return index;
+}
+
+internal void
+cv_debug_s_stats_accumulate(CV_DebugS_Stats *stats, CV_C13SubSectionKind kind, U64 size)
+{
+  if (kind & CV_C13SubSectionKind_IgnoreFlag) {
+    return;
+  }
+  U32 idx = cv_c13_sub_section_idx_from_kind(kind);
+  stats->size[idx]  += size;
+  stats->count[idx] += 1;
+  if (kind == CV_C13SubSectionKind_Lines && size) {
+    stats->lines_size += AlignPow2(sizeof(CV_C13SubSectionHeader) + size, CV_C13SubSectionAlign);
+  }
+}
+
 internal CV_DebugS_Iter
 cv_debug_s_iter_init(CV_DebugS *debug_s)
 {
-  return (CV_DebugS_Iter){ .debug_s = debug_s, .next_block = debug_s->data.first };
+  return (CV_DebugS_Iter){ .debug_s = debug_s, .next_block = debug_s->data.first, .index = cv_debug_s_index_from_debug_s(debug_s) };
 }
 
 internal B32
 cv_debug_s_iter_next_block(CV_DebugS_Iter *it)
 {
-  it->block  = str8_zero();
-  it->cursor = 0;
-  if (it->next_block == 0) { return 0; }
+  it->block        = str8_zero();
+  it->cursor       = 0;
+  it->cached_block = 0;
+  if (it->next_block == 0) {
+    return 0;
+  }
+
   it->block      = it->next_block->string;
   it->next_block = it->next_block->next;
+  if (it->index && it->block_idx < it->index->block_count) {
+    CV_DebugS_BlockIndex block = it->index->blocks[it->block_idx];
+    if (block.subsection_base_idx != max_U32) {
+      it->cached_block   = 1;
+      it->subsection_idx = block.subsection_base_idx;
+      it->subsection_opl = it->subsection_idx + block.subsection_count;
+    }
+  }
+  it->block_idx += 1;
   return 1;
 }
 
 internal B32
 cv_debug_s_iter_next_raw(CV_DebugS_Iter *it)
 {
+  if (it->cached_block) {
+    if (it->subsection_idx == it->subsection_opl) {
+      return 0;
+    }
+
+    CV_DebugS_Subsection subsection;
+    MemoryCopy(&subsection, it->index->subsections.str + it->subsection_idx * sizeof(subsection), sizeof(subsection));
+    Assert(subsection.data_offset <= it->block.size && subsection.data_size <= it->block.size - subsection.data_offset);
+    it->subsection_idx += 1;
+    it->kind            = subsection.kind;
+    it->data_offset     = subsection.data_offset;
+    it->data            = str8(it->block.str + subsection.data_offset, subsection.data_size);
+    it->cursor          = Min(AlignPow2((U64)subsection.data_offset + subsection.data_size, CV_C13SubSectionAlign), it->block.size);
+
+    return 1;
+  }
+  
   CV_C13SubSection subsection;
   if ( ! cv_c13_sub_section_from_data(it->block, it->cursor, &subsection)) {
     return 0;
   }
   
   if (subsection.truncated) {
-    it->malformed = 1;
+    it->malformed  = 1;
     it->block.size = it->cursor;
     return 0;
   }
@@ -672,6 +728,13 @@ cv_debug_s_iter_next_kind(CV_DebugS_Iter *it, CV_C13SubSectionKind kind)
 internal B32
 cv_debug_s_find_first(CV_DebugS *debug_s, CV_C13SubSectionKind kind, String8 *out)
 {
+  CV_DebugS_Index *index = cv_debug_s_index_from_debug_s(debug_s);
+  if (index && (kind == CV_C13SubSectionKind_StringTable || kind == CV_C13SubSectionKind_FileChksms)) {
+    U32 idx = cv_c13_sub_section_idx_from_kind(kind);
+    if ((debug_s->ignored_kinds & (1u << idx)) || index->stats.count[idx] == 0) { return 0; }
+    *out = kind == CV_C13SubSectionKind_StringTable ? index->string_table : index->file_chksms;
+    return 1;
+  }
   CV_DebugS_Iter it = cv_debug_s_iter_init(debug_s);
   if (!cv_debug_s_iter_next_kind(&it, kind)) { return 0; }
   *out = it.data;
@@ -681,18 +744,20 @@ cv_debug_s_find_first(CV_DebugS *debug_s, CV_C13SubSectionKind kind, String8 *ou
 internal CV_DebugS_Stats
 cv_debug_s_stats(CV_DebugS *debug_s)
 {
+  CV_DebugS_Index *index = cv_debug_s_index_from_debug_s(debug_s);
+  if (index) {
+    CV_DebugS_Stats result = index->stats;
+    for EachElement(i, result.size) {
+      if (debug_s->ignored_kinds & (1u << i)) { result.size[i] = 0; result.count[i] = 0; }
+    }
+    if (debug_s->ignored_kinds & (1u << CV_C13SubSectionIdxKind_Lines)) { result.lines_size = 0; }
+    return result;
+  }
   CV_DebugS_Stats result = {0};
   CV_DebugS_Iter  it     = cv_debug_s_iter_init(debug_s);
   while (cv_debug_s_iter_next_block(&it)) {
     while (cv_debug_s_iter_next(&it)) {
-      U64 idx = cv_c13_sub_section_idx_from_kind(it.kind);
-
-      result.size[idx]  += it.data.size;
-      result.count[idx] += 1;
-
-      if (it.kind == CV_C13SubSectionKind_Lines && it.data.size) {
-        result.lines_size += AlignPow2(sizeof(CV_C13SubSectionHeader) + it.data.size, CV_C13SubSectionAlign);
-      }
+      cv_debug_s_stats_accumulate(&result, it.kind, it.data.size);
     }
   }
   return result;
@@ -744,7 +809,12 @@ internal void
 cv_debug_s_concat_in_place(CV_DebugS *dst, CV_DebugS *src)
 {
   Assert(dst != src);
-  if (dst->data.node_count == 0) { dst->ignored_kinds = src->ignored_kinds; }
+  if (dst->data.node_count == 0) {
+    dst->ignored_kinds = src->ignored_kinds;
+    dst->index = cv_debug_s_index_from_debug_s(src);
+  } else if (src->data.node_count) {
+    dst->index = 0;
+  }
   Assert(src->data.node_count == 0 || dst->ignored_kinds == src->ignored_kinds);
   str8_list_concat_in_place(&dst->data, &src->data);
   MemoryZeroStruct(src);

@@ -43,6 +43,108 @@ lnk_obj_codec_encode(Arena *arena, CMP_Ctx *cmp, U64 segment_size, String8 data)
 
 #if !LNK_OBJ_CODEC_ENCODER_ONLY
 
+typedef struct LNK_DebugSIndex
+{
+  U8     *sections;
+  U64     section_count;
+  U64     section_cursor;
+  String8 subsections;
+  U64     raw_size;
+} LNK_DebugSIndex;
+
+internal B32
+lnk_obj_codec_debug_s_index(LNK_Obj *obj, LNK_DebugSIndex *out)
+{
+  StaticAssert(sizeof(CV_DebugS_Subsection) == sizeof(RADCOBJ_DebugSSubsection), debug_s_subsection_size);
+  StaticAssert(OffsetOf(CV_DebugS_Subsection, kind) == OffsetOf(RADCOBJ_DebugSSubsection, kind), debug_s_kind_offset);
+  StaticAssert(OffsetOf(CV_DebugS_Subsection, data_offset) == OffsetOf(RADCOBJ_DebugSSubsection, data_offset), debug_s_data_offset);
+  StaticAssert(OffsetOf(CV_DebugS_Subsection, data_size) == OffsetOf(RADCOBJ_DebugSSubsection, data_size), debug_s_size_offset);
+
+  MemoryZeroStruct(out);
+  
+  if (obj->input == NULL || obj->input->cfm_map == NULL) {
+    return 0;
+  }
+  
+  String8 encoded = obj->input->cfm_map->encoded;
+  RADCOBJ_Header header;
+  if (radcobj_validate_header(encoded.str, encoded.size, &header)) {
+    return 0;
+  }
+  
+  RADCOBJ_Directory dir = header.dirs[RADCOBJ_DirectoryKind_DebugS_Index];
+  if (dir.size < sizeof(RADCOBJ_DebugSIndexHeader)) {
+    return 0;
+  }
+  
+  RADCOBJ_DebugSIndexHeader index;
+  MemoryCopy(&index, encoded.str + dir.offset, sizeof(index));
+
+  U64 sections_size    = (U64)index.section_count * sizeof(RADCOBJ_DebugSSection);
+  U64 subsections_size = (U64)index.subsection_count * sizeof(RADCOBJ_DebugSSubsection);
+  if (sizeof(index) + sections_size + subsections_size != dir.size) {
+    return 0;
+  }
+  
+  out->sections      = encoded.str + dir.offset + sizeof(index);
+  out->section_count = index.section_count;
+  out->subsections   = str8(out->sections + sections_size, subsections_size);
+  out->raw_size      = header.compressor.raw_size;
+  return 1;
+}
+
+internal B32
+lnk_obj_codec_debug_s_block(LNK_DebugSIndex *index, U32 section_number, U64 block_size, CV_DebugS_BlockIndex *out)
+{
+  *out = (CV_DebugS_BlockIndex){ max_U32, 0 };
+
+  // the selected section list and encoded section table are both ordered
+  while (index->section_cursor < index->section_count) {
+    RADCOBJ_DebugSSection section;
+    MemoryCopy(&section, index->sections + index->section_cursor * sizeof(section), sizeof(section));
+  
+    if (section.section_number > section_number) {
+      return 0;
+    }
+
+    index->section_cursor += 1;
+  
+    if (section.section_number < section_number) {
+      continue;
+    }
+  
+    U64 count = index->subsections.size / sizeof(CV_DebugS_Subsection);
+    if (section.subsection_base_idx > count || section.subsection_count > count - section.subsection_base_idx) {
+      return 0;
+    }
+
+    // CFM already validated descriptor progression; checking the last record
+    // bounds all preceding records against this actual COFF section as well
+    U64 cursor = 0;
+    if (section.subsection_count) {
+      U64                  last_idx = (U64)section.subsection_base_idx + section.subsection_count - 1;
+      CV_DebugS_Subsection last;
+      MemoryCopy(&last, index->subsections.str + last_idx * sizeof(last), sizeof(last));
+
+      cursor = (U64)last.data_offset + last.data_size;
+      if (cursor > block_size) {
+        return 0;
+      }
+      cursor = Min(AlignPow2(cursor, CV_C13SubSectionAlign), block_size);
+    }
+
+    // a complete index may leave trailing bytes, but not another whole header
+    if (block_size - cursor >= sizeof(CV_C13SubSectionHeader)) {
+      return 0;
+    }
+    *out = (CV_DebugS_BlockIndex){ section.subsection_base_idx, section.subsection_count };
+    
+    return 1;
+  }
+  
+  return 0;
+}
+
 internal B32
 lnk_obj_codec_debug_t(Arena *arena, LNK_Obj *obj, String8 data, B32 is_debug_p, CV_DebugT *out)
 {

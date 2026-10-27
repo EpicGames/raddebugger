@@ -218,10 +218,42 @@ typedef struct CV_C13SubSectionList
 ////////////////////////////////
 //~ Debug Section
 
+typedef struct CV_DebugS_Stats
+{
+  U64 size[CV_C13SubSectionIdxKind_COUNT];
+  U64 count[CV_C13SubSectionIdxKind_COUNT];
+  U64 lines_size;
+} CV_DebugS_Stats;
+
+typedef struct CV_DebugS_Subsection
+{
+  CV_C13SubSectionKind kind;
+  U32 data_offset;
+  U32 data_size;
+} CV_DebugS_Subsection;
+
+typedef struct CV_DebugS_BlockIndex
+{
+  U32 subsection_base_idx; // max_U32 means raw parsing; count==0 can be cached
+  U32 subsection_count;
+} CV_DebugS_BlockIndex;
+
+typedef struct CV_DebugS_Index
+{
+  String8 subsections; // borrowed, byte-packed CV_DebugS_Subsection records
+  U64 block_count;
+  CV_DebugS_BlockIndex *blocks;
+  String8Node *last_block; // snapshot of the indexed block list
+  CV_DebugS_Stats stats;   // physical IgnoreFlag applied, ignored_kinds not applied
+  String8 string_table;
+  String8 file_chksms;
+} CV_DebugS_Index;
+
 typedef struct CV_DebugS
 {
-  String8List data; // contains complete C13 subsections, including headers and padding, without a leading CV_Signature
-  U32         ignored_kinds;
+  String8List      data; // contains complete C13 subsections, including headers and padding, without a leading CV_Signature
+  U32              ignored_kinds;
+  CV_DebugS_Index *index;
 } CV_DebugS;
 
 typedef struct CV_DebugS_Iter
@@ -234,14 +266,12 @@ typedef struct CV_DebugS_Iter
   CV_C13SubSectionKind  kind;
   String8               data;
   U64                   data_offset;
+  CV_DebugS_Index      *index;
+  U64                   block_idx;
+  U64                   subsection_idx;
+  U64                   subsection_opl;
+  B32                   cached_block;
 } CV_DebugS_Iter;
-
-typedef struct CV_DebugS_Stats
-{
-  U64 size[CV_C13SubSectionIdxKind_COUNT];
-  U64 count[CV_C13SubSectionIdxKind_COUNT];
-  U64 lines_size;
-} CV_DebugS_Stats;
 
 typedef struct CV_DebugH
 {
@@ -411,8 +441,10 @@ internal String8List  cv_data_from_debug_s_c13(Arena *arena, CV_DebugS *debug_s,
 internal CV_C13SubSectionKind    cv_c13_sub_section_kind_from_idx(CV_C13SubSectionIdxKind idx);
 internal CV_C13SubSectionIdxKind cv_c13_sub_section_idx_from_kind(CV_C13SubSectionKind kind);
 
-internal String8 cv_debug_s_alloc_subsection(Arena *arena, CV_DebugS *debug_s, CV_C13SubSectionKind kind, U64 size);
-internal void    cv_debug_s_ignore_kind(CV_DebugS *debug_s, CV_C13SubSectionKind kind);
+internal String8           cv_debug_s_alloc_subsection(Arena *arena, CV_DebugS *debug_s, CV_C13SubSectionKind kind, U64 size);
+internal void              cv_debug_s_ignore_kind(CV_DebugS *debug_s, CV_C13SubSectionKind kind);
+internal CV_DebugS_Index * cv_debug_s_index_from_debug_s(CV_DebugS *debug_s);
+internal void              cv_debug_s_stats_accumulate(CV_DebugS_Stats *stats, CV_C13SubSectionKind kind, U64 size);
 
 // .debug$S iterator: next_block selects a block, next walks that block's
 // subsections, and next_kind searches across all remaining blocks.

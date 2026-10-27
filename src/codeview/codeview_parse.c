@@ -1400,7 +1400,7 @@ cv_c13_sub_section_from_data(String8 data, U64 offset, CV_C13SubSection *out)
   out->kind          = header.kind;
   out->declared_size = header.size;
   out->data_offset   = data_offset;
-  out->data          = str8_substr(data.str, r1u64s(data_offset, size));
+  out->data          = str8_substr(data, r1u64s(data_offset, size));
   out->next_offset   = pad <= data.size - end ? end + pad : data.size;
   out->truncated     = size != header.size;
 

@@ -549,7 +549,7 @@ radcobj_encode(CMP_Ctx *cmp, uint32_t segment_size, const void *raw, uint64_t ra
       MemoryCopy(index_data + section_cursor, &node->v, sizeof(node->v));
       section_cursor += sizeof(node->v);
 
-      String8 data   = str8_substr(raw, r1u64s(node->header->foff, node->header->fsize - sizeof(CV_Signature)));
+      String8 data   = str8_substr(str8((U8 *)raw, raw_size), r1u64s((U64)node->header->foff + sizeof(CV_Signature), node->header->fsize - sizeof(CV_Signature)));
       U64     cursor = 0;
       for EachIndex(i, node->v.subsection_count) {
         CV_C13SubSection parsed_subsection;

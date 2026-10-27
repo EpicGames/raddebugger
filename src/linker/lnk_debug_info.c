@@ -36,28 +36,78 @@ THREAD_POOL_TASK_FUNC(lnk_parse_debug_s_task)
   U64        string_count   = 0;
   U64        checksum_count = 0;
 
-  for EachNode(n, U32Node, sect_list.first) {
-    String8 raw_debug_s = lnk_obj_section_data_from_number(obj, n->data);
+  LNK_DebugSIndex  encoded_index = {0};
+  CV_DebugS_Index *index         = 0;
+  if (sect_list.count && lnk_obj_codec_debug_s_index(obj, &encoded_index)) {
+    index = push_array(arena, CV_DebugS_Index, 1);
+    index->subsections = encoded_index.subsections;
+    index->block_count = sect_list.count;
+    index->blocks      = push_array(arena, CV_DebugS_BlockIndex, sect_list.count);
+    for EachIndex(i, index->block_count) {
+      index->blocks[i].subsection_base_idx = max_U32;
+    }
+  }
 
-    // Keep one block per section number, even when a section is skipped, so
-    // relocation consumers retain the correspondence with the source sections.
+  U64 block_idx = 0;
+  for EachNode(n, U32Node, sect_list.first) {
+    COFF_SectionHeader   *section     = lnk_coff_section_header_from_section_number(obj, n->data);
+    String8               raw_debug_s = str8_substr(obj->coff.data, r1u64s(section->foff, section->fsize));
+    CV_DebugS_BlockIndex *block_index = index ? &index->blocks[block_idx] : 0;
+    block_idx += 1;
+
+    // keep one block per section number, even when a section is skipped, so
+    // relocation consumers retain the correspondence with the source sections
     String8Node *block = str8_list_push(arena, &debug_s->data, str8_zero());
 
     // skip empty .debug$S sections
     if (raw_debug_s.size == 0) { continue; }
 
-    // skip unknown debug info formats
-    if (raw_debug_s.size < sizeof(CV_Signature) || cv_signature_from_debug_s(raw_debug_s) != CV_Signature_C13) {
+    B32 cached = 0;
+    if (index &&
+        raw_debug_s.size >= sizeof(CV_Signature) &&
+        section->foff <= encoded_index.raw_size &&
+        section->fsize <= encoded_index.raw_size - section->foff) {
+      cached = lnk_obj_codec_debug_s_block(&encoded_index, n->data, raw_debug_s.size - sizeof(CV_Signature), block_index);
+    }
+
+    // the encoder validated the C13 signature for indexed sections; only a
+    // cache miss needs to touch the original signature and subsection headers
+    if ( ! cached && (raw_debug_s.size < sizeof(CV_Signature) || cv_signature_from_debug_s(raw_debug_s) != CV_Signature_C13)) {
       lnk_error_obj(LNK_Error_IllData, obj, "unsupported .debug$S signature");
       continue;
     }
 
-    String8 data = str8_skip(raw_debug_s, sizeof(CV_Signature));
-    CV_DebugS_Iter it = { .debug_s = debug_s, .block = data };
-    while (cv_debug_s_iter_next(&it)) {
-      string_count   += it.kind == CV_C13SubSectionKind_StringTable;
-      checksum_count += it.kind == CV_C13SubSectionKind_FileChksms;
+    String8        data = str8_skip(raw_debug_s, sizeof(CV_Signature));
+    CV_DebugS_Iter it   = { .debug_s = debug_s, .block = data, .index = index, .cached_block = cached };
+    if (cached) {
+      it.subsection_idx = block_index->subsection_base_idx;
+      it.subsection_opl = it.subsection_idx + block_index->subsection_count;
     }
+    
+    while (cv_debug_s_iter_next_raw(&it)) {
+      if (it.kind & CV_C13SubSectionKind_IgnoreFlag) {
+        continue;
+      }
+
+      U32 kind_idx = cv_c13_sub_section_idx_from_kind(it.kind);
+      if (index) {
+        if (index->stats.count[kind_idx] == 0) {
+          if (it.kind == CV_C13SubSectionKind_StringTable) {
+            index->string_table = it.data;
+          }
+          if (it.kind == CV_C13SubSectionKind_FileChksms)  {
+            index->file_chksms = it.data;
+          }
+        }
+        cv_debug_s_stats_accumulate(&index->stats, it.kind, it.data.size);
+      }
+
+      if ( ! (debug_s->ignored_kinds & (1u << kind_idx))) {
+        string_count   += it.kind == CV_C13SubSectionKind_StringTable;
+        checksum_count += it.kind == CV_C13SubSectionKind_FileChksms;
+      }
+    }
+
     if (it.malformed) {
       data.size = it.cursor;
       lnk_error_obj(LNK_Error_IllData, obj, ".debug$S subsection outside section");
@@ -74,6 +124,11 @@ THREAD_POOL_TASK_FUNC(lnk_parse_debug_s_task)
     if (checksum_count > 1) {
       lnk_error_obj(LNK_Warning_IllData, task->obj_arr[obj_idx], ".debug$S (No. %u) has %u file checksum sub-sections defined, picking first sub-section", n->data, checksum_count);
     }
+  }
+
+  if (index) {
+    index->last_block = debug_s->data.last;
+    debug_s->index = index;
   }
 }
 
