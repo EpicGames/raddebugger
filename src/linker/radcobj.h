@@ -27,6 +27,8 @@ typedef enum RADCOBJ_DirectoryKind
   RADCOBJ_DirectoryKind_DebugP_Header,
   RADCOBJ_DirectoryKind_DebugT_LeafOffsets, // uint32_t array of offsets
   RADCOBJ_DirectoryKind_DebugP_LeafOffsets,
+  RADCOBJ_DirectoryKind_DebugT_IpiBits, // uint32_t bit array: 0=TPI, 1=IPI
+  RADCOBJ_DirectoryKind_DebugP_IpiBits,
   RADCOBJ_DirectoryKind_Count,
 } RADCOBJ_DirectoryKind;
 
@@ -56,8 +58,8 @@ typedef struct RADCOBJ_TypesHeader
   uint64_t leaf_count;       // must match number of leaf offsets
 } RADCOBJ_TypesHeader;
 
-typedef char RADCOBJ_HeaderSizeCheck[sizeof(RADCOBJ_Header) == 80 ? 1 : -1];
-typedef char RADCOBJ_HeaderCompressorOffsetCheck[offsetof(RADCOBJ_Header, compressor) == 56 ? 1 : -1];
+typedef char RADCOBJ_HeaderSizeCheck[sizeof(RADCOBJ_Header) == 96 ? 1 : -1];
+typedef char RADCOBJ_HeaderCompressorOffsetCheck[offsetof(RADCOBJ_Header, compressor) == 72 ? 1 : -1];
 typedef char RADCOBJ_TypesHeaderSizeCheck[sizeof(RADCOBJ_TypesHeader) == 24 ? 1 : -1];
 typedef char RADCOBJ_SegmentSizeCheck[sizeof(RADCOBJ_Segment) == 8 ? 1 : -1];
 

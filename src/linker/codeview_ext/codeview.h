@@ -256,6 +256,7 @@ typedef struct CV_DebugT
   String8  data;
   U64      count;
   U32     *offsets;
+  U32Array ipi_bits; // one bit per leaf: 0=TPI, 1=IPI; null v uses leaf-kind lookup
 
   // type server
   U64     source_counts [CV_TypeIndexSource_COUNT];
@@ -431,6 +432,7 @@ internal String8         cv_file_chksms_from_debug_s (CV_DebugS *debug_s);
 //~ .debug$T helpers
 
 internal CV_DebugT       cv_debug_t_from_data         (Arena *arena, String8 data, U64 align);
+internal CV_TypeIndexSource cv_type_index_source_from_debug_t(CV_DebugT *debug_t, U64 leaf_idx);
 internal B32             cv_debug_t_from_data_checked (Arena *arena, String8 data, U64 align, U32 *offsets, U64 *source_counts, CV_DebugT *out);
 internal U64             cv_leaf_idx_from_ti          (CV_DebugT *debug_t, CV_TypeIndexSource source, CV_TypeIndex ti);
 internal CV_TypeIndex    cv_ti_from_leaf_idx          (CV_DebugT *debug_t, CV_TypeIndexSource source, U64 leaf_idx);

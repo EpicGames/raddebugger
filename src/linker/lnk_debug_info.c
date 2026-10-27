@@ -283,9 +283,10 @@ THREAD_POOL_TASK_FUNC(lnk_read_type_servers_task)
   CV_DebugT d = cv_debug_t_from_data(arena, type_data_raw, PDB_LEAF_ALIGN);
 
   // @type_server .debugtype_data
-  debug_t->count   = d.count;
-  debug_t->data    = d.data;
-  debug_t->offsets = d.offsets;
+  debug_t->count    = d.count;
+  debug_t->data     = d.data;
+  debug_t->offsets  = d.offsets;
+  debug_t->ipi_bits = d.ipi_bits;
   for EachIndex(i, CV_TypeIndexSource_COUNT) { debug_t->ti_ranges[i] = ti_ranges[i];                                       }
   for EachIndex(i, CV_TypeIndexSource_COUNT) { debug_t->ti_base[i]   = IntFromPtr(source_data_arr[i].str - type_data_raw.str); }
   MemoryCopyTyped(debug_t->source_counts,  d.source_counts, CV_TypeIndexSource_COUNT);
@@ -1473,16 +1474,13 @@ lnk_leaf_hash_table_insert(LNK_CodeViewInput *input, LNK_LeafHashTable *ht, LNK_
 {
   U64 best_idx = hash & (ht->cap - 1);
   U64 idx      = best_idx;
-  
   do {
     LNK_LeafRef curr = ins_atomic_u64_eval(&ht->bucket_arr[idx]);
     while (curr == LNK_LEAF_REF_NULL || (dedup && lnk_hash_from_leaf_ref(input, curr) == hash)) {
       if (curr != LNK_LEAF_REF_NULL && lnk_leaf_ref_compare(ref, curr) >= 0) {
         return LNK_LeafInsert_Existing;
       }
-
       LNK_LeafRef cmp = ins_atomic_u64_eval_cond_assign(&ht->bucket_arr[idx], ref, curr);
-      
       if (cmp == curr) {
         return curr == LNK_LEAF_REF_NULL ? LNK_LeafInsert_New : LNK_LeafInsert_Existing;
       }
@@ -1490,7 +1488,6 @@ lnk_leaf_hash_table_insert(LNK_CodeViewInput *input, LNK_LeafHashTable *ht, LNK_
     }
     idx = (idx + 1) & (ht->cap - 1);
   } while (idx != best_idx);
-
   return LNK_LeafInsert_Full;
 }
 
@@ -1525,9 +1522,7 @@ THREAD_POOL_TASK_FUNC(lnk_leaf_dedup_task)
     LNK_LeafRef leaf_ref = lnk_leaf_ref_make(obj_idx, leaf_idx);
     if (!task->skip_dedup && bit_array_is_set32(is_discarded, leaf_idx)) { continue; }
 
-    CV_LeafHeader      *header      = cv_debug_t_get_leaf_header(debug_t, leaf_idx);             // leaf index -> leaf header
-    CV_LeafKind         kind        = memory_read16(MemberFromPtr(CV_LeafHeader, header, kind)); // leaf header -> leaf kind
-    CV_TypeIndexSource  leaf_source = cv_type_index_source_from_leaf_kind(kind);                 // leaf kind -> type stream
+    CV_TypeIndexSource  leaf_source = cv_type_index_source_from_debug_t(debug_t, leaf_idx);
     LNK_LeafHashTable  *leaf_ht     = &task->leaf_ht_arr[leaf_source];                           // type stream -> hash table
     LNK_LeafInsert      result      = lnk_leaf_hash_table_insert(task->input, leaf_ht, leaf_ref, debug_h->v[leaf_idx], !task->skip_dedup);
     

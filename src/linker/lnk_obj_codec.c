@@ -57,6 +57,7 @@ lnk_obj_codec_debug_t(Arena *arena, LNK_Obj *obj, String8 data, B32 is_debug_p, 
   
   RADCOBJ_Directory hd = header.dirs[RADCOBJ_DirectoryKind_DebugT_Header + is_debug_p];
   RADCOBJ_Directory od = header.dirs[RADCOBJ_DirectoryKind_DebugT_LeafOffsets + is_debug_p];
+  RADCOBJ_Directory bd = header.dirs[RADCOBJ_DirectoryKind_DebugT_IpiBits + is_debug_p];
   if (hd.size == 0) {
     return 0;
   }
@@ -76,11 +77,18 @@ lnk_obj_codec_debug_t(Arena *arena, LNK_Obj *obj, String8 data, B32 is_debug_p, 
   U32 *offsets = push_array_no_zero(arena, U32, types.leaf_count);
   MemoryCopy(offsets, encoded.str + od.offset, od.size);
   U64 counts[CV_TypeIndexSource_COUNT] = {
-    0,
+    types.leaf_count - types.source_counts[0] - types.source_counts[1],
     types.source_counts[0],
     types.source_counts[1]
   };
-  return cv_debug_t_from_data_checked(arena, data, CV_LeafAlign, offsets, counts, out);
+
+  B32 result = cv_debug_t_from_data_checked(arena, data, CV_LeafAlign, offsets, counts, out);
+  if (result && bd.size) {
+    out->ipi_bits.count = bd.size / sizeof(U32);
+    out->ipi_bits.v     = push_array_no_zero(arena, U32, out->ipi_bits.count);
+    MemoryCopy(out->ipi_bits.v, encoded.str + bd.offset, bd.size);
+  }
+  return result;
 }
 
 internal B32

@@ -119,7 +119,8 @@ radcobj_validate(const void *data, uint64_t size, RADCOBJ_Header *header_out)
   for EachIndex(i, 2) {
     RADCOBJ_Directory hd = header.dirs[RADCOBJ_DirectoryKind_DebugT_Header + i];
     RADCOBJ_Directory od = header.dirs[RADCOBJ_DirectoryKind_DebugT_LeafOffsets + i];
-    if (hd.size == 0 && od.size == 0) { continue; }
+    RADCOBJ_Directory bd = header.dirs[RADCOBJ_DirectoryKind_DebugT_IpiBits + i];
+    if (hd.size == 0 && od.size == 0 && bd.size == 0) { continue; }
 
     if (hd.size != sizeof(RADCOBJ_TypesHeader)) {
       return "invalid type header size";
@@ -143,6 +144,24 @@ radcobj_validate(const void *data, uint64_t size, RADCOBJ_Header *header_out)
         return "invalid type leaf offset";
       }
       previous = offset;
+    }
+
+    if (bd.size) {
+      U64 word_count = CeilIntegerDiv(types.leaf_count, 32);
+      if (bd.offset % sizeof(U32) != 0 || bd.size != word_count * sizeof(U32) ||
+          types.source_counts[0] != types.leaf_count - types.source_counts[1]) {
+        return "invalid type source bitmap size or counts";
+      }
+      U64 ipi_count = 0;
+      for EachIndex(word_idx, word_count) {
+        U32 word;
+        MemoryCopy(&word, (const U8 *)data + bd.offset + word_idx * sizeof(word), sizeof(word));
+        if (word_idx + 1 == word_count && types.leaf_count % 32 && (word >> (types.leaf_count % 32))) {
+          return "nonzero type source bitmap padding";
+        }
+        ipi_count += count_bits_set32(word);
+      }
+      if (ipi_count != types.source_counts[1]) { return "type source bitmap does not match IPI count"; }
     }
   }
 
@@ -267,6 +286,16 @@ radcobj_encode(CMP_Ctx *cmp, uint32_t segment_size, const void *raw, uint64_t ra
 
       header.dirs[RADCOBJ_DirectoryKind_DebugT_LeafOffsets + i] = (RADCOBJ_Directory){ (U32)metadata_end, (U32)offsets_size };
       metadata_end += offsets_size;
+
+      if (types.debug[i].ipi_bits.v) {
+        U64 bitmap_size = types.debug[i].ipi_bits.count * sizeof(U32);
+        if (bitmap_size > max_U32 - metadata_end) {
+          error = "type source bitmap exceeds the format size limit";
+          goto exit;
+        }
+        header.dirs[RADCOBJ_DirectoryKind_DebugT_IpiBits + i] = (RADCOBJ_Directory){ (U32)metadata_end, (U32)bitmap_size };
+        metadata_end += bitmap_size;
+      }
     }
   }
 
@@ -326,6 +355,10 @@ radcobj_encode(CMP_Ctx *cmp, uint32_t segment_size, const void *raw, uint64_t ra
       RADCOBJ_TypesHeader type_header = { {debug->source_counts[CV_TypeIndexSource_TPI], debug->source_counts[CV_TypeIndexSource_IPI]}, debug->count };
       MemoryCopy(output + header.dirs[RADCOBJ_DirectoryKind_DebugT_Header + i].offset, &type_header, sizeof(type_header));
       MemoryCopy(output + header.dirs[RADCOBJ_DirectoryKind_DebugT_LeafOffsets + i].offset, debug->offsets, debug->count * sizeof(U32));
+      if (debug->ipi_bits.v) {
+        RADCOBJ_Directory bitmap = header.dirs[RADCOBJ_DirectoryKind_DebugT_IpiBits + i];
+        MemoryCopy(output + bitmap.offset, debug->ipi_bits.v, bitmap.size);
+      }
     }
   }
 

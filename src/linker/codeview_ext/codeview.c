@@ -1294,10 +1294,18 @@ cv_debug_t_from_data_checked(Arena *arena, String8 data, U64 align, U32 *offsets
 
     debug_t.offsets = push_array_no_zero(arena, U32, debug_t.count);
     if (debug_t.offsets) {
+      if (debug_t.count && debug_t.source_counts[CV_TypeIndexSource_NULL] == 0) {
+        debug_t.ipi_bits = bit_array_init32(arena, debug_t.count);
+        if (debug_t.ipi_bits.v == NULL) { return 0; }
+      }
       ProfBegin("Assign Leaf Offsets");
       for (U64 cursor = parse_start_offset, idx = 0; cursor < data.size && idx < debug_t.count; idx += 1) {
         debug_t.offsets[idx] = cursor;
-        TryRead(cv_read_leaf(data, cursor, align, &(CV_Leaf){0}), cursor, store_stop);
+        CV_Leaf leaf = {0};
+        TryRead(cv_read_leaf(data, cursor, align, &leaf), cursor, store_stop);
+        if (debug_t.ipi_bits.v && cv_type_index_source_from_leaf_kind(leaf.kind) == CV_TypeIndexSource_IPI) {
+          bit_array_set_bit32(debug_t.ipi_bits, idx, 1);
+        }
       }
       store_stop:;
       ProfEnd();
@@ -1337,6 +1345,18 @@ cv_debug_t_get_leaf(CV_DebugT *debug_t, U64 leaf_idx)
     Assert(cv_header_struct_size_from_leaf_kind(leaf.kind) <= leaf.data.size);
   }
   return leaf;
+}
+
+internal CV_TypeIndexSource
+cv_type_index_source_from_debug_t(CV_DebugT *debug_t, U64 leaf_idx)
+{
+  Assert(leaf_idx < debug_t->count);
+  if (debug_t->ipi_bits.v) {
+    return bit_array_get_bit32(debug_t->ipi_bits, leaf_idx) ? CV_TypeIndexSource_IPI : CV_TypeIndexSource_TPI;
+  }
+  CV_LeafHeader *header = cv_debug_t_get_leaf_header(debug_t, leaf_idx);
+  CV_LeafKind    kind   = memory_read16(MemberFromPtr(CV_LeafHeader, header, kind));
+  return cv_type_index_source_from_leaf_kind(kind);
 }
 
 internal U64
