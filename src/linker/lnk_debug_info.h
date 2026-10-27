@@ -235,6 +235,20 @@ typedef struct
   U64          *module_working_sets; // [obj_count], estimated decoded bytes
   Rng1U64Array  module_batches;      // contiguous original object indices
 
+  // jointly staged TPI/IPI windows; staged bytes stay in lane-local scratch
+  U64                     type_counts   [CV_TypeIndexSource_COUNT];
+  Rng1U64Array            type_windows  [CV_TypeIndexSource_COUNT];
+  Rng1U64                *type_ranges   [CV_TypeIndexSource_COUNT]; // [worker_count]
+  U64                    *type_offsets  [CV_TypeIndexSource_COUNT]; // [worker_count + 1]
+  U64                     type_sizes    [CV_TypeIndexSource_COUNT];
+  String8                 type_output   [CV_TypeIndexSource_COUNT];
+  PDB_TypeHashStreamInfo  type_hash_info[CV_TypeIndexSource_COUNT];
+  U32                    *type_hashes   [CV_TypeIndexSource_COUNT];
+  PDB_TpiOffHint         *type_hints    [CV_TypeIndexSource_COUNT];
+  B32                     write_type_name_map;
+  String8List            *type_name_maps; // [worker_count]
+  String8List             type_name_map;
+
   // push DBI SC Map
   PE_BinInfo           pe;
   COFF_SectionHeader **image_section_table;
@@ -265,21 +279,6 @@ typedef struct
   U64             count;
   PDB_ModuleView *modules;
 } LNK_PdbModules;
-
-typedef struct
-{
-  LNK_MergedTypes   *types;
-  CV_TypeIndexSource source;
-  B32              write_name_map;
-  U64             *map_offsets; // [worker_count + 1]
-  String8          map_data;
-  Rng1U64         *ranges;
-  U64             *offsets; // [worker_count + 1]
-  U64              hash_bucket_count;
-  U32             *hashes; // final hash-stream slots
-  String8          output;
-  PDB_TpiOffHint  *hints;
-} LNK_WritePdbTypes;
 
 ////////////////////////////////
 // RRT

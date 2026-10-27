@@ -1795,6 +1795,14 @@ lnk_fixup_cv_type_indices(LNK_MergedTypes *ctx, U32 obj_idx, String8 data, CV_Ty
   }
 }
 
+internal String8
+lnk_raw_type_from_index(LNK_MergedTypes *types, CV_TypeIndexSource source, U64 idx)
+{
+  LNK_LeafRef ref = types->leaf_refs[source].v[idx];
+  CV_DebugT *debug_t = &types->input->debug_t_arr[lnk_leaf_ref_obj_idx(ref)];
+  return cv_debug_t_get_raw_leaf(debug_t, lnk_leaf_ref_leaf_idx(ref));
+}
+
 internal void
 lnk_patch_type_copy(Arena *arena, LNK_MergedTypes *types, CV_TypeIndexSource source, U64 leaf_idx, U8 *dst)
 {
@@ -1802,14 +1810,6 @@ lnk_patch_type_copy(Arena *arena, LNK_MergedTypes *types, CV_TypeIndexSource sou
   U32 obj_idx = lnk_leaf_ref_obj_idx(types->leaf_refs[source].v[leaf_idx]);
   CV_TypeIndexInfoList indices = cv_get_leaf_type_index_offsets(arena, leaf.kind, leaf.data);
   lnk_fixup_cv_type_indices(types, obj_idx, leaf.data, indices);
-}
-
-internal String8
-lnk_raw_type_from_index(LNK_MergedTypes *types, CV_TypeIndexSource source, U64 idx)
-{
-  LNK_LeafRef ref = types->leaf_refs[source].v[idx];
-  CV_DebugT *debug_t = &types->input->debug_t_arr[lnk_leaf_ref_obj_idx(ref)];
-  return cv_debug_t_get_raw_leaf(debug_t, lnk_leaf_ref_leaf_idx(ref));
 }
 
 internal void
@@ -2323,153 +2323,145 @@ lnk_relocate_debug_copy(LNK_BuildPdb *task, LNK_DebugRelocs *relocs, String8 sou
   }
 }
 
-internal U64
-lnk_write_pdb_type(LNK_WritePdbTypes *ctx, U64 leaf_idx, String8 source, String8 dst, Arena *map_arena, String8List *map)
+THREAD_POOL_TASK_FUNC(lnk_stage_pdb_types_task)
 {
-  LNK_Config *config     = ctx->types->input->config;
-  B32         hash_names = ctx->source == CV_TypeIndexSource_TPI &&
-                           config->pdb_hash_type_names != LNK_TypeNameHashMode_None &&
-                           config->pdb_hash_type_names != LNK_TypeNameHashMode_Null;
+  LNK_BuildPdb *task = raw_task;
+  Temp scratch = scratch_begin(&task->build_arena, 1);
 
-  if (dst.str == 0 && !hash_names) { return source.size; }
+  CV_TypeIndexSource  sources[] = {CV_TypeIndexSource_TPI, CV_TypeIndexSource_IPI};
+  LNK_Config         *config    = task->cv->config;
 
-  Temp scratch = scratch_begin(&map_arena, 1);
-  String8 data = source;
-
-  if (hash_names) {
-    data = push_str8_copy(scratch.arena, source);
-
-    U64 hash_length = Clamp(1, config->pdb_hash_type_name_length, LNK_LEAF_HT_MIN_CAP);
-    if (config->pdb_hash_type_names == LNK_TypeNameHashMode_Lenient) {
-      lnk_hash_type_name_lenient(data.str, hash_length, map_arena, map);
-    } else {
-      lnk_hash_type_name_full(data.str, hash_length, map_arena, map);
-    }
-
-    data = cv_raw_leaf_from_ptr(data.str);
-  }
-
-  if (dst.str) {
-    AssertAlways(data.size <= dst.size);
-    MemoryCopy(dst.str, data.str, data.size);
-    lnk_patch_type_copy(scratch.arena, ctx->types, ctx->source, leaf_idx, dst.str);
-  }
-
-  U64 size = data.size;
-
-  scratch_end(scratch);
-  return size;
-}
-
-THREAD_POOL_TASK_FUNC(lnk_measure_pdb_types_task)
-{
-  LNK_WritePdbTypes *task = raw_task;
-  for EachInRange(i, task->ranges[task_id]) {
-    Temp scratch = scratch_begin(0, 0);
-    String8List map = {0};
-    String8 source = lnk_raw_type_from_index(task->types, task->source, i);
-    task->offsets[task_id] += lnk_write_pdb_type(task, i, source, str8_zero(), task->write_name_map ? scratch.arena : 0, &map);
-    if (task->write_name_map) { task->map_offsets[task_id] += map.total_size; }
-    scratch_end(scratch);
-  }
-}
-
-THREAD_POOL_TASK_FUNC(lnk_write_pdb_types_task)
-{
-  LNK_WritePdbTypes *task = raw_task;
-
-  U64 offset     = task->offsets[task_id];
-  U64 map_cursor = task->write_name_map ? task->map_offsets[task_id] : 0;
-
-  for EachInRange(i, task->ranges[task_id]) {
-    Temp scratch = scratch_begin(0, 0);
-
-    String8List map     = {0};
-    String8     dst     = str8_substr(task->output, r1u64(offset, task->offsets[task_id + 1]));
-    String8     source  = lnk_raw_type_from_index(task->types, task->source, i);
-    U64         written = lnk_write_pdb_type(task, i, source, dst, task->write_name_map ? scratch.arena : 0, &map);
-    CV_Leaf     leaf    = cv_leaf_from_ptr(dst.str);
-    U32         hash    = 0;
-
-    if (cv_is_udt(leaf.kind)) {
-      CV_UDTInfo udt = cv_get_udt_info(leaf.kind, leaf.data);
-      if (!(udt.props & CV_TypeProp_FwdRef)) {
-        hash = pdb_hash_udt(udt, leaf.data) % task->hash_bucket_count;
+  for EachIndex(window_idx, task->type_windows[CV_TypeIndexSource_TPI].count) {
+    Temp window = temp_begin(scratch.arena);
+    if (task_id == 0) {
+      for EachElement(s, sources) {
+        CV_TypeIndexSource source = sources[s];
+        Rng1U64            range  = task->type_windows[source].v[window_idx];
+        U64                count  = dim_1u64(range), per_lane = CeilIntegerDiv(count, tp->worker_count);
+        for EachIndex(lane, tp->worker_count) {
+          task->type_ranges[source][lane] = r1u64(range.min + Min(count, lane * per_lane), range.min + Min(count, (lane + 1) * per_lane));
+        }
       }
     }
-    task->hashes[i] = hash;
+    barrier_wait(tp->barrier);
 
-    if (task->write_name_map) {
-      Assert(map_cursor <= task->map_offsets[task_id + 1] && map.total_size <= task->map_offsets[task_id + 1] - map_cursor);
-      for EachNode(n, String8Node, map.first) {
-        MemoryCopy(task->map_data.str + map_cursor, n->string.str, n->string.size);
-        map_cursor += n->string.size;
+    String8List name_map = {0};
+    String8List staged[CV_TypeIndexSource_COUNT] = {0};
+    U64         cursor[CV_TypeIndexSource_COUNT] = {0};
+    for EachElement(s, sources) {
+      cursor[sources[s]] = task->type_ranges[sources[s]][task_id].min;
+    }
+
+    ProfBegin("Stage TPI and IPI");
+    for (;;) {
+      CV_TypeIndexSource source = CV_TypeIndexSource_NULL;
+      LNK_LeafRef next = max_U64;
+      for EachElement(s, sources) {
+        CV_TypeIndexSource candidate = sources[s];
+        if (cursor[candidate] < task->type_ranges[candidate][task_id].max &&
+            task->types->leaf_refs[candidate].v[cursor[candidate]] < next) {
+          source = candidate;
+          next = task->types->leaf_refs[candidate].v[cursor[candidate]];
+        }
+      }
+      if (source == CV_TypeIndexSource_NULL) {
+        break;
+      }
+
+      U64     i    = cursor[source]++;
+      String8 raw  = lnk_raw_type_from_index(task->types, source, i);
+      String8 data = push_str8_copy(scratch.arena, raw);
+      Temp    work = scratch_begin(&scratch.arena, 1);
+      if (source == CV_TypeIndexSource_TPI &&
+          config->pdb_hash_type_names != LNK_TypeNameHashMode_None &&
+          config->pdb_hash_type_names != LNK_TypeNameHashMode_Null) {
+        U64    hash_length = Clamp(1, config->pdb_hash_type_name_length, LNK_LEAF_HT_MIN_CAP);
+        Arena *map_arena   = task->write_type_name_map ? scratch.arena : 0;
+        if (config->pdb_hash_type_names == LNK_TypeNameHashMode_Lenient) {
+          lnk_hash_type_name_lenient(data.str, hash_length, map_arena, &name_map);
+        } else {
+          lnk_hash_type_name_full(data.str, hash_length, map_arena, &name_map);
+        }
+        data = cv_raw_leaf_from_ptr(data.str);
+        AssertAlways(data.size <= raw.size);
+      }
+
+      CV_Leaf leaf = cv_leaf_from_ptr(data.str);
+      lnk_patch_type_copy(work.arena, task->types, source, i, data.str);
+      
+      U32 hash = 0;
+      if (cv_is_udt(leaf.kind)) {
+        CV_UDTInfo udt = cv_get_udt_info(leaf.kind, leaf.data);
+        if (!(udt.props & CV_TypeProp_FwdRef)) {
+          hash = pdb_hash_udt(udt, leaf.data) % task->pdb->type_servers[source]->bucket_cap;
+        }
+      }
+      task->type_hashes[source][i] = hash;
+      
+      scratch_end(work);
+      str8_list_push(scratch.arena, &staged[source], data);
+    }
+    ProfEnd();
+
+    for EachElement(s, sources) {
+      task->type_offsets[sources[s]][task_id] = staged[sources[s]].total_size;
+    }
+    if (task->write_type_name_map) {
+      task->type_name_maps[task_id] = name_map;
+    }
+    barrier_wait(tp->barrier);
+
+    // assign disjoint final-stream ranges before any lane releases its window
+    if (task_id == 0) {
+      for EachElement(s, sources) {
+        CV_TypeIndexSource source = sources[s];
+        U64 offset = task->type_sizes[source];
+        for EachIndex(lane, tp->worker_count) {
+          U64 size = task->type_offsets[source][lane];
+          task->type_offsets[source][lane] = offset;
+          offset += size;
+        }
+        task->type_offsets[source][tp->worker_count] = offset;
+        task->type_sizes[source] = offset;
+        AssertAlways(offset <= task->type_output[source].size);
+      }
+      if (task->write_type_name_map) {
+        for EachIndex(lane, tp->worker_count) {
+          if (task->type_name_maps[lane].total_size) {
+            String8 data = str8_list_join(task->build_arena, &task->type_name_maps[lane], 0);
+            str8_list_push(task->build_arena, &task->type_name_map, data);
+          }
+        }
       }
     }
+    barrier_wait(tp->barrier);
 
-    if (i % PDB_TYPE_HINT_STEP == 0) {
-      Assert(offset < PDB_TYPE_OFFSET_MAX);
-      task->hints[i / PDB_TYPE_HINT_STEP] = (PDB_TpiOffHint){
-        .itype = task->types->min_type_indices[task->source] + i,
-        .off   = (PDB_TypeOffset)offset,
-      };
+    ProfBegin("Write Staged Types");
+    for EachElement(s, sources) {
+      CV_TypeIndexSource source = sources[s];
+      U64 i      = task->type_ranges[source][task_id].min;
+      U64 offset = task->type_offsets[source][task_id];
+      for EachNode(n, String8Node, staged[source].first) {
+        MemoryCopy(task->type_output[source].str + offset, n->string.str, n->string.size);
+        if (i % PDB_TYPE_HINT_STEP == 0) {
+          Assert(offset < PDB_TYPE_OFFSET_MAX);
+          task->type_hints[source][i / PDB_TYPE_HINT_STEP] = (PDB_TpiOffHint){
+            .itype = task->types->min_type_indices[source] + i,
+            .off   = (PDB_TypeOffset)offset,
+          };
+        }
+        offset += n->string.size;
+        i += 1;
+      }
+      Assert(offset == task->type_offsets[source][task_id + 1]);
+      Assert(i == task->type_ranges[source][task_id].max);
     }
-    offset += written;
+    ProfEnd();
+    barrier_wait(tp->barrier);
 
-    scratch_end(scratch);
+    temp_end(window);
   }
-  Assert(offset == task->offsets[task_id + 1]);
-
-  if (task->write_name_map) {
-    Assert(map_cursor == task->map_offsets[task_id + 1]);
-  }
-}
-
-internal void
-lnk_build_pdb_type_stream(Arena *arena, TP_Context *tp, PDB_Context *pdb, LNK_MergedTypes *types, CV_TypeIndexSource source, U64 leaf_count, String8 *name_map_out)
-{
-  ProfBeginFunction();
-  Temp scratch = scratch_begin(&arena, 1);
-
-  PDB_TypeServer   *ts         = pdb->type_servers[source];
-  MSF_StreamNumber  sn         = source == CV_TypeIndexSource_TPI ? PDB_FixedStream_Tpi : PDB_FixedStream_Ipi;
-  U64               hint_count = CeilIntegerDiv(leaf_count, PDB_TYPE_HINT_STEP);
-  LNK_WritePdbTypes task = {
-    .types             = types,
-    .source            = source,
-    .write_name_map    = name_map_out != 0,
-    .map_offsets       = name_map_out ? push_array(scratch.arena, U64, tp->worker_count + 1) : 0,
-    .ranges            = tp_divide_work(scratch.arena, leaf_count, tp->worker_count),
-    .offsets           = push_array(scratch.arena, U64, tp->worker_count + 1),
-    .hash_bucket_count = ts->bucket_cap,
-  };
-
-  // first measure the final records, including any shortened type names
-  tp_for_parallel_prof(tp, 0, tp->worker_count, lnk_measure_pdb_types_task, &task, "Measure PDB Types");
-  u64_array_counts_to_offsets(tp->worker_count + 1, task.offsets);
-  U64 data_size = task.offsets[tp->worker_count];
-  if (task.write_name_map) {
-    u64_array_counts_to_offsets(tp->worker_count + 1, task.map_offsets);
-    U64 map_size = task.map_offsets[tp->worker_count];
-    task.map_data = str8(push_array_no_zero(arena, U8, map_size), map_size);
-    *name_map_out = task.map_data;
-  }
-
-  // allocate once and write into disjoint ranges of the final TPI/IPI stream
-  AssertAlways(msf_stream_resize(pdb->msf, sn, safe_cast_u32(sizeof(PDB_TpiHeader) + data_size)));
-  task.output = str8_skip(msf_stream_data(pdb->msf, sn), sizeof(PDB_TpiHeader));
-
-  PDB_TypeHashStreamInfo hash_info = pdb_type_hash_stream_prepare(ts, &pdb->info->strtab, pdb->msf, leaf_count, hint_count);
-  String8 hash_data = msf_stream_data(pdb->msf, ts->hash_sn);
-  task.hashes = (U32 *)hash_data.str;
-  task.hints  = hash_data.str ? (PDB_TpiOffHint *)(hash_data.str + hash_info.ti_offs.off) : 0;
-  tp_for_parallel_prof(tp, 0, tp->worker_count, lnk_write_pdb_types_task, &task, "Write PDB Types");
-
-  // hash values and hints were written alongside their finalized records
-  pdb_type_server_write_header(ts, pdb->msf, sn, leaf_count, data_size, hash_info);
-
   scratch_end(scratch);
-  ProfEnd();
 }
 
 internal B32
@@ -2650,7 +2642,7 @@ THREAD_POOL_TASK_FUNC(lnk_build_pdb_strings_modules_and_globals)
       }
       U64 batch_candidates = tp_sum_u64(tp, task_id, task->cv->is_stripped ? 0 : global_candidates);
 
-      // All lanes are stopped while stream storage and dedup capacity change.
+      // all lanes are stopped while stream storage and dedup capacity change
       if (task_id == 0) {
         for EachInRange(obj_idx, batch) {
           PDB_DbiModule *mod  = task->mod_arr[obj_idx];
@@ -2714,17 +2706,16 @@ THREAD_POOL_TASK_FUNC(lnk_build_pdb_strings_modules_and_globals)
             *offset += str8_write(module, *offset, it.data);
           }
         } else {
-          Temp work = scratch_begin(&scratch.arena, 1);
+          Temp scratch2 = scratch_begin(&scratch.arena, 1);
 
           CV_DebugS_Iter it          = cv_debug_s_iter_init(&debug_s);
           U64            scope_depth = 0;
           for (U32Node *section = task->cv->debug_s_section_numbers[obj_idx].first;
                cv_debug_s_iter_next_block(&it);
                section = section->next) {
-            Assert(section != 0);
-            Temp section_temp = temp_begin(work.arena);
+            Temp section_temp = temp_begin(scratch2.arena);
 
-            LNK_DebugRelocs relocs = lnk_debug_relocs_init(work.arena, task->cv->obj_arr[obj_idx], section->data);
+            LNK_DebugRelocs relocs = lnk_debug_relocs_init(scratch2.arena, task->cv->obj_arr[obj_idx], section->data);
             while (cv_debug_s_iter_next(&it)) {
               U64  kind   = cv_c13_sub_section_idx_from_kind(it.kind);
               U64 *offset = &ss_ranges[kind].min;
@@ -2739,14 +2730,14 @@ THREAD_POOL_TASK_FUNC(lnk_build_pdb_strings_modules_and_globals)
 
                   String8 symbol_raw = cv_raw_from_symbol(cv_ptr_from_symbol(symbol));
                   if (destination == LNK_PdbSymbolDestination_Global) {
-                    Temp candidate_temp = temp_begin(scratch.arena);
+                    Temp rollback = temp_begin(scratch.arena);
                     String8 copy = push_str8_copy(scratch.arena, symbol_raw);
                     lnk_relocate_debug_copy(task, &relocs, symbol_raw, copy.str);
                     lnk_patch_symbol_copy(task->types, obj_idx, cv_symbol_from_ptr(copy.str));
                     if (lnk_insert_global_symbol(task->global_buckets, task->global_bucket_cap, copy)) {
                       task->global_unique_counts[task_id] += 1;
                     } else {
-                      temp_end(candidate_temp);
+                      temp_end(rollback);
                     }
                   } else {
                     U64 size = cv_write_symbol(module.str, *offset, module.size, &symbol, PDB_SYMBOL_ALIGN);
@@ -2772,9 +2763,9 @@ THREAD_POOL_TASK_FUNC(lnk_build_pdb_strings_modules_and_globals)
                   lnk_relocate_debug_copy(task, &relocs, it.data, dst);
 
                   if (it.kind == CV_C13SubSectionKind_InlineeLines) {
-                    Temp temp = temp_begin(work.arena);
+                    Temp temp = temp_begin(scratch2.arena);
                     String8              data    = str8(dst, size);
-                    CV_TypeIndexInfoList indices = cv_get_inlinee_type_index_offsets(work.arena, data);
+                    CV_TypeIndexInfoList indices = cv_get_inlinee_type_index_offsets(scratch2.arena, data);
                     lnk_fixup_cv_type_indices(task->types, obj_idx, data, indices);
                     temp_end(temp);
                   }
@@ -2790,7 +2781,7 @@ THREAD_POOL_TASK_FUNC(lnk_build_pdb_strings_modules_and_globals)
             temp_end(section_temp);
           }
 
-          scratch_end(work);
+          scratch_end(scratch2);
         }
 
         for EachElement(j, ss_ranges) {
@@ -2927,8 +2918,7 @@ THREAD_POOL_TASK_FUNC(lnk_build_pdb_strings_modules_and_globals)
     }
   }
 
-  ProfScope("Proc Refs")
-  {
+  ProfScope("Proc Refs") {
     U64 *proc_ref_counts = 0;
     if (task_id == 0) {
       proc_ref_counts = push_array(scratch.arena, U64, tp->worker_count);
@@ -2994,8 +2984,7 @@ THREAD_POOL_TASK_FUNC(lnk_build_pdb_strings_modules_and_globals)
     barrier_wait(tp->barrier);
   }
 
-  ProfScope("Public Symbols")
-  {
+  ProfScope("Public Symbols") {
     LNK_SymbolHashTrieChunkList   symbol_chunks        = task->symtab->chunks[task_id];
     CV_SymbolList                *public_symbols       = 0; // [worker_count]
     U32                         **public_symbol_hashes = 0; // [worker_count][public_symbol.count]
@@ -3052,8 +3041,9 @@ THREAD_POOL_TASK_FUNC(lnk_build_pdb_strings_modules_and_globals)
     }
     barrier_wait(tp->barrier);
   }
+
   ProfScope("Serialize GSI and PSI") {
-    Temp serial_scratch = scratch_begin(&scratch.arena, 1);
+    Temp scratch2 = scratch_begin(&scratch.arena, 1);
 
     PDB_Context                  *pdb        = task->pdb;
     PDB_GsiContext               *contexts[] = { pdb->psi->gsi, pdb->gsi };
@@ -3061,12 +3051,12 @@ THREAD_POOL_TASK_FUNC(lnk_build_pdb_strings_modules_and_globals)
     PDB_GsiHashRecord           **hashes     = 0;
     U32                          *addr_map   = 0;
     if (task_id == 0) {
-      serial = push_array(serial_scratch.arena, PDB_GsiSerializeSymbolsTask, 2);
-      hashes = push_array(serial_scratch.arena, PDB_GsiHashRecord *, 2);
+      serial = push_array(scratch2.arena, PDB_GsiSerializeSymbolsTask, 2);
+      hashes = push_array(scratch2.arena, PDB_GsiHashRecord *, 2);
       for EachElement(c, contexts) {
         serial[c].symbol_align    = contexts[c]->symbol_align;
         serial[c].bucket_arr      = contexts[c]->bucket_arr;
-        serial[c].bucket_size_arr = push_array(serial_scratch.arena, U64, contexts[c]->bucket_count);
+        serial[c].bucket_size_arr = push_array(scratch2.arena, U64, contexts[c]->bucket_count);
       }
     }
     tp_broadcast(&serial);
@@ -3101,9 +3091,9 @@ THREAD_POOL_TASK_FUNC(lnk_build_pdb_strings_modules_and_globals)
           PDB_GsiSerializeSymbolsTask *s = &serial[c];
           s->symbol_data_base    = base;
           s->buffer              = symbol_data + base;
-          s->bucket_off_arr      = offsets_from_counts_array_u64(serial_scratch.arena, s->bucket_size_arr, gsi->bucket_count);
-          s->sort_record_arr     = push_array_no_zero(serial_scratch.arena, PDB_GsiSortRecord, gsi->symbol_count);
-          s->sort_record_arr_arr = push_array_no_zero(serial_scratch.arena, PDB_GsiSortRecord *, gsi->bucket_count);
+          s->bucket_off_arr      = offsets_from_counts_array_u64(scratch2.arena, s->bucket_size_arr, gsi->bucket_count);
+          s->sort_record_arr     = push_array_no_zero(scratch2.arena, PDB_GsiSortRecord, gsi->symbol_count);
+          s->sort_record_arr_arr = push_array_no_zero(scratch2.arena, PDB_GsiSortRecord *, gsi->bucket_count);
 
           U64 occupied = 0, record_idx = 0;
           for EachIndex(b, gsi->bucket_count) {
@@ -3194,16 +3184,16 @@ THREAD_POOL_TASK_FUNC(lnk_build_pdb_strings_modules_and_globals)
       } else {
         PDB_PsiAddrMapSortTask *sort = 0;
         if (task_id == 0) {
-          sort                 = push_array(serial_scratch.arena, PDB_PsiAddrMapSortTask, 1);
-          sort->ranges         = tp_divide_work(serial_scratch.arena, count, tp->worker_count);
+          sort                 = push_array(scratch2.arena, PDB_PsiAddrMapSortTask, 1);
+          sort->ranges         = tp_divide_work(scratch2.arena, count, tp->worker_count);
           sort->gsi_record_arr = records;
-          sort->src            = push_array_no_zero(serial_scratch.arena, PDB_PsiAddrMapSortRecord, count);
-          sort->dst            = push_array_no_zero(serial_scratch.arena, PDB_PsiAddrMapSortRecord, count);
-          sort->counts         = push_array_no_zero(serial_scratch.arena, U64, tp->worker_count * PDB_PSI_ADDR_MAP_RADIX_COUNT);
+          sort->src            = push_array_no_zero(scratch2.arena, PDB_PsiAddrMapSortRecord, count);
+          sort->dst            = push_array_no_zero(scratch2.arena, PDB_PsiAddrMapSortRecord, count);
+          sort->counts         = push_array_no_zero(scratch2.arena, U64, tp->worker_count * PDB_PSI_ADDR_MAP_RADIX_COUNT);
         }
         tp_broadcast(&sort);
 
-        psi_addr_map_radix_init_task(serial_scratch.arena, worker_id, task_id, sort, tp);
+        psi_addr_map_radix_init_task(scratch2.arena, worker_id, task_id, sort, tp);
         barrier_wait(tp->barrier);
 
         U32 shifts[] = { 0, 11, 22, 32, 43 };
@@ -3215,7 +3205,7 @@ THREAD_POOL_TASK_FUNC(lnk_build_pdb_strings_modules_and_globals)
           }
           barrier_wait(tp->barrier);
 
-          psi_addr_map_radix_histogram_task(serial_scratch.arena, worker_id, task_id, sort, tp);
+          psi_addr_map_radix_histogram_task(scratch2.arena, worker_id, task_id, sort, tp);
           barrier_wait(tp->barrier);
 
           if (task_id == 0) {
@@ -3232,7 +3222,7 @@ THREAD_POOL_TASK_FUNC(lnk_build_pdb_strings_modules_and_globals)
           }
           barrier_wait(tp->barrier);
 
-          psi_addr_map_radix_sort_task(serial_scratch.arena, worker_id, task_id, sort, tp);
+          psi_addr_map_radix_sort_task(scratch2.arena, worker_id, task_id, sort, tp);
           barrier_wait(tp->barrier);
 
           if (task_id == 0) { Swap(PDB_PsiAddrMapSortRecord *, sort->src, sort->dst); }
@@ -3250,7 +3240,7 @@ THREAD_POOL_TASK_FUNC(lnk_build_pdb_strings_modules_and_globals)
             first = opl;
           }
 
-          runs = push_array_no_zero(serial_scratch.arena, Rng1U64, run_count);
+          runs = push_array_no_zero(scratch2.arena, Rng1U64, run_count);
           U64 run_idx = 0;
           for (U64 first = 0; first < count;) {
             U64 opl = first + 1;
@@ -3258,7 +3248,7 @@ THREAD_POOL_TASK_FUNC(lnk_build_pdb_strings_modules_and_globals)
             if (opl - first > 1) { runs[run_idx++] = r1u64(first, opl); }
             first = opl;
           }
-          next_run = push_array(serial_scratch.arena, U64, 1);
+          next_run = push_array(scratch2.arena, U64, 1);
         }
         tp_broadcast(&runs);
         tp_broadcast(&run_count);
@@ -3279,12 +3269,12 @@ THREAD_POOL_TASK_FUNC(lnk_build_pdb_strings_modules_and_globals)
     }
     barrier_wait(tp->barrier);
 
-    scratch_end(serial_scratch);
+    scratch_end(scratch2);
   }
   
   if (task_id == 0) {
     U64 retained_bytes = 0;
-    U64 count = sum_array_u64(tp->worker_count, task->global_unique_counts);
+    U64 count          = sum_array_u64(tp->worker_count, task->global_unique_counts);
     for EachIndex(i, count) {
       retained_bytes += cv_raw_from_symbol(task->global_buckets[i]).size;
     }
@@ -3564,7 +3554,9 @@ lnk_build_pdb(TP_Context *tp, Arena *arena, String8 image_data, LNK_Config *conf
   {
     U64 objs_per_worker = CeilIntegerDiv(cv->obj_count, tp->worker_count);
     task.obj_indices = push_array(scratch.arena, U32Array, tp->worker_count);
-    for EachIndex(i, tp->worker_count)    { task.obj_indices[i].v = push_array(scratch.arena, U32, objs_per_worker); }
+    for EachIndex(i, tp->worker_count) {
+      task.obj_indices[i].v = push_array(scratch.arena, U32, objs_per_worker);
+    }
     for EachIndex(obj_idx, cv->obj_count) {
       U32Array *obj_indices = &task.obj_indices[obj_idx % tp->worker_count];
       obj_indices->v[obj_indices->count++] = obj_idx;
@@ -3628,30 +3620,150 @@ lnk_build_pdb(TP_Context *tp, Arena *arena, String8 image_data, LNK_Config *conf
   // fused dispatch has finished consuming all lane-local symbol copies
   tp_release_scratch_free_blocks(tp);
 
-  String8 type_name_map = {0};
   CV_TypeIndexSource sources[] = { CV_TypeIndexSource_TPI, CV_TypeIndexSource_IPI };
-  for EachElement(i, sources) {
-    CV_TypeIndexSource source = sources[i];
+  ProfScope("Build Staged TPI and IPI") {
+    task.write_type_name_map = config->pdb_hash_type_name_map.size && cv_types.input;
+    if (task.write_type_name_map) {
+      task.type_name_maps = push_array(scratch.arena, String8List, tp->worker_count);
+    }
 
-    LNK_PDB_BuilderFlags flag       = source == CV_TypeIndexSource_TPI ? LNK_PDB_BuilderFlag_Tpi : LNK_PDB_BuilderFlag_Ipi;
-    U64                  leaf_count = (builder_flags & flag) ? cv_types.count[source] : 0;
-    String8             *map_out    = source == CV_TypeIndexSource_TPI && config->pdb_hash_type_name_map.size && cv_types.input ? &type_name_map : 0;
-    lnk_build_pdb_type_stream(scratch.arena, tp, task.pdb, &cv_types, source, leaf_count, map_out);
+    U64 upper_bounds[CV_TypeIndexSource_COUNT] = {0};
+    for EachElement(s, sources) {
+      CV_TypeIndexSource source = sources[s];
+      LNK_PDB_BuilderFlags flag = source == CV_TypeIndexSource_TPI ? LNK_PDB_BuilderFlag_Tpi : LNK_PDB_BuilderFlag_Ipi;
+      task.type_counts[source]  = (builder_flags & flag) ? cv_types.count[source] : 0;
+      task.type_ranges[source]  = push_array(scratch.arena, Rng1U64, tp->worker_count);
+      task.type_offsets[source] = push_array(scratch.arena, U64, tp->worker_count + 1);
+    }
 
-    if (output_ptr) {
-      MSF_StreamNumber sn = source == CV_TypeIndexSource_TPI ? PDB_FixedStream_Tpi : PDB_FixedStream_Ipi;
-      lnk_pdb_output_enqueue_stream(output_ptr, task.pdb->msf, sn);
-      lnk_pdb_output_enqueue_stream(output_ptr, task.pdb->msf, task.pdb->type_servers[source]->hash_sn);
+    // merge the two already-sorted leaf-reference arrays into source-order
+    // windows, using cached offsets only; the next offset bounds a raw record
+    // even when the input includes padding; shortened output can only be smaller
+    ProfScope("Compute Type Windows") {
+      U64         decoded_budget                    = Max(1, Min(GB(2), config->cfm_cache_cap / 4));
+      U64         staged_budget                     = Max(1, Min(MB(128), decoded_budget / 4));
+      U64         cursors[CV_TypeIndexSource_COUNT] = {0};
+      U64         first  [CV_TypeIndexSource_COUNT] = {0};
+      Rng1U64List windows[CV_TypeIndexSource_COUNT] = {0};
+      U64         decoded_bytes                     = 0;
+      U64         staged_bytes                      = 0;
+      U64         window_records                    = 0;
+      U64         last_obj                          = max_U64;
+      U64         segment_opl                       = 0;
+      for (;;) {
+        CV_TypeIndexSource source = CV_TypeIndexSource_NULL;
+        LNK_LeafRef        next = max_U64;
+        for EachElement(s, sources) {
+          CV_TypeIndexSource candidate = sources[s];
+          if (cursors[candidate] < task.type_counts[candidate] && cv_types.leaf_refs[candidate].v[cursors[candidate]] < next) {
+            source = candidate;
+            next = cv_types.leaf_refs[candidate].v[cursors[candidate]];
+          }
+        }
+        if (source == CV_TypeIndexSource_NULL) { break; }
+
+        U64        obj_idx = lnk_leaf_ref_obj_idx(next), leaf_idx = lnk_leaf_ref_leaf_idx(next);
+        CV_DebugT *debug_t = &cv->debug_t_arr[obj_idx];
+        U64        offset  = debug_t->offsets[leaf_idx];
+        U64        opl     = leaf_idx + 1 < debug_t->count ? debug_t->offsets[leaf_idx + 1] : debug_t->data.size;
+        Assert(offset <= opl && opl <= debug_t->data.size);
+
+        U64 bound   = Min(opl - offset, (U64)CV_LeafSize_Max + sizeof(CV_LeafSize));
+        U64 staging = bound + sizeof(String8Node) + 15;
+        if (source == CV_TypeIndexSource_TPI && task.write_type_name_map) {
+          staging += bound + sizeof(String8Node) + 32;
+        }
+
+        LNK_Obj *obj          = cv->obj_arr[obj_idx];
+        CFM_Map *map          = obj->input ? obj->input->cfm_map : 0;
+        U64      seg_first    = 0;
+        U64      seg_opl      = 0;
+        U64      segment_size = 0;
+        U64      decoded      = 0;
+        if (map) {
+          U64 address = IntFromPtr(debug_t->data.str) + offset;
+          U64 base    = IntFromPtr(map->data.str);
+          if (address >= base && address - base < map->data.size && bound) {
+            segment_size = map->compressor_info.v.segment_size;
+            seg_first    = (address - base) / segment_size;
+            seg_opl      = CeilIntegerDiv(address - base + bound, segment_size);
+
+            U64 covered = last_obj == obj_idx ? Max(seg_first, segment_opl) : seg_first;
+            decoded = (seg_opl > covered ? seg_opl - covered : 0) * segment_size;
+          }
+        }
+
+        if (window_records && (staged_bytes + staging > staged_budget || decoded_bytes + decoded > decoded_budget)) {
+          for EachElement(s, sources) {
+            CV_TypeIndexSource kind = sources[s];
+            rng1u64_list_push(scratch.arena, &windows[kind], r1u64(first[kind], cursors[kind]));
+            first[kind] = cursors[kind];
+          }
+          decoded_bytes = staged_bytes = window_records = 0;
+          last_obj      = max_U64;
+          segment_opl   = 0;
+          decoded       = (seg_opl - seg_first) * segment_size;
+        }
+
+        decoded_bytes        += decoded;
+        staged_bytes         += staging;
+        window_records       += 1;
+        upper_bounds[source] += bound;
+        cursors[source]      += 1;
+        segment_opl           = last_obj == obj_idx ? Max(segment_opl, seg_opl) : seg_opl;
+        last_obj              = obj_idx;
+      }
+
+      for EachElement(s, sources) {
+        CV_TypeIndexSource source = sources[s];
+        if (window_records) {
+          rng1u64_list_push(scratch.arena, &windows[source], r1u64(first[source], cursors[source]));
+        }
+        task.type_windows[source] = rng1u64_array_from_list(scratch.arena, &windows[source]);
+      }
+
+      ProfMsg("PDB type windows count=%llu decoded_budget=%llu staged_budget=%llu tpi_bound=%llu ipi_bound=%llu",
+              task.type_windows[CV_TypeIndexSource_TPI].count, decoded_budget, staged_budget,
+              upper_bounds[CV_TypeIndexSource_TPI], upper_bounds[CV_TypeIndexSource_IPI]);
+    }
+
+    // MSF arena growth copies the old stream; reserve an offset-derived upper
+    // bound once, rather than reallocating the stream for every staged window
+    for EachElement(s, sources) {
+      CV_TypeIndexSource  source   = sources[s];
+      PDB_TypeServer     *ts       = task.pdb->type_servers[source];
+      MSF_StreamNumber    sn       = source == CV_TypeIndexSource_TPI ? PDB_FixedStream_Tpi : PDB_FixedStream_Ipi;
+      U64                 capacity = Min(upper_bounds[source], MSF_DELETED_STREAM_STAMP - 1ull - sizeof(PDB_TpiHeader));
+      MSF_Stream *stream = msf_find_stream(task.pdb->msf, sn);
+      AssertAlways(msf_stream_reserve_backing(task.pdb->msf, stream, sizeof(PDB_TpiHeader) + capacity));
+      task.type_output[source]    = str8(stream->data + sizeof(PDB_TpiHeader), capacity);
+      task.type_hash_info[source] = pdb_type_hash_stream_prepare(ts, &task.pdb->info->strtab, task.pdb->msf, task.type_counts[source], CeilIntegerDiv(task.type_counts[source], PDB_TYPE_HINT_STEP));
+
+      String8 hash_data = msf_stream_data(task.pdb->msf, ts->hash_sn);
+      task.type_hashes[source] = (U32 *)hash_data.str;
+      task.type_hints[source]  = hash_data.str ? (PDB_TpiOffHint *)(hash_data.str + task.type_hash_info[source].ti_offs.off) : 0;
+    }
+    tp_for_parallel(tp, 0, tp->worker_count, lnk_stage_pdb_types_task, &task);
+
+    for EachElement(s, sources) {
+      CV_TypeIndexSource  source = sources[s];
+      PDB_TypeServer     *ts     = task.pdb->type_servers[source];
+      MSF_StreamNumber    sn     = source == CV_TypeIndexSource_TPI ? PDB_FixedStream_Tpi : PDB_FixedStream_Ipi;
+      AssertAlways(msf_stream_resize(task.pdb->msf, sn, safe_cast_u32(sizeof(PDB_TpiHeader) + task.type_sizes[source])));
+      pdb_type_server_write_header(ts, task.pdb->msf, sn, task.type_counts[source], task.type_sizes[source], task.type_hash_info[source]);
+      if (output_ptr) {
+        lnk_pdb_output_enqueue_stream(output_ptr, task.pdb->msf, sn);
+        lnk_pdb_output_enqueue_stream(output_ptr, task.pdb->msf, ts->hash_sn);
+      }
     }
   }
 
   if (config->pdb_hash_type_name_map.size && cv_types.input) {
-    lnk_write_data_to_file_path(config->pdb_hash_type_name_map, str8_zero(), type_name_map);
+    lnk_write_data_list_to_file_path(config->pdb_hash_type_name_map, str8_zero(), task.type_name_map);
   }
 
   if (builder_flags & LNK_PDB_BuilderFlag_SC) {
-    ProfBegin("Build Section Contrib Map");
-    {
+    ProfScope("Build Section Contrib Map") {
       ProfBegin("Build DBI Section Headers");
       for (U64 sect_idx = 1; sect_idx < task.image_section_table_count; sect_idx += 1) {
         dbi_push_section(task.pdb->dbi, task.image_section_table[sect_idx]);
@@ -3678,8 +3790,10 @@ lnk_build_pdb(TP_Context *tp, Arena *arena, String8 image_data, LNK_Config *conf
       for EachIndex(obj_idx, cv->obj_count) {
         new_count += task.sc_arrays[obj_idx].count;
       }
+
       PDB_DbiSC *new_v = push_array_no_zero(task.pdb->dbi->arena, PDB_DbiSC, new_count);
       MemoryCopyTyped(new_v, sec_contribs->v, sec_contribs->count);
+
       U64 cursor = sec_contribs->count;
       for EachIndex(obj_idx, cv->obj_count) {
         PDB_DbiSCArray *src = &task.sc_arrays[obj_idx];
@@ -3689,11 +3803,11 @@ lnk_build_pdb(TP_Context *tp, Arena *arena, String8 image_data, LNK_Config *conf
         src->count = 0;
       }
       tp_for_parallel(tp, 0, cv->obj_count, lnk_push_dbi_sec_contrib_task, &task);
+
       sec_contribs->v     = new_v;
       sec_contribs->count = new_count;
       sec_contribs->cap   = new_count;
     }
-    ProfEnd();
   }
 
   if (builder_flags & LNK_PDB_BuilderFlag_NATVIS) {

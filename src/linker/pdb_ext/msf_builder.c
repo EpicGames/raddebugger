@@ -134,14 +134,35 @@ msf_free_pages(MSF_Context *msf, MSF_PageList *pages)
 ////////////////////////////////
 
 internal B32
-msf_stream_reserve_capacity(MSF_Context *msf, MSF_Stream *stream, U64 size)
+msf_stream_reserve_backing(MSF_Context *msf, MSF_Stream *stream, U64 size)
 {
   if (size >= MSF_DELETED_STREAM_STAMP) { return 0; }
 
-  U64      capacity   = AlignPow2(size, (U64)msf->page_size);
+  U64 capacity = AlignPow2(size, (U64)msf->page_size);
+  if (capacity > stream->capacity) {
+    U8 *data = push_array(msf->arena, U8, capacity);
+    if (stream->size > 0) {
+      MemoryCopy(data, stream->data, stream->size);
+    }
+    stream->data     = data;
+    stream->capacity = capacity;
+    U64 offset = 0;
+    for EachNode(page, MSF_PageNode, stream->page_list.first) {
+      *msf_page_data_slot(msf, page->pn) = data + offset;
+      offset += msf->page_size;
+    }
+  }
+
+  return 1;
+}
+
+internal B32
+msf_stream_reserve_capacity(MSF_Context *msf, MSF_Stream *stream, U64 size)
+{
+  if (size >= MSF_DELETED_STREAM_STAMP) { return 0; }
+  
   MSF_UInt page_count = msf_count_pages(msf->page_size, size);
   B32      remap      = 0;
-
   if (page_count > stream->page_list.count) {
     MSF_UInt     count = page_count - stream->page_list.count;
     MSF_PageList pages = msf_alloc_pages(msf, count);
@@ -150,17 +171,11 @@ msf_stream_reserve_capacity(MSF_Context *msf, MSF_Stream *stream, U64 size)
     remap = 1;
   }
 
-  if (capacity > stream->capacity) {
-    // sized callers allocate once. Incremental writers must reserve before
-    // retaining views; arena growth leaves previous views obsolete
-    U8 *data = push_array(msf->arena, U8, capacity);
-    if (stream->size != 0) { MemoryCopy(data, stream->data, stream->size); }
-    stream->data = data;
-    stream->capacity = capacity;
-    remap = 1;
-  }
+  U64 old_capacity = stream->capacity;
+  if ( ! msf_stream_reserve_backing(msf, stream, size)) { return 0; }
 
-  if (remap) {
+  // backing growth already remapped every page, including new allocations
+  if (remap && stream->capacity == old_capacity) {
     U64 offset = 0;
     for EachNode(page, MSF_PageNode, stream->page_list.first) {
       *msf_page_data_slot(msf, page->pn) = stream->data + offset;
