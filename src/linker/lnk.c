@@ -1156,6 +1156,11 @@ lnk_input_release_file_map(LNK_Input *input)
     input->data          = str8_zero();
     input->owns_file_map = 0;
   }
+  if (input->cfm_map) {
+    cfm_map_close(input->cfm_map);
+    input->data    = str8_zero();
+    input->cfm_map = 0;
+  }
 }
 
 THREAD_POOL_TASK_FUNC(lnk_release_file_maps_task)
@@ -1172,14 +1177,15 @@ internal void
 lnk_inputer_release_file_maps(TP_Context *tp, LNK_Inputer *inputer)
 {
   ProfBeginFunction();
-
   Temp scratch = scratch_begin(0, 0);
 
+  // regular file maps and compressed file maps (CFM) are both expensive to tear down,
+  // and the kernel does it single-threaded at process exit otherwise
   U64 mapped_input_count = 0;
   LNK_InputList *lists[] = {&inputer->objs, &inputer->libs, &inputer->members};
   for EachElement(i, lists) {
     for EachNode(input, LNK_Input, lists[i]->first) {
-      mapped_input_count += input->owns_file_map;
+      mapped_input_count += (input->owns_file_map || input->cfm_map != NULL);
     }
   }
 
@@ -1187,7 +1193,7 @@ lnk_inputer_release_file_maps(TP_Context *tp, LNK_Inputer *inputer)
   U64         mapped_input_idx = 0;
   for EachElement(i, lists) {
     for EachNode(input, LNK_Input, lists[i]->first) {
-      if (input->owns_file_map) {
+      if (input->owns_file_map || input->cfm_map != NULL) {
         mapped_inputs[mapped_input_idx++] = input;
       }
     }

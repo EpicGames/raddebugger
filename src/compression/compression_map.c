@@ -636,3 +636,86 @@ cfm_map_open(CFM_Context *ctx, File file, CFM_Map **out)
   return status;
 }
 
+internal void
+cfm_map_close(CFM_Map *map)
+{
+  Temp scratch = scratch_begin(0,0);
+
+  CFM_Context *ctx           = map->context;
+  U64          segment_size  = map->compressor_info.v.segment_size;
+  U64          segment_count = map->compressor_info.v.segment_count;
+
+  // detach resident segments from the cache & unregister the map
+  void **views      = push_array_no_zero(scratch.arena, void *, segment_count);
+  U64    view_count = 0;
+  MutexScopeW(ctx->mutex) {
+    for EachIndex(segment_idx, segment_count) {
+      CFM_SegmentKey   key     = { map, segment_idx };
+      CFM_SegmentInfo *segment = hash_map_search_string_raw(&ctx->segment_tracker, str8_struct(&key));
+      if (segment) {
+        AssertAlways(segment->refs == 0);
+        AssertAlways(segment->state == CFM_SegmentState_Live);
+
+        B32 is_purged = hash_map_purge_string(&ctx->segment_tracker, str8_struct(&key));
+        AssertAlways(is_purged);
+
+        // backing goes to the free list and keeps its shared memory & sync objects for reuse
+        ins_atomic_u32_eval_assign(&segment->state, CFM_SegmentState_Null);
+        segment->map   = 0;
+        segment->index = 0;
+        CFM_SegmentNode *node = CastFromMember(CFM_SegmentNode, v, segment);
+        DLLRemove(ctx->first_segment, ctx->last_segment, node);
+        SLLStackPush(ctx->free_segments, node);
+
+        views[view_count++] = map->data.str + segment_idx * segment_size;
+      }
+    }
+
+    // remove from the address registry so a stray fault in this range can no longer resolve to the map
+    CFM_Registry *registry = ctx->registry;
+    if (registry) {
+      if (registry->refs > 0) {
+        // TODO: registry is pinned by a thread and should be released after thread finishes using it
+        NotImplemented;
+      }
+      U64 num = rng1u64_array_num_from_value__binary_search(&registry->ranges, IntFromPtr(map->data.str));
+      if (num > 0 && registry->maps[num-1] == map) {
+        U64 idx  = num - 1;
+        U64 tail = registry->count - (idx + 1);
+        MemoryCopyTyped(registry->maps + idx,     registry->maps + idx + 1,     tail);
+        MemoryCopyTyped(registry->ranges.v + idx, registry->ranges.v + idx + 1, tail);
+        registry->count         -= 1;
+        registry->ranges.count  -= 1;
+      }
+    }
+  }
+
+  // tear down the decoded address range: mapped views back to placeholders, then release the reservation
+  ProfBegin("CFM close unmap views");
+  for EachIndex(i, view_count) {
+    B32 is_unmapped = unmap_memory_preserve_placeholder(views[i], segment_size);
+    AssertAlways(is_unmapped);
+  }
+  ProfEnd();
+
+  ProfBegin("CFM close release placeholders");
+  B32 is_released = release_memory_placeholders(map->data.str, map->reserve_size, segment_size);
+  AssertAlways(is_released);
+  ProfEnd();
+
+  // close the encoded file view & mapping
+  ProfBegin("CFM close storage");
+  file_map_view_close(map->storage, map->encoded.str, r1u64(0, map->encoded.size));
+  file_map_close(map->storage);
+  ProfEnd();
+
+  // recycle map node
+  MutexScopeW(ctx->mutex) {
+    CFM_MapNode *map_node = CastFromMember(CFM_MapNode, v, map);
+    MemoryZeroStruct(&map_node->v);
+    SLLStackPush(ctx->free_maps, map_node);
+  }
+
+  scratch_end(scratch);
+}
+

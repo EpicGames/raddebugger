@@ -148,6 +148,7 @@ struct CFM_Context
 };
 
 internal CFM_Context * cfm_alloc(U64 cache_cap, U64 prefetch_bytes, U64 worker_count, U64 codecs_count, CFM_Codec *codecs, String8 sdk_paths[CMP_SdkType_Count]);
-internal B32 cfm_install_fault_handler(CFM_Context *ctx);
-internal B32 cfm_raw_view(CFM_Map *map, Rng1U64 range, String8 *out);
-internal void cfm_lease_release(CFM_Context *ctx, CFM_Lease *lease);
+internal B32           cfm_install_fault_handler(CFM_Context *ctx);
+internal void          cfm_map_close(CFM_Map *map);
+internal B32           cfm_raw_view(CFM_Map *map, Rng1U64 range, String8 *out);
+internal void          cfm_lease_release(CFM_Context *ctx, CFM_Lease *lease);
