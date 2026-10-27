@@ -3507,10 +3507,6 @@ lnk_build_pdb(TP_Context *tp, Arena *arena, String8 image_data, LNK_Config *conf
   ProfBeginFunction();
   Temp scratch = scratch_begin(&arena, 1);
 
-  if (builder_flags == LNK_PDB_BuilderFlag_All) {
-    builder_flags = ~0;
-  }
-
   LNK_BuildPdb task = {
     .image_data                         = image_data,
     .symtab                             = symtab,

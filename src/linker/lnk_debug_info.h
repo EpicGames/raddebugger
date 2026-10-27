@@ -200,7 +200,7 @@ typedef struct
 
 typedef enum
 {
-  LNK_PDB_BuilderFlag_All         = 0,
+  LNK_PDB_BuilderFlag_All         = ~0,
   LNK_PDB_BuilderFlag_Tpi         = (1<<0),
   LNK_PDB_BuilderFlag_Ipi         = (1<<1),
   LNK_PDB_BuilderFlag_Modules     = (1<<2),
