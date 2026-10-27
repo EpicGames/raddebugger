@@ -225,6 +225,12 @@ typedef struct
   U32Array            *obj_indices;         // [obj_count]
   U64                  symbol_count;
 
+  // retained globals point into the participating lanes' outer scratch scopes
+  void **global_buckets;
+  U64    global_bucket_cap;
+  U64    global_bucket_bytes;
+  U64   *global_unique_counts; // [worker_count]
+
   // lnk_pdb_module_working_set_task
   U64          *module_working_sets; // [obj_count], estimated decoded bytes
   Rng1U64Array  module_batches;      // contiguous original object indices
@@ -238,6 +244,13 @@ typedef struct
   U64                 *image_section_file_section_numbers;
   PDB_DbiSCArray      *sc_arrays; // [obj_count]
 } LNK_BuildPdb;
+
+typedef enum
+{
+  LNK_PdbSymbolDestination_Discard,
+  LNK_PdbSymbolDestination_Module,
+  LNK_PdbSymbolDestination_Global,
+} LNK_PdbSymbolDestination;
 
 typedef struct
 {
