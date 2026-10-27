@@ -84,7 +84,7 @@ internal U64
 cv_read_leaf(String8 raw_data, U64 off, U64 align, CV_Leaf *leaf_out)
 {
   // do we have enough bytes to read header?
-  if (raw_data.size < sizeof(CV_LeafHeader)) { return 0; }
+  if (off > raw_data.size || raw_data.size - off < sizeof(CV_LeafHeader)) { return 0; }
 
   U8 *leaf_ptr = raw_data.str + off;
 
@@ -95,14 +95,14 @@ cv_read_leaf(String8 raw_data, U64 off, U64 align, CV_Leaf *leaf_out)
   if (header.size < sizeof(CV_LeafKind)) { return 0; }
 
   // do we have enough bytes to read leaf data?
-  if (sizeof(CV_LeafSize) + header.size > raw_data.size) { return 0; }
+  if (sizeof(CV_LeafSize) + header.size > raw_data.size - off) { return 0; }
 
   // fill out leaf
   leaf_out->kind = header.kind;
   leaf_out->data = str8(leaf_ptr + sizeof(CV_LeafHeader), header.size - sizeof(CV_LeafKind));
 
   U64 leaf_size = AlignPow2(sizeof(CV_LeafHeader) + leaf_out->data.size, align);
-  if (leaf_size > raw_data.size) { return 0; }
+  if (leaf_size > raw_data.size - off) { return 0; }
 
   return leaf_size;
 }
@@ -1243,51 +1243,88 @@ cv_symbol_deduper_insert_or_update(void **buckets, U64 bucket_cap, U64 hash, voi
 ////////////////////////////////
 //~ .debug$T helpers
 
-internal CV_DebugT
-cv_debug_t_from_data(Arena *arena, String8 data, U64 align)
+internal B32
+cv_debug_t_from_data_checked(Arena *arena, String8 data, U64 align, U32 *offsets, U64 *source_counts, CV_DebugT *out)
 {
+  MemoryZeroStruct(out);
+
   CV_DebugT debug_t = { .data = data };
 
   U64 parse_start_offset = 0;
 
-  // strip LF_PRECOMP from .debug$T to exclude it from leaf arrays
-  B8             has_pch = 0;
-  CV_PrecompInfo precomp = {0};
+  // strip LF_PRECOMP from .debug$T to exclude it from the leaf arrays;
+  // (we don't need to adjust type indices because compiler already did this for us)
   {
     CV_Leaf leaf        = {0};
     U64     leaf_size   = cv_read_leaf(data, 0, CV_LeafAlign, &leaf);
-    if (leaf.kind == CV_LeafKind_PRECOMP) {
+    if (leaf_size && leaf.kind == CV_LeafKind_PRECOMP) {
       debug_t.has_pch = 1;
       debug_t.precomp = cv_precomp_info_from_leaf(leaf);
       parse_start_offset = leaf_size;
     }
   }
 
-  ProfBegin("Upfront parse for counts");
-  for (U64 cursor = parse_start_offset, prev_cursor = parse_start_offset, ti = CV_MinComplexTypeIndex; cursor < data.size; ti += 1) {
-    CV_Leaf leaf = {0};
-    TryRead(cv_read_leaf(data, cursor, align, &leaf), cursor, count_stop);
-    debug_t.source_counts[cv_type_index_source_from_leaf_kind(leaf.kind)] += 1;
+  //
+  // init from cache
+  //
+  if (offsets || source_counts) {
+    AssertAlways(offsets && source_counts);
+    debug_t.offsets = offsets;
+    MemoryCopy(debug_t.source_counts, source_counts, sizeof(debug_t.source_counts));
+    for EachElement(i, debug_t.source_counts) {
+      debug_t.count += debug_t.source_counts[i];
+    }
   }
-count_stop:
-  ProfEnd();
+  //
+  // full parse
+  //
+  else {
+    ProfBegin("Upfront Leaf Parse");
+    for (U64 cursor = parse_start_offset; cursor < data.size;) {
+      CV_Leaf leaf = {0};
+      TryRead(cv_read_leaf(data, cursor, align, &leaf), cursor, count_stop);
+      debug_t.source_counts[cv_type_index_source_from_leaf_kind(leaf.kind)] += 1;
+    }
+    count_stop:;
+    ProfEnd();
 
-  for EachElement(i, debug_t.source_counts) { debug_t.count += debug_t.source_counts[i]; }
+    for EachElement(i, debug_t.source_counts) {
+      debug_t.count += debug_t.source_counts[i];
+    }
 
-  ProfBegin("store leaf offsets");
-  debug_t.offsets = push_array_no_zero(arena, U32, debug_t.count);
-  for (U64 cursor = parse_start_offset, idx = 0; cursor < data.size && idx < debug_t.count; idx += 1) {
-    debug_t.offsets[idx] = cursor;
-    TryRead(cv_read_leaf(data, cursor, align, &(CV_Leaf){0}), cursor, store_stop);
+    debug_t.offsets = push_array_no_zero(arena, U32, debug_t.count);
+    if (debug_t.offsets) {
+      ProfBegin("Assign Leaf Offsets");
+      for (U64 cursor = parse_start_offset, idx = 0; cursor < data.size && idx < debug_t.count; idx += 1) {
+        debug_t.offsets[idx] = cursor;
+        TryRead(cv_read_leaf(data, cursor, align, &(CV_Leaf){0}), cursor, store_stop);
+      }
+      store_stop:;
+      ProfEnd();
+    } else { return 0; }
   }
-store_stop:
 
-  for EachElement(i, debug_t.ti_ranges) { debug_t.ti_ranges[i] = r1u64(CV_MinComplexTypeIndex, CV_MinComplexTypeIndex + debug_t.count + debug_t.precomp.leaf_count); }
+  // assign type index ranges
+  for EachElement(i, debug_t.ti_ranges) {
+    debug_t.ti_ranges[i] = r1u64s(CV_MinComplexTypeIndex, debug_t.count + debug_t.precomp.leaf_count);
+  }
 
-  for (U64 i = 1; i < CV_TypeIndexSource_COUNT; i += 1) { debug_t.pch_ti_range[i] = r1u64s(debug_t.precomp.start_index, debug_t.precomp.leaf_count); }
+  // assign PCH type index ranges
+  for EachElement(i, debug_t.pch_ti_range) {
+    debug_t.pch_ti_range[i] = r1u64s(debug_t.precomp.start_index, debug_t.precomp.leaf_count);
+  }
 
-  ProfEnd();
-  return debug_t;
+  *out = debug_t;
+  return 1;
+}
+
+internal CV_DebugT
+cv_debug_t_from_data(Arena *arena, String8 data, U64 align)
+{
+  CV_DebugT result = {0};
+  B32 ok = cv_debug_t_from_data_checked(arena, data, align, 0, 0, &result);
+  AssertAlways(ok);
+  return result;
 }
 
 internal CV_Leaf

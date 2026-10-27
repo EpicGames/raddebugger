@@ -166,7 +166,20 @@ THREAD_POOL_TASK_FUNC(lnk_parse_debug_t_task)
 {
   ProfBeginFunction();
   LNK_ParseCvTypes *task = raw_task;
-  task->out_types[task_id] = cv_debug_t_from_data(arena, task->raw_types[task_id], CV_LeafAlign);
+
+  ProfBegin("Type directory lookup");
+  B32 is_cached = lnk_obj_codec_debug_t(arena, task->input->obj_arr[task_id], task->raw_types[task_id], task->is_debug_p, &task->out_types[task_id]);
+  ProfEnd();
+
+  if (is_cached) {
+    ProfBegin("Type directory hit");
+    ProfEnd();
+  } else {
+    ProfBeginDynamic(task->raw_types[task_id].size ? "Type parser fallback" : "Empty type data");
+    task->out_types[task_id] = cv_debug_t_from_data(arena, task->raw_types[task_id], CV_LeafAlign);
+    ProfEnd();
+  }
+
   ProfEnd();
 }
 
@@ -784,6 +797,7 @@ lnk_make_code_view_input(TP_Context *tp, TP_Arena *tp_arena, LNK_Config *config,
     LNK_ParseCvTypes parse_types = { .input = &input };
 
     // .debug$P
+    parse_types.is_debug_p = 1;
     debug_p_arr = push_array(tp_arena->v[0], CV_DebugT, obj_count);
     parse_types.raw_types = raw_debug_p_arr;
     parse_types.out_types = debug_p_arr;
@@ -791,6 +805,7 @@ lnk_make_code_view_input(TP_Context *tp, TP_Arena *tp_arena, LNK_Config *config,
     tp_for_parallel_prof(tp, tp_arena, obj_count, lnk_parse_debug_t_task,     &parse_types, "Parse .debug$P");
 
     // .debug$T
+    parse_types.is_debug_p = 0;
     input.debug_t_arr     = push_array(tp_arena->v[0], CV_DebugT, obj_count);
     parse_types.raw_types = raw_debug_t_arr;
     parse_types.out_types = input.debug_t_arr;

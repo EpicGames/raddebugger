@@ -109,6 +109,7 @@ typedef struct
   LNK_CodeViewInput *input;
   String8           *raw_types; // [obj_count]
   CV_DebugT         *out_types; // [obj_count]
+  B32                is_debug_p;
 } LNK_ParseCvTypes;
 
 ////////////////////////////////

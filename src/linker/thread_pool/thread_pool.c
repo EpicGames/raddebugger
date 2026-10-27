@@ -36,6 +36,7 @@ internal void
 tp_worker_main(void *raw_worker)
 {
   TP_Worker  *worker = raw_worker;
+  ProfThreadName("Thread Pool Worker %llu", worker->id);
   TP_Context *pool   = worker->pool;
   while (tp_run_tasks(pool, worker)) {}
 }
@@ -44,6 +45,7 @@ internal void
 tp_worker_main_shared(void *raw_worker)
 {
   TP_Worker  *worker = raw_worker;
+  ProfThreadName("Thread Pool Worker %llu (Shared)", worker->id);
   TP_Context *pool   = worker->pool;
   for (;;) {
     if (semaphore_take(pool->exec_semaphore, max_U64)) {

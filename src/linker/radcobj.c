@@ -4,16 +4,18 @@
 #include "radcobj.h"
 #include <string.h>
 
+////////////////////////////////
+
 int
 radcobj_match_magic(const void *data, uint64_t size)
 {
   return data != 0 && size >= sizeof(uint64_t) && memcmp(data, RADCOBJ_MAGIC, sizeof(uint64_t)) == 0;
 }
 
-static const char *
+internal const char *
 radcobj_validate_header(const void *data, uint64_t size, RADCOBJ_Header *header_out)
 {
-  if (header_out) { memset(header_out, 0, sizeof(*header_out)); }
+  if (header_out) { MemoryZeroStruct(header_out); }
 
   if (data == NULL || size < sizeof(RADCOBJ_Header) || size > SIZE_MAX) {
     return "header is truncated or container is too large";
@@ -24,7 +26,7 @@ radcobj_validate_header(const void *data, uint64_t size, RADCOBJ_Header *header_
   }
 
   RADCOBJ_Header header;
-  memcpy(&header, data, sizeof(header));
+  MemoryCopy(&header, data, sizeof(header));
 
   if (header.version != RADCOBJ_VERSION) {
     return "unsupported RADCOBJ version";
@@ -33,7 +35,7 @@ radcobj_validate_header(const void *data, uint64_t size, RADCOBJ_Header *header_
     return "unsupported compression SDK";
   }
 
-  uint64_t raw_size = header.compressor.raw_size;
+  uint64_t raw_size     = header.compressor.raw_size;
   uint32_t segment_size = header.compressor.segment_size;
   if (raw_size > SIZE_MAX) {
     return "raw size exceeds the address-space limit";
@@ -59,7 +61,7 @@ radcobj_validate_header(const void *data, uint64_t size, RADCOBJ_Header *header_
   return 0;
 }
 
-static const char *
+internal const char *
 radcobj_validate_segments(const void *data, uint64_t size, const RADCOBJ_Header *header, uint64_t first, uint64_t count)
 {
   if (first > header->compressor.segment_count || count > header->compressor.segment_count - first) {
@@ -70,12 +72,18 @@ radcobj_validate_segments(const void *data, uint64_t size, const RADCOBJ_Header 
   const uint8_t *bytes = (const uint8_t *)data;
   for (uint64_t i = first; i < first + count; i += 1) {
     RADCOBJ_Segment segment;
-    memcpy(&segment, bytes + sizeof(*header) + i * sizeof(segment), sizeof(segment));
+    MemoryCopy(&segment, bytes + sizeof(*header) + i * sizeof(segment), sizeof(segment));
     if (segment.size == 0              ||
         segment.offset < directory_end ||
         segment.offset > size          ||
         segment.size > size - segment.offset) {
       return "segment payload is empty or out of bounds";
+    }
+    for (unsigned dir_idx = 0; dir_idx < RADCOBJ_DirectoryKind_Count; dir_idx += 1) {
+      RADCOBJ_Directory dir = header->dirs[dir_idx];
+      if (dir.size && segment.offset < (U64)dir.offset + dir.size && dir.offset < (U64)segment.offset + segment.size) {
+        return "segment payload overlaps auxiliary directory";
+      }
     }
   }
 
@@ -85,7 +93,7 @@ radcobj_validate_segments(const void *data, uint64_t size, const RADCOBJ_Header 
 const char *
 radcobj_validate(const void *data, uint64_t size, RADCOBJ_Header *header_out)
 {
-  if (header_out) { memset(header_out, 0, sizeof(*header_out)); }
+  if (header_out) { MemoryZeroStruct(header_out); }
 
   RADCOBJ_Header header;
   const char *error = radcobj_validate_header(data, size, &header);
@@ -94,6 +102,50 @@ radcobj_validate(const void *data, uint64_t size, RADCOBJ_Header *header_out)
   error = radcobj_validate_segments(data, size, &header, 0, header.compressor.segment_count);
   if (error) { return error; }
 
+  U64 directory_end = sizeof(header) + header.compressor.segment_count * sizeof(RADCOBJ_Segment);
+  for (U64 i = 1; i < RADCOBJ_DirectoryKind_Count; i += 1) {
+    RADCOBJ_Directory a = header.dirs[i];
+    if (a.size && a.offset < directory_end) {
+      return "type directory overlaps container header";
+    }
+    for (U64 j = i + 1; j < RADCOBJ_DirectoryKind_Count; j += 1) {
+      RADCOBJ_Directory b = header.dirs[j];
+      if (a.size && b.size && a.offset < (U64)b.offset + b.size && b.offset < (U64)a.offset + a.size) {
+        return "overlapping type directories";
+      }
+    }
+  }
+
+  for EachIndex(i, 2) {
+    RADCOBJ_Directory hd = header.dirs[RADCOBJ_DirectoryKind_DebugT_Header + i];
+    RADCOBJ_Directory od = header.dirs[RADCOBJ_DirectoryKind_DebugT_LeafOffsets + i];
+    if (hd.size == 0 && od.size == 0) { continue; }
+
+    if (hd.size != sizeof(RADCOBJ_TypesHeader)) {
+      return "invalid type header size";
+    }
+    
+    RADCOBJ_TypesHeader types;
+    MemoryCopy(&types, (const U8 *)data + hd.offset, sizeof(types));
+
+    if (types.leaf_count > od.size / sizeof(U32)  ||
+        types.leaf_count * sizeof(U32) != od.size ||
+        types.source_counts[0] > types.leaf_count ||
+        types.source_counts[1] > types.leaf_count - types.source_counts[0]) {
+      return "invalid type counts";
+    }
+
+    U32 previous = 0;
+    for EachIndex(leaf, types.leaf_count) {
+      U32 offset;
+      MemoryCopy(&offset, (const U8 *)data + od.offset + leaf * sizeof(offset), sizeof(offset));
+      if (offset > header.compressor.raw_size || header.compressor.raw_size - offset < sizeof(CV_LeafHeader) || (leaf && offset <= previous)) {
+        return "invalid type leaf offset";
+      }
+      previous = offset;
+    }
+  }
+
   if (header_out) { *header_out = header; }
   return 0;
 }
@@ -101,14 +153,81 @@ radcobj_validate(const void *data, uint64_t size, RADCOBJ_Header *header_out)
 const char *
 radcobj_encode(CMP_Ctx *cmp, uint32_t segment_size, const void *raw, uint64_t raw_size, void **output_out, uint64_t *output_size, const RADCOBJ_Allocator *allocator)
 {
-  if (output_out)  { *output_out = 0; }
+  if (output_out)  { *output_out = 0;  }
   if (output_size) { *output_size = 0; }
 
-  if (output_out == NULL || output_size == 0) {
-    return "invalid encode output pointers";
+  if (!output_out                             ||
+      !output_size                            ||
+      !allocator                              ||
+      !allocator->alloc                       ||
+      !allocator->free                        ||
+      raw_size > SIZE_MAX                     ||
+      (!raw && raw_size)                      ||
+      segment_size < RADCOBJ_MIN_SEGMENT_SIZE ||
+      !IsPow2(segment_size)) {
+    return "invalid encoder input or allocator";
   }
-  if (allocator == NULL || allocator->alloc == NULL || allocator->free == NULL) {
-    return "invalid encoder allocator";
+
+  typedef struct RADCOBJ_Types {
+    Arena     *arena;
+    B32        present[2];
+    CV_DebugT  debug[2];
+  } RADCOBJ_Types;
+
+  RADCOBJ_Types types = {0};
+  const char *error = 0;
+
+  // find sections with debug types
+  {
+    String8             raw_obj     = str8((U8 *)raw, raw_size);
+    COFF_FileHeaderInfo file_header = coff_file_header_info_from_data(raw_obj);
+    if (file_header.header_range.max && file_header.section_table_range.max <= raw_obj.size && file_header.symbol_table_range.max <= raw_obj.size) {
+      String8             string_table  = str8_substr(raw_obj, file_header.string_table_range);
+      COFF_SectionHeader *section_table = (COFF_SectionHeader *)(raw_obj.str + file_header.section_table_range.min);
+      String8             names[]       = { str8_lit_comp(".debug$T"), str8_lit_comp(".debug$P") };
+      COFF_SectionHeader *sections[2]   = {0};
+
+      for EachIndex(i, file_header.section_count_no_null) {
+        COFF_SectionHeader *header = &section_table[i];
+        String8             name   = coff_name_from_section_header(string_table, header);
+        for EachElement(k, sections) {
+          if (str8_match(names[k], name, 0)) { sections[k] = header; }
+        }
+      }
+
+      for EachElement(k, sections) {
+        COFF_SectionHeader *header = sections[k];
+        if (header == NULL                              ||
+            header->foff > raw_obj.size                 ||
+            header->fsize > raw_obj.size - header->foff ||
+            header->fsize < sizeof(CV_Signature)) {
+          continue;
+        }
+
+        String8 data = str8_substr(raw_obj, r1u64s(header->foff, header->fsize));
+        if (cv_signature_from_debug_s(data) != CV_Signature_C13) { continue; }
+
+        if (types.arena == NULL) {
+#if RADCOBJ_LIB && OS_WINDOWS
+          radcobj_init_system_info();
+#endif
+          types.arena = arena_alloc(.reserve_size = KB(64), .commit_size = KB(64));
+        }
+
+        data = str8_skip(data, sizeof(CV_Signature));
+        if ( ! cv_debug_t_from_data_checked(types.arena, data, CV_LeafAlign, 0, 0, &types.debug[k])) {
+          error = "failed to allocate type leaf offsets";
+          goto exit;
+        }
+
+        if (types.debug[k].count > max_U32 / sizeof(U32)) {
+          error = "type offsets exceed the format size limit";
+          goto exit;
+        }
+
+        types.present[k] = 1;
+      }
+    }
   }
 
 #if OODLE_STATIC
@@ -117,31 +236,50 @@ radcobj_encode(CMP_Ctx *cmp, uint32_t segment_size, const void *raw, uint64_t ra
   if (cmp == 0) { cmp = &static_sdk; }
 #endif
 
-  if (cmp == 0                                ||
-      cmp->sdk_type != CMP_SdkType_Oodle2     ||
-      segment_size < RADCOBJ_MIN_SEGMENT_SIZE ||
-      IsPow2(segment_size) == 0               ||
-      raw_size > SIZE_MAX                     ||
-      (raw == 0 && raw_size != 0)) {
-    return "invalid encoder input or compression SDK";
+  if (cmp == 0 || cmp->sdk_type != CMP_SdkType_Oodle2) {
+    error = "invalid encoder input or compression SDK";
+    goto exit;
   }
 
   U64 full_count     = raw_size / segment_size;
   U64 tail_size      = raw_size % segment_size;
   U64 segments_count = full_count + (tail_size != 0);
   if (segments_count > (max_U32 - sizeof(RADCOBJ_Header)) / sizeof(RADCOBJ_Segment)) {
-    return "segment directory exceeds the format size limit";
+    error = "segment directory exceeds the format size limit";
+    goto exit;
   }
 
-  U64 directory_end = sizeof(RADCOBJ_Header) + segments_count * sizeof(RADCOBJ_Segment);
-  U64 capacity      = directory_end;
-  U64 full_bound    = full_count ? cmp_bound(cmp, segment_size) : 0;
+  U64            directory_end = sizeof(RADCOBJ_Header) + segments_count * sizeof(RADCOBJ_Segment);
+  U64            metadata_end  = directory_end;
+  RADCOBJ_Header header        = {0};
+  for EachElement(i, types.debug) {
+    if (types.present[i]) {
+      metadata_end = AlignPow2(metadata_end, 8);
+
+      U64 offsets_size = types.debug[i].count * sizeof(U32);
+      if (metadata_end > max_U32 - sizeof(RADCOBJ_TypesHeader) || offsets_size > max_U32 - metadata_end - sizeof(RADCOBJ_TypesHeader)) {
+        error = "type metadata exceeds the format size limit";
+        goto exit;
+      }
+
+      header.dirs[RADCOBJ_DirectoryKind_DebugT_Header + i] = (RADCOBJ_Directory){ (U32)metadata_end, sizeof(RADCOBJ_TypesHeader) };
+      metadata_end += sizeof(RADCOBJ_TypesHeader);
+
+      header.dirs[RADCOBJ_DirectoryKind_DebugT_LeafOffsets + i] = (RADCOBJ_Directory){ (U32)metadata_end, (U32)offsets_size };
+      metadata_end += offsets_size;
+    }
+  }
+
+  U64 capacity   = metadata_end;
+  U64 full_bound = full_count ? cmp_bound(cmp, segment_size) : 0;
   if (full_count) {
     if (full_bound == 0) {
-      return "failed to size encoded segment";
+      error = "failed to size encoded segment";
+      goto exit;
     }
     if (full_bound > (max_U32 - capacity) / full_count) {
-      return "encoded object exceeds the format size limit";
+      error = "encoded object exceeds the format size limit";
+      goto exit;
     }
     capacity += full_count * full_bound;
   }
@@ -149,20 +287,26 @@ radcobj_encode(CMP_Ctx *cmp, uint32_t segment_size, const void *raw, uint64_t ra
   U64 tail_bound = tail_size ? cmp_bound(cmp, tail_size) : 0;
   if (tail_size) {
     if (tail_bound == 0) {
-      return "failed to size encoded tail segment";
+      error = "failed to size encoded tail segment";
+      goto exit;
     }
     if (tail_bound > max_U32 - capacity) {
-      return "encoded object exceeds the format size limit";
+      error = "encoded object exceeds the format size limit";
+      goto exit;
     }
     capacity += tail_bound;
   }
 
   if (capacity > SIZE_MAX) {
-    return "encoded object exceeds the address-space limit";
+    error = "encoded object exceeds the address-space limit";
+    goto exit;
   }
 
   U8 *output = allocator->alloc(allocator->user, (size_t)capacity);
-  if (output == 0) { return "failed to allocate encoded object"; }
+  if (output == 0) {
+    error = "failed to allocate encoded object";
+    goto exit;
+  }
 
   U64 src_address = IntFromPtr(raw), dst_address = IntFromPtr(output);
   B32 overlaps    = src_address <= dst_address
@@ -170,11 +314,21 @@ radcobj_encode(CMP_Ctx *cmp, uint32_t segment_size, const void *raw, uint64_t ra
                     : src_address - dst_address < capacity;
   if (raw_size && overlaps) {
     allocator->free(allocator->user, output);
-    return "encoder allocation overlaps the input";
+    error = "encoder allocation overlaps the input";
+    goto exit;
   }
 
-  U64 cursor = directory_end;
-  MemoryZero(output, directory_end);
+  U64 cursor = metadata_end;
+  MemoryZero(output, metadata_end);
+  for EachElement(i, types.debug) {
+    if (types.present[i]) {
+      CV_DebugT *debug = &types.debug[i];
+      RADCOBJ_TypesHeader type_header = { {debug->source_counts[CV_TypeIndexSource_TPI], debug->source_counts[CV_TypeIndexSource_IPI]}, debug->count };
+      MemoryCopy(output + header.dirs[RADCOBJ_DirectoryKind_DebugT_Header + i].offset, &type_header, sizeof(type_header));
+      MemoryCopy(output + header.dirs[RADCOBJ_DirectoryKind_DebugT_LeafOffsets + i].offset, debug->offsets, debug->count * sizeof(U32));
+    }
+  }
+
   for EachIndex(segment_idx, segments_count) {
     U64     data_cursor     = segment_idx * segment_size;
     U64     src_size        = Min(segment_size, raw_size - data_cursor);
@@ -182,9 +336,10 @@ radcobj_encode(CMP_Ctx *cmp, uint32_t segment_size, const void *raw, uint64_t ra
     String8 src             = { (U8 *)raw + data_cursor, src_size };
     String8 encoded_segment = { output + cursor, bound_size };
     U64     encode_size     = cmp_encode(cmp, src, encoded_segment);
-    if (!encode_size || encode_size > bound_size) {
+    if (encode_size == 0 || encode_size > bound_size) {
       allocator->free(allocator->user, output);
-      return "failed to encode RADCOBJ segment";
+      error = "failed to encode RADCOBJ segment";
+      goto exit;
     }
 
     RADCOBJ_Segment segment = { (U32)cursor, (U32)encode_size };
@@ -192,7 +347,6 @@ radcobj_encode(CMP_Ctx *cmp, uint32_t segment_size, const void *raw, uint64_t ra
     cursor += encode_size;
   }
 
-  RADCOBJ_Header header = {0};
   MemoryCopy(&header.magic, RADCOBJ_MAGIC, sizeof(header.magic));
   header.version                  = RADCOBJ_VERSION;
   header.compressor.raw_size      = raw_size;
@@ -203,10 +357,17 @@ radcobj_encode(CMP_Ctx *cmp, uint32_t segment_size, const void *raw, uint64_t ra
 
   *output_out = output;
   *output_size = cursor;
-  return 0;
+
+exit:
+
+  if (types.arena) {
+    arena_release(types.arena);
+  }
+
+  return error;
 }
 
-static const char *
+internal const char *
 radcobj_decode_range_from_header(CMP_Ctx *cmp, const void *data, uint64_t size, const RADCOBJ_Header *header, uint64_t first, uint64_t count, void *output, uint64_t output_capacity, const RADCOBJ_Allocator *allocator)
 {
   const char *error = radcobj_validate_segments(data, size, header, first, count);

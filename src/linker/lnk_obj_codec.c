@@ -17,7 +17,10 @@ lnk_radcobj_arena_alloc(void *user, size_t size)
   return arena_push(state->arena, size, 16, 0);
 }
 
-internal void lnk_radcobj_no_free(void *user, void *memory) {}
+internal void
+lnk_radcobj_no_free(void *user, void *memory)
+{
+}
 
 internal String8
 lnk_obj_codec_encode(Arena *arena, CMP_Ctx *cmp, U64 segment_size, String8 data)
@@ -39,6 +42,46 @@ lnk_obj_codec_encode(Arena *arena, CMP_Ctx *cmp, U64 segment_size, String8 data)
 }
 
 #if !LNK_OBJ_CODEC_ENCODER_ONLY
+
+internal B32
+lnk_obj_codec_debug_t(Arena *arena, LNK_Obj *obj, String8 data, B32 is_debug_p, CV_DebugT *out)
+{
+  if (obj->input == NULL || obj->input->cfm_map == NULL || data.str == NULL) { return 0; }
+  
+  // CFM validates the encoded container before publishing the map
+  String8 encoded = obj->input->cfm_map->encoded;
+  RADCOBJ_Header header;
+  if (radcobj_validate_header(encoded.str, encoded.size, &header)) {
+    return 0;
+  }
+  
+  RADCOBJ_Directory hd = header.dirs[RADCOBJ_DirectoryKind_DebugT_Header + is_debug_p];
+  RADCOBJ_Directory od = header.dirs[RADCOBJ_DirectoryKind_DebugT_LeafOffsets + is_debug_p];
+  if (hd.size == 0) {
+    return 0;
+  }
+
+  RADCOBJ_TypesHeader types;
+  MemoryCopy(&types, encoded.str + hd.offset, sizeof(types));
+
+  // validate against the actual section without scanning/decompressing leaves
+  for EachIndex(i, types.leaf_count) {
+    U32 offset;
+    MemoryCopy(&offset, encoded.str + od.offset + i * sizeof(offset), sizeof(offset));
+    if (offset > data.size || data.size - offset < sizeof(CV_LeafHeader)) {
+      return 0;
+    }
+  }
+
+  U32 *offsets = push_array_no_zero(arena, U32, types.leaf_count);
+  MemoryCopy(offsets, encoded.str + od.offset, od.size);
+  U64 counts[CV_TypeIndexSource_COUNT] = {
+    0,
+    types.source_counts[0],
+    types.source_counts[1]
+  };
+  return cv_debug_t_from_data_checked(arena, data, CV_LeafAlign, offsets, counts, out);
+}
 
 internal B32
 lnk_obj_codec_matches(String8 encoded)

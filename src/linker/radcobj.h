@@ -12,10 +12,21 @@
 #define RADCOBJ_MIN_SEGMENT_SIZE 4096
 #define RADCOBJ_SDK_OODLE2 1
 
+typedef struct RADCOBJ_CompressorInfo
+{
+  uint64_t raw_size;
+  uint64_t segment_count;
+  uint32_t segment_size;
+  uint32_t sdk_type;
+} RADCOBJ_CompressorInfo;
+
 typedef enum RADCOBJ_DirectoryKind
 {
   RADCOBJ_DirectoryKind_Null,
-  RADCOBJ_DirectoryKind_PackedTypes,
+  RADCOBJ_DirectoryKind_DebugT_Header, // RADCOBJ_TypesHeader
+  RADCOBJ_DirectoryKind_DebugP_Header,
+  RADCOBJ_DirectoryKind_DebugT_LeafOffsets, // uint32_t array of offsets
+  RADCOBJ_DirectoryKind_DebugP_LeafOffsets,
   RADCOBJ_DirectoryKind_Count,
 } RADCOBJ_DirectoryKind;
 
@@ -25,20 +36,6 @@ typedef struct RADCOBJ_Directory
   uint32_t size;
 } RADCOBJ_Directory;
 
-typedef struct RADCOBJ_Segment
-{
-  uint32_t offset;
-  uint32_t size;
-} RADCOBJ_Segment;
-
-typedef struct RADCOBJ_CompressorInfo
-{
-  uint64_t raw_size;
-  uint64_t segment_count;
-  uint32_t segment_size;
-  uint32_t sdk_type;
-} RADCOBJ_CompressorInfo;
-
 typedef struct RADCOBJ_Header
 {
   uint64_t               magic;
@@ -47,8 +44,21 @@ typedef struct RADCOBJ_Header
   RADCOBJ_CompressorInfo compressor;
 } RADCOBJ_Header;
 
-typedef char RADCOBJ_HeaderSizeCheck[sizeof(RADCOBJ_Header) == 56 ? 1 : -1];
-typedef char RADCOBJ_HeaderCompressorOffsetCheck[offsetof(RADCOBJ_Header, compressor) == 32 ? 1 : -1];
+typedef struct RADCOBJ_Segment
+{
+  uint32_t offset;
+  uint32_t size;
+} RADCOBJ_Segment;
+
+typedef struct RADCOBJ_TypesHeader
+{
+  uint64_t source_counts[2]; // [TPI, IPI]
+  uint64_t leaf_count;       // must match number of leaf offsets
+} RADCOBJ_TypesHeader;
+
+typedef char RADCOBJ_HeaderSizeCheck[sizeof(RADCOBJ_Header) == 80 ? 1 : -1];
+typedef char RADCOBJ_HeaderCompressorOffsetCheck[offsetof(RADCOBJ_Header, compressor) == 56 ? 1 : -1];
+typedef char RADCOBJ_TypesHeaderSizeCheck[sizeof(RADCOBJ_TypesHeader) == 24 ? 1 : -1];
 typedef char RADCOBJ_SegmentSizeCheck[sizeof(RADCOBJ_Segment) == 8 ? 1 : -1];
 
 #ifdef __cplusplus
