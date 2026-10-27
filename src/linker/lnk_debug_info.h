@@ -220,11 +220,14 @@ typedef struct
   String8List          file_info;
   CV_StringHashTable   string_ht;
   U64                  string_table_base_offset;
-  PDB_DbiModule      **mod_arr;     // [obj_count]
-  PDB_ModuleView      *mod_views; // [obj_count], published after module finalization
-  U32Array            *obj_indices; // [obj_count]
+  PDB_DbiModule      **mod_arr;             // [obj_count]
+  PDB_ModuleView      *mod_views;           // [obj_count], published after module finalization
+  U32Array            *obj_indices;         // [obj_count]
+  U64                  symbol_count;
 
-  U64 symbol_count;
+  // lnk_pdb_module_working_set_task
+  U64          *module_working_sets; // [obj_count], estimated decoded bytes
+  Rng1U64Array  module_batches;      // contiguous original object indices
 
   // push DBI SC Map
   PE_BinInfo           pe;

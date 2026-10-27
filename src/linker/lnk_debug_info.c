@@ -3210,49 +3210,104 @@ lnk_write_debug_s_to_pdb_module(LNK_BuildPdb *task, U32 obj_idx, String8 module)
   return module_size;
 }
 
+THREAD_POOL_TASK_FUNC(lnk_pdb_module_working_set_task)
+{
+  LNK_BuildPdb *task = raw_task;
+  LNK_Obj      *obj  = task->cv->obj_arr[task_id];
+  CFM_Map      *map  = obj->input ? obj->input->cfm_map : 0;
+  if (map == 0 || task->cv->is_stripped) { return; }
+
+  Temp scratch = scratch_begin(0, 0);
+
+  U64  segment_size  = map->compressor_info.v.segment_size;
+  U64  segment_count = map->compressor_info.v.segment_count;
+  U64  obj_offset    = IntFromPtr(obj->coff.data.str) - IntFromPtr(map->data.str);
+  U8  *seen          = push_array(scratch.arena, U8, segment_count);
+  U64  count         = 0;
+
+  for EachNode(n, U32Node, task->cv->debug_s_section_numbers[task_id].first) {
+    COFF_SectionHeader *section = lnk_coff_section_header_from_section_number(obj, n->data);
+
+    if ((section->flags & COFF_SectionFlag_LnkNRelocOvfl) && section->reloc_count == max_U16) {
+      count = segment_count;
+      break;
+    }
+
+    Rng1U64 ranges[] = {
+      r1u64s(section->foff, section->fsize),
+      r1u64s(section->relocs_foff, (U64)section->reloc_count * sizeof(COFF_Reloc)),
+    };
+    for EachElement(i, ranges) {
+      U64 first = obj_offset + Min(ranges[i].min, obj->coff.data.size);
+      U64 opl   = obj_offset + Min(ranges[i].max, obj->coff.data.size);
+      if (first >= opl) { continue; }
+      for (U64 seg = first / segment_size; seg <= (opl - 1) / segment_size; ++seg) {
+        if (!seen[seg]) {
+          seen[seg] = 1;
+          count += 1;
+        }
+      }
+    }
+  }
+
+  task->module_working_sets[task_id] = count * segment_size;
+
+  scratch_end(scratch);
+}
+
 THREAD_POOL_TASK_FUNC(lnk_write_pdb_modules)
 {
   Temp scratch = scratch_begin(&arena, 1);
 
   LNK_BuildPdb *task        = raw_task;
-  U32Array      obj_indices = task->obj_indices[task_id];
+  U32Array      all_indices = task->obj_indices[task_id];
+  U64           obj_cursor  = 0;
 
-  // compute sizes for module streams
-  for EachIndex(i, obj_indices.count) {
-    U64 obj_idx = obj_indices.v[i];
-    lnk_size_debug_s_for_pdb_module(task->mod_arr[obj_idx], task->cv->debug_s_arr[obj_idx]);
-  }
-  barrier_wait(tp->barrier);
+  for EachIndex(batch_idx, task->module_batches.count) {
+    Rng1U64 batch = task->module_batches.v[batch_idx];
+    U64     first = obj_cursor;
+    while (obj_cursor < all_indices.count && all_indices.v[obj_cursor] < batch.max) {
+      obj_cursor += 1;
+    }
 
-  // alloc module streams
-  if (task_id == 0) {
-    for EachIndex(obj_idx, task->cv->obj_count) {
-      PDB_DbiModule *mod = task->mod_arr[obj_idx];
-      U64 mod_size = mod->sym_data_size + mod->c11_data_size + mod->c13_data_size + mod->globrefs_size;
-      if (mod_size > 0) {
-        task->mod_arr[obj_idx]->sn = msf_stream_alloc_ex(task->pdb->msf, mod_size);
+    U32Array obj_indices = { .count = obj_cursor - first, .v = all_indices.v + first };
+    if (task_id == 0) { ProfBegin("Module Batch"); }
+
+    // compute sizes for module streams while the batch's input is resident
+    for EachIndex(i, obj_indices.count) {
+      U64 obj_idx = obj_indices.v[i];
+      lnk_size_debug_s_for_pdb_module(task->mod_arr[obj_idx], task->cv->debug_s_arr[obj_idx]);
+    }
+    barrier_wait(tp->barrier);
+
+    // allocate in original object order, independent of worker completion order
+    if (task_id == 0) {
+      for EachInRange(obj_idx, batch) {
+        PDB_DbiModule *mod = task->mod_arr[obj_idx];
+        U64 mod_size = mod->sym_data_size + mod->c11_data_size + mod->c13_data_size + mod->globrefs_size;
+        if (mod_size > 0) {
+          task->mod_arr[obj_idx]->sn = msf_stream_alloc_ex(task->pdb->msf, mod_size);
+        }
       }
     }
-  }
-  barrier_wait(tp->barrier);
+    barrier_wait(tp->barrier);
 
-  // write .debug$S to modules
-  for EachIndex(i, obj_indices.count) {
-    U64            obj_idx  = obj_indices.v[i];
-    PDB_DbiModule *mod      = task->mod_arr[obj_idx];
+    // write .debug$S to modules before moving on to the next batch
+    for EachIndex(i, obj_indices.count) {
+      U64            obj_idx  = obj_indices.v[i];
+      PDB_DbiModule *mod      = task->mod_arr[obj_idx];
 
-    if (mod->sn == MSF_INVALID_STREAM_NUMBER) { continue; }
+      if (mod->sn == MSF_INVALID_STREAM_NUMBER) { continue; }
 
-    String8 mod_data = msf_stream_data(task->pdb->msf, mod->sn);
-    Assert(mod_data.size > 0);
+      String8 mod_data = msf_stream_data(task->pdb->msf, mod->sn);
+      Assert(mod_data.size > 0);
 
-    U64 written = lnk_write_debug_s_to_pdb_module(task, obj_idx, mod_data);
-    Assert(written == mod_data.size);
+      U64 written = lnk_write_debug_s_to_pdb_module(task, obj_idx, mod_data);
+      Assert(written == mod_data.size);
 
-  }
-  barrier_wait(tp->barrier);
+    }
+    barrier_wait(tp->barrier);
 
-  {
     for EachIndex(i, obj_indices.count) {
       Temp temp = temp_begin(scratch.arena);
 
@@ -3273,7 +3328,6 @@ THREAD_POOL_TASK_FUNC(lnk_write_pdb_modules)
       {
         CV_C13SubSectionHeader header = {0};
         str8_deserial_read_struct(c13_data, 0, &header);
-
         if (header.kind == CV_C13SubSectionKind_FileChksms) {
           Rng1U64 file_chksms_range = r1u64(sizeof(CV_C13SubSectionHeader), sizeof(CV_C13SubSectionHeader) + header.size);
           file_chksms_raw = str8_substr(c13_data, file_chksms_range);
@@ -3303,6 +3357,8 @@ THREAD_POOL_TASK_FUNC(lnk_write_pdb_modules)
       temp_end(temp);
     }
     barrier_wait(tp->barrier);
+
+    if (task_id == 0) { ProfEnd(); }
   }
 
   scratch_end(scratch);
@@ -3614,6 +3670,34 @@ lnk_build_pdb(TP_Context *tp, Arena *arena, String8 image_data, LNK_Config *conf
   if (task.build_modules) {
     for EachIndex(obj_idx, cv->obj_count) {
       task.mod_arr[obj_idx] = dbi_push_module(task.pdb->dbi, cv->obj_arr[obj_idx]->path, lnk_obj_get_lib_path(cv->obj_arr[obj_idx]));
+    }
+
+    ProfScope("Plan Module Batches") {
+      task.module_working_sets = push_array(scratch.arena, U64, cv->obj_count);
+      tp_for_parallel(tp, 0, cv->obj_count, lnk_pdb_module_working_set_task, &task);
+
+      // leave most of the decoded cache available for scattered type accesses and other inputs
+      U64 budget = Max(1, Min(GB(2), config->cfm_cache_cap / 4));
+      task.module_batches.v = push_array_no_zero(scratch.arena, Rng1U64, cv->obj_count);
+
+      U64 first = 0;
+      U64 bytes = 0;
+      for EachIndex(obj_idx, cv->obj_count) {
+        U64 size = task.module_working_sets[obj_idx];
+        if (obj_idx > first && (bytes >= budget || size > budget - bytes)) {
+          task.module_batches.v[task.module_batches.count++] = r1u64(first, obj_idx);
+          first = obj_idx;
+          bytes = 0;
+        }
+        // oversized objects make progress as a batch of their own
+        bytes = size > max_U64 - bytes ? max_U64 : bytes + size;
+      }
+
+      if (first < cv->obj_count) {
+        task.module_batches.v[task.module_batches.count++] = r1u64(first, cv->obj_count);
+      }
+
+      ProfMsg("PDB module batches count=%llu budget=%llu", task.module_batches.count, budget);
     }
   }
   tp_for_parallel_prof(tp, 0, tp->worker_count, lnk_build_pdb_strings_and_modules, &task, "Build Strings and Modules");
