@@ -75,6 +75,41 @@ cfm_find_locked(CFM_Context *ctx, void *address)
 // Map
 //
 
+internal B32
+cfm_raw_view(CFM_Map *map, Rng1U64 range, String8 *out)
+{
+  if (out == NULL) { return 0; }
+  *out = str8_zero();
+
+  if (map == NULL || range.min > range.max || range.max > map->compressor_info.v.raw_size) {
+    return 0;
+  }
+
+  if (range.min == range.max) {
+    return 1;
+  }
+
+  if (map->codec == NULL || map->codec->raw_view == NULL) {
+    return 0;
+  }
+
+  String8 view = {0};
+  if ( ! map->codec->raw_view(map->encoded, &map->compressor_info, range, &view)) {
+    return 0;
+  }
+
+  U64 base = IntFromPtr(map->encoded.str), address = IntFromPtr(view.str);
+  if (view.size != range.max - range.min ||
+      address < base ||
+      address - base > map->encoded.size ||
+      view.size > map->encoded.size - (address - base)) {
+    return 0;
+  }
+
+  *out = view;
+  return 1;
+}
+
 internal CFM_Status
 cfm_acquire_locked(CFM_Context *ctx, CFM_Map *map, U64 segment_idx, CFM_Lease *lease_out)
 {

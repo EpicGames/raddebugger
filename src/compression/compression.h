@@ -73,6 +73,7 @@ typedef struct CMP_PackedSegment
 {
   U32 offset;
   U32 size;
+  U32 flags; // codec-defined segment flags
 } CMP_PackedSegment;
 
 typedef struct
@@ -99,6 +100,7 @@ typedef struct
   B32 (*matches        )(String8 encoded);
   B32 (*compressor_info)(String8 encoded, CMP_CompressorInfoUnpacked *info_out);
   B32 (*decode         )(CMP_Ctx *sdk, CMP_CompressorInfoUnpacked *compressor_info, Rng1U64 segment_range, String8 raw_file, String8 dst, String8 scratch);
+  B32 (*raw_view       )(String8 encoded, CMP_CompressorInfoUnpacked *compressor_info, Rng1U64 range, String8 *out);
 } CFM_Codec;
 
 ////////////////////////////////

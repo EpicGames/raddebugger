@@ -46,10 +46,17 @@ typedef struct RADCOBJ_Header
   RADCOBJ_CompressorInfo compressor;
 } RADCOBJ_Header;
 
+typedef uint32_t RADCOBJ_SegmentFlags;
+enum
+{
+  RADCOBJ_SegmentFlag_Uncompressed = (1u << 0),
+};
+
 typedef struct RADCOBJ_Segment
 {
   uint32_t offset;
-  uint32_t size;
+  uint32_t size; // stored payload size; raw segments have their exact logical size
+  RADCOBJ_SegmentFlags flags;
 } RADCOBJ_Segment;
 
 typedef struct RADCOBJ_TypesHeader
@@ -61,7 +68,7 @@ typedef struct RADCOBJ_TypesHeader
 typedef char RADCOBJ_HeaderSizeCheck[sizeof(RADCOBJ_Header) == 96 ? 1 : -1];
 typedef char RADCOBJ_HeaderCompressorOffsetCheck[offsetof(RADCOBJ_Header, compressor) == 72 ? 1 : -1];
 typedef char RADCOBJ_TypesHeaderSizeCheck[sizeof(RADCOBJ_TypesHeader) == 24 ? 1 : -1];
-typedef char RADCOBJ_SegmentSizeCheck[sizeof(RADCOBJ_Segment) == 8 ? 1 : -1];
+typedef char RADCOBJ_SegmentSizeCheck[sizeof(RADCOBJ_Segment) == 12 ? 1 : -1];
 
 #ifdef __cplusplus
 extern "C" {
@@ -81,6 +88,7 @@ const char *radcobj_validate(const void *data, uint64_t size, RADCOBJ_Header *he
 const char *radcobj_encode(struct CMP_Ctx *sdk, uint32_t segment_size, const void *raw, uint64_t raw_size, void **output, uint64_t *output_size, const RADCOBJ_Allocator *allocator);
 const char *radcobj_decode(struct CMP_Ctx *sdk, const void *data, uint64_t size, void *output, uint64_t output_capacity, const RADCOBJ_Allocator *allocator);
 const char *radcobj_decode_range(struct CMP_Ctx *sdk, const void *data, uint64_t size, uint64_t first_segment, uint64_t segment_count, void *output, uint64_t output_capacity, const RADCOBJ_Allocator *allocator);
+const char *radcobj_raw_view(const void *data, uint64_t size, uint64_t raw_offset, uint64_t raw_size, const void **output);
 
 #ifdef __cplusplus
 }

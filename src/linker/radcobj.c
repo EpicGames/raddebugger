@@ -73,12 +73,22 @@ radcobj_validate_segments(const void *data, uint64_t size, const RADCOBJ_Header 
   for (uint64_t i = first; i < first + count; i += 1) {
     RADCOBJ_Segment segment;
     MemoryCopy(&segment, bytes + sizeof(*header) + i * sizeof(segment), sizeof(segment));
+    if (segment.flags & ~RADCOBJ_SegmentFlag_Uncompressed) {
+      return "unsupported segment flags";
+    }
+
+    U64 raw_size = Min(header->compressor.segment_size, header->compressor.raw_size - i * header->compressor.segment_size);
+    if ((segment.flags & RADCOBJ_SegmentFlag_Uncompressed) && segment.size != raw_size) {
+      return "uncompressed segment size does not match its logical size";
+    }
+
     if (segment.size == 0              ||
         segment.offset < directory_end ||
         segment.offset > size          ||
         segment.size > size - segment.offset) {
       return "segment payload is empty or out of bounds";
     }
+
     for (unsigned dir_idx = 0; dir_idx < RADCOBJ_DirectoryKind_Count; dir_idx += 1) {
       RADCOBJ_Directory dir = header->dirs[dir_idx];
       if (dir.size && segment.offset < (U64)dir.offset + dir.size && dir.offset < (U64)segment.offset + segment.size) {
@@ -306,10 +316,14 @@ radcobj_encode(CMP_Ctx *cmp, uint32_t segment_size, const void *raw, uint64_t ra
       error = "failed to size encoded segment";
       goto exit;
     }
+
+    // raw payloads are 8-byte aligned; full raw segments remain contiguous
+    full_bound = Max(full_bound, (U64)segment_size + 7);
     if (full_bound > (max_U32 - capacity) / full_count) {
       error = "encoded object exceeds the format size limit";
       goto exit;
     }
+    
     capacity += full_count * full_bound;
   }
 
@@ -319,6 +333,7 @@ radcobj_encode(CMP_Ctx *cmp, uint32_t segment_size, const void *raw, uint64_t ra
       error = "failed to size encoded tail segment";
       goto exit;
     }
+    tail_bound = Max(tail_bound, tail_size + 7);
     if (tail_bound > max_U32 - capacity) {
       error = "encoded object exceeds the format size limit";
       goto exit;
@@ -375,9 +390,15 @@ radcobj_encode(CMP_Ctx *cmp, uint32_t segment_size, const void *raw, uint64_t ra
       goto exit;
     }
 
-    RADCOBJ_Segment segment = { (U32)cursor, (U32)encode_size };
+    RADCOBJ_Segment segment = { (U32)cursor, (U32)encode_size, 0 };
+    if (encode_size >= src_size) {
+      U64 raw_cursor = AlignPow2(cursor, 8);
+      MemoryZero(output + cursor, raw_cursor - cursor);
+      MemoryCopy(output + raw_cursor, src.str, src.size);
+      segment = (RADCOBJ_Segment){ (U32)raw_cursor, (U32)src_size, RADCOBJ_SegmentFlag_Uncompressed };
+    }
     MemoryCopy(output + sizeof(RADCOBJ_Header) + segment_idx*sizeof(segment), &segment, sizeof(segment));
-    cursor += encode_size;
+    cursor = (U64)segment.offset + segment.size;
   }
 
   MemoryCopy(&header.magic, RADCOBJ_MAGIC, sizeof(header.magic));
@@ -412,10 +433,6 @@ radcobj_decode_range_from_header(CMP_Ctx *cmp, const void *data, uint64_t size, 
   if (!cmp) { cmp = &static_sdk; }
 #endif
 
-  if (cmp == NULL || cmp->sdk_type != header->compressor.sdk_type) {
-    return "compression SDK does not match the object";
-  }
-
   if (output_capacity > SIZE_MAX) {
     return "decode output capacity exceeds the address-space limit";
   }
@@ -438,21 +455,8 @@ radcobj_decode_range_from_header(CMP_Ctx *cmp, const void *data, uint64_t size, 
   if (raw_size && overlaps) {
     return "decode input and output overlap";
   }
-  if (allocator == NULL || allocator->alloc == NULL || allocator->free == NULL) {
-    return "invalid decoder scratch allocator";
-  }
 
-  U64 scratch_size = cmp_scratch(cmp, header->compressor.segment_size);
-  if (scratch_size == 0 || scratch_size > SIZE_MAX) {
-    return "failed to size decoder scratch";
-  }
-
-  U8 *scratch_memory = allocator->alloc(allocator->user, (size_t)scratch_size);
-  if (scratch_memory == NULL) {
-    return "failed to allocate decoder scratch";
-  }
-
-  String8 scratch = { scratch_memory, scratch_size };
+  String8 scratch = {0};
   const U8 *bytes = data;
   for (U64 i = first; i < first + count; i += 1) {
     RADCOBJ_Segment segment;
@@ -462,13 +466,39 @@ radcobj_decode_range_from_header(CMP_Ctx *cmp, const void *data, uint64_t size, 
     U64     segment_size = Min(header->compressor.segment_size, header->compressor.raw_size - raw_offset);
     String8 src          = { (U8 *)bytes + segment.offset, segment.size };
     String8 dst          = { (U8 *)output + (raw_offset - first_offset), segment_size };
-    if ( ! cmp_decode(cmp, src, dst, scratch)) {
-      error = "failed to decode RADCOBJ segment";
-      break;
+    if (segment.flags & RADCOBJ_SegmentFlag_Uncompressed) {
+      MemoryCopy(dst.str, src.str, dst.size);
+    } else {
+      // raw-only ranges need neither an SDK context nor a scratch allocator
+      if (scratch.str == NULL) {
+        if (cmp == NULL || cmp->sdk_type != header->compressor.sdk_type) {
+          error = "compression SDK does not match the object";
+          break;
+        }
+        if (allocator == NULL || allocator->alloc == NULL || allocator->free == NULL) {
+          error = "invalid decoder scratch allocator";
+          break;
+        }
+        U64 scratch_size = cmp_scratch(cmp, header->compressor.segment_size);
+        if (scratch_size == 0 || scratch_size > SIZE_MAX) {
+          error = "failed to size decoder scratch";
+          break;
+        }
+        scratch.str = allocator->alloc(allocator->user, (size_t)scratch_size);
+        if (scratch.str == NULL) {
+          error = "failed to allocate decoder scratch";
+          break;
+        }
+        scratch.size = scratch_size;
+      }
+      if ( ! cmp_decode(cmp, src, dst, scratch)) {
+        error = "failed to decode RADCOBJ segment";
+        break;
+      }
     }
   }
 
-  allocator->free(allocator->user, scratch_memory);
+  if (scratch.str) { allocator->free(allocator->user, scratch.str); }
   return error;
 }
 
@@ -488,5 +518,49 @@ radcobj_decode(CMP_Ctx *cmp, const void *data, uint64_t size, void *output, uint
   const char *error = radcobj_validate_header(data, size, &header);
   if (error) { return error; }
   return radcobj_decode_range_from_header(cmp, data, size, &header, 0, header.compressor.segment_count, output, output_capacity, allocator);
+}
+
+const char *
+radcobj_raw_view(const void *data, uint64_t size, uint64_t raw_offset, uint64_t raw_size, const void **output)
+{
+  if (output == NULL) { return "invalid raw view output pointer"; }
+  *output = NULL;
+
+  RADCOBJ_Header header;
+  const char *error = radcobj_validate_header(data, size, &header);
+  if (error) {
+    return error;
+  }
+  if (raw_offset > header.compressor.raw_size || raw_size > header.compressor.raw_size - raw_offset) {
+    return "raw view range is out of bounds";
+  }
+  if (raw_size == 0) { return 0; }
+
+  U64 first = raw_offset / header.compressor.segment_size;
+  U64 last  = (raw_offset + raw_size - 1) / header.compressor.segment_size;
+  error = radcobj_validate_segments(data, size, &header, first, last - first + 1);
+  if (error) { return error; }
+
+  U64 view_offset = 0;
+  U64 previous_end = 0;
+  for (U64 i = first; i <= last; i += 1) {
+    RADCOBJ_Segment segment;
+    MemoryCopy(&segment, (const U8 *)data + sizeof(header) + i * sizeof(segment), sizeof(segment));
+
+    if ( ! (segment.flags & RADCOBJ_SegmentFlag_Uncompressed)) {
+      return "raw view includes a compressed segment";
+    }
+    if (i != first && segment.offset != previous_end) {
+      return "raw view segments are not contiguous";
+    }
+    if (i == first) {
+      view_offset = segment.offset + raw_offset % header.compressor.segment_size;
+    }
+
+    previous_end = (U64)segment.offset + segment.size;
+  }
+
+  *output = (const U8 *)data + view_offset;
+  return 0;
 }
 

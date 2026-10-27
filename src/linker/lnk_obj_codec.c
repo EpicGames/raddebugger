@@ -100,14 +100,20 @@ lnk_obj_codec_matches(String8 encoded)
 internal B32
 lnk_obj_codec_compressor_info(String8 encoded, CMP_CompressorInfoUnpacked *info_out)
 {
+  StaticAssert(sizeof(CMP_PackedSegment) == sizeof(RADCOBJ_Segment), radcobj_segment_layout);
+  StaticAssert(OffsetOf(CMP_PackedSegment, flags) == OffsetOf(RADCOBJ_Segment, flags), radcobj_segment_flags_layout);
+
   MemoryZeroStruct(info_out);
+
   RADCOBJ_Header header;
   if (radcobj_validate(encoded.str, encoded.size, &header)) { return 0; }
+
   info_out->v.raw_size      = header.compressor.raw_size;
   info_out->v.segment_count = header.compressor.segment_count;
   info_out->v.segment_size  = header.compressor.segment_size;
   info_out->v.sdk_type      = header.compressor.sdk_type;
-  info_out->segments = (CMP_PackedSegment *)(encoded.str + sizeof(header));
+  info_out->segments        = (CMP_PackedSegment *)(encoded.str + sizeof(header));
+
   return 1;
 }
 
@@ -125,6 +131,23 @@ lnk_obj_codec_decode(CMP_Ctx *sdk, CMP_CompressorInfoUnpacked *compressor_info, 
   return radcobj_decode_range(sdk, encoded.str, encoded.size, range.min, dim_1u64(range), dst.str, dst.size, &allocator) == 0;
 }
 
+internal B32
+lnk_obj_codec_raw_view(String8 encoded, CMP_CompressorInfoUnpacked *compressor_info, Rng1U64 range, String8 *out)
+{
+  *out = str8_zero();
+  if (range.min > range.max) {
+    return 0;
+  }
+
+  const void *view = 0;
+  if (radcobj_raw_view(encoded.str, encoded.size, range.min, range.max - range.min, &view)) {
+    return 0;
+  }
+
+  *out = str8((U8 *)view, range.max - range.min);
+  return 1;
+}
+
 internal CFM_Codec *
 lnk_cobj_codec(void)
 {
@@ -132,6 +155,7 @@ lnk_cobj_codec(void)
     .matches         = lnk_obj_codec_matches,
     .compressor_info = lnk_obj_codec_compressor_info,
     .decode          = lnk_obj_codec_decode,
+    .raw_view        = lnk_obj_codec_raw_view,
   };
   return &result;
 }
