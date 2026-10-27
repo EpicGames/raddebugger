@@ -1,6 +1,203 @@
 // Copyright (c) Epic Games Tools
 // Licensed under the MIT license (https://opensource.org/license/mit/)
 
+internal D2R_ConvertParams
+d2r_test_location_params(Arena *arena, String8 frame_base, String8 location)
+{
+  // One DWARF 5 unit containing a base type, a procedure with a frame base,
+  // and a local variable. All abbreviation operands fit in one ULEB128 byte.
+  U8 abbrev[] =
+  {
+    1, DW_TagKind_CompileUnit, 1,
+    DW_AttribKind_Name, DW_FormKind_String,
+    DW_AttribKind_Language, DW_FormKind_Data2,
+    DW_AttribKind_LowPc, DW_FormKind_Addr,
+    DW_AttribKind_HighPc, DW_FormKind_Data4,
+    DW_AttribKind_StmtList, DW_FormKind_SecOffset, 0, 0,
+    2, DW_TagKind_BaseType, 0,
+    DW_AttribKind_Name, DW_FormKind_String,
+    DW_AttribKind_Encoding, DW_FormKind_Data1,
+    DW_AttribKind_ByteSize, DW_FormKind_Data1, 0, 0,
+    3, DW_TagKind_SubProgram, 1,
+    DW_AttribKind_Name, DW_FormKind_String,
+    DW_AttribKind_LowPc, DW_FormKind_Addr,
+    DW_AttribKind_HighPc, DW_FormKind_Data4,
+    DW_AttribKind_FrameBase, DW_FormKind_ExprLoc, 0, 0,
+    4, DW_TagKind_Variable, 0,
+    DW_AttribKind_Name, DW_FormKind_String,
+    DW_AttribKind_Type, DW_FormKind_Ref4,
+    DW_AttribKind_Location, DW_FormKind_ExprLoc, 0, 0,
+    0,
+  };
+  Assert(frame_base.size < 128 && location.size < 128);
+  String8List info = {0};
+  str8_serial_begin(arena, &info);
+  U32 *info_size = str8_serial_push_u32(arena, &info, 0);
+  str8_serial_push_u16(arena, &info, 5);
+  str8_serial_push_u8(arena, &info, DW_CompUnitKind_Compile);
+  str8_serial_push_u8(arena, &info, 8);
+  str8_serial_push_u32(arena, &info, 0);
+  str8_serial_push_u8(arena, &info, 1);
+  str8_serial_push_cstr(arena, &info, s("locations.c"));
+  str8_serial_push_u16(arena, &info, DW_Language_C);
+  str8_serial_push_u64(arena, &info, 0x400000);
+  str8_serial_push_u32(arena, &info, 0x1000);
+  str8_serial_push_u32(arena, &info, 0);
+  U32 type_off = (U32)info.total_size;
+  str8_serial_push_u8(arena, &info, 2);
+  str8_serial_push_cstr(arena, &info, s("unsigned long long"));
+  str8_serial_push_u8(arena, &info, DW_ATE_Unsigned);
+  str8_serial_push_u8(arena, &info, 8);
+  str8_serial_push_u8(arena, &info, 3);
+  str8_serial_push_cstr(arena, &info, s("procedure"));
+  str8_serial_push_u64(arena, &info, 0x400100);
+  str8_serial_push_u32(arena, &info, 0x40);
+  str8_serial_push_u8(arena, &info, (U8)frame_base.size);
+  str8_serial_push_string(arena, &info, frame_base);
+  str8_serial_push_u8(arena, &info, 4);
+  str8_serial_push_cstr(arena, &info, s("local"));
+  str8_serial_push_u32(arena, &info, type_off);
+  str8_serial_push_u8(arena, &info, (U8)location.size);
+  str8_serial_push_string(arena, &info, location);
+  str8_serial_push_u8(arena, &info, 0);
+  str8_serial_push_u8(arena, &info, 0);
+  *info_size = (U32)info.total_size - 4;
+
+  // A minimal line table with one directory, one file, and an empty sequence.
+  U8 line_header[] =
+  {
+    1, 1, 1, 0, 1, 1, // instruction lengths, is_stmt, line_base/range, opcode_base
+    1, DW_LNCT_Path, DW_FormKind_String, 1, '.', 0,
+    1, DW_LNCT_Path, DW_FormKind_String, 1, 'l', 'o', 'c', 'a', 't', 'i', 'o', 'n', 's', '.', 'c', 0,
+  };
+  U8 line_program[] = {0, 1, DW_ExtOpcode_EndSequence};
+  String8List line = {0};
+  str8_serial_begin(arena, &line);
+  str8_serial_push_u32(arena, &line, 8 + sizeof(line_header) + sizeof(line_program));
+  str8_serial_push_u16(arena, &line, 5);
+  str8_serial_push_u8(arena, &line, 8);
+  str8_serial_push_u8(arena, &line, 0);
+  str8_serial_push_u32(arena, &line, sizeof(line_header));
+  str8_serial_push_array(arena, &line, line_header, ArrayCount(line_header));
+  str8_serial_push_array(arena, &line, line_program, ArrayCount(line_program));
+
+  D2R_ConvertParams params = {0};
+  params.arch = Arch_x64;
+  params.base_vaddr = 0x400000;
+  params.exe_name = s("locations");
+  params.path_style = PathStyle_UnixAbsolute;
+  params.subset_flags = RDIM_SubsetFlag_All;
+  params.deterministic = 1;
+  params.raw.sec[DW_SectionKind_Abbrev].data = str8_copy(arena, str8(abbrev, sizeof(abbrev)));
+  params.raw.sec[DW_SectionKind_Info].data = str8_serial_end(arena, &info);
+  params.raw.sec[DW_SectionKind_Line].data = str8_serial_end(arena, &line);
+  RDIM_BinarySection *section = rdim_binary_section_list_push(arena, &params.binary_sections);
+  section->name = s(".text");
+  section->voff_opl = 0x1000;
+  return params;
+}
+
+Test(d2r_location_kinds)
+{
+  struct
+  {
+    String8 name;
+    String8 expr;
+    RDI_LocationKind kind;
+    RDI_EvalOp required_op;
+  }
+  cases[] =
+  {
+    {s("constant address"),       s("\x10\x80\x20"),                     RDI_LocationKind_AddrBytecodeStream},
+    {s("constant value"),         s("\x10\x80\x20\x9f"),                 RDI_LocationKind_ValBytecodeStream},
+    {s("literal address"),        s("\x31"),                             RDI_LocationKind_AddrBytecodeStream},
+    {s("literal value"),          s("\x31\x9f"),                         RDI_LocationKind_ValBytecodeStream},
+    {s("breg address"),           s("\x76\x00"),                         RDI_LocationKind_AddrBytecodeStream},
+    {s("breg value"),             s("\x76\x00\x9f"),                     RDI_LocationKind_ValReg},
+    {s("breg offset address"),    s("\x76\x70"),                         RDI_LocationKind_AddrRegPlusOff},
+    {s("breg offset value"),      s("\x76\x70\x9f"),                     RDI_LocationKind_ValBytecodeStream},
+    {s("bregx address"),          s("\x92\x06\x00"),                     RDI_LocationKind_AddrBytecodeStream},
+    {s("bregx value"),            s("\x92\x06\x00\x9f"),                 RDI_LocationKind_ValReg},
+    {s("fbreg address"),          s("\x91\x78\x23\x01"),                 RDI_LocationKind_AddrBytecodeStream},
+    {s("fbreg value"),            s("\x91\x78\x23\x01\x9f"),             RDI_LocationKind_ValBytecodeStream},
+    {s("CFA address"),            s("\x9c"),                             RDI_LocationKind_AddrBytecodeStream},
+    {s("CFA value"),              s("\x9c\x9f"),                         RDI_LocationKind_ValBytecodeStream},
+    {s("arithmetic address"),     s("\x31\x32\x22"),                     RDI_LocationKind_AddrBytecodeStream},
+    {s("arithmetic value"),       s("\x31\x32\x22\x9f"),                 RDI_LocationKind_ValBytecodeStream},
+    {s("plus_uconst address"),    s("\x76\x00\x23\x01"),                 RDI_LocationKind_AddrBytecodeStream},
+    {s("plus_uconst value"),      s("\x76\x00\x23\x01\x9f"),             RDI_LocationKind_ValBytecodeStream},
+    {s("deref address"),          s("\x76\x00\x06"),                     RDI_LocationKind_AddrBytecodeStream, RDI_EvalOp_MemRead},
+    {s("deref value"),            s("\x76\x00\x06\x9f"),                 RDI_LocationKind_ValBytecodeStream,  RDI_EvalOp_MemRead},
+    {s("deref_size address"),     s("\x76\x00\x94\x04"),                 RDI_LocationKind_AddrBytecodeStream, RDI_EvalOp_MemRead},
+    {s("deref_size value"),       s("\x76\x00\x94\x04\x9f"),             RDI_LocationKind_ValBytecodeStream,  RDI_EvalOp_MemRead},
+    {s("module address"),        s("\x03\x00\x10\x40\x00\x00\x00\x00\x00"), RDI_LocationKind_ModuleOff},
+    {s("module value"),          s("\x03\x00\x10\x40\x00\x00\x00\x00\x00\x9f"), RDI_LocationKind_ValBytecodeStream},
+    {s("module add address"),    s("\x03\x00\x10\x40\x00\x00\x00\x00\x00\x31\x22"), RDI_LocationKind_ModuleOff},
+    {s("module add value"),      s("\x03\x00\x10\x40\x00\x00\x00\x00\x00\x31\x22\x9f"), RDI_LocationKind_ValBytecodeStream},
+    {s("reverse add address"),   s("\x31\x03\x00\x10\x40\x00\x00\x00\x00\x00\x22"), RDI_LocationKind_ModuleOff},
+    {s("reverse add value"),     s("\x31\x03\x00\x10\x40\x00\x00\x00\x00\x00\x22\x9f"), RDI_LocationKind_ValBytecodeStream},
+    {s("TLS address"),           s("\x10\x10\x9b"),                     RDI_LocationKind_TLSOff},
+    {s("TLS value"),             s("\x10\x10\x9b\x9f"),                 RDI_LocationKind_ValBytecodeStream},
+    {s("register location"),     s("\x56"),                             RDI_LocationKind_ValReg},
+    {s("regx location"),         s("\x90\x06"),                         RDI_LocationKind_ValReg},
+    {s("implicit value"),        s("\x9e\x04\x78\x56\x34\x12"),         RDI_LocationKind_ValBytecodeStream},
+    // Keep composition operations following a terminated simple expression.
+    // Their execution is not implemented yet; do not turn them into a value.
+    {s("stack value piece"),     s("\x31\x9f\x93\x08"),                 RDI_LocationKind_NULL, RDI_EvalOp_PartialValue},
+    {s("stack value bit piece"), s("\x31\x9f\x9d\x40\x00"),             RDI_LocationKind_NULL, RDI_EvalOp_PartialValueBit},
+  };
+  String8 frame_bases[] =
+  {
+    s("\x9c"),     // CFA
+    s("\x56"),     // register location
+    s("\x76\x70"), // register + signed offset (also exercises compact frame bases)
+    s("\x10\x80\x40\x9f"), // constant stack value
+    s("\x03\x00\x10\x40\x00\x00\x00\x00\x00\x9f"), // module-based stack value
+  };
+  for EachElement(frame_idx, frame_bases)
+  {
+    for EachElement(case_idx, cases)
+    {
+      test_outf("frame base %I64u, %S\n", frame_idx, cases[case_idx].name);
+      Arena *convert_arena = arena_alloc();
+      D2R_ConvertParams params = d2r_test_location_params(convert_arena, frame_bases[frame_idx], cases[case_idx].expr);
+      U64 broadcast_memory = 0;
+      Barrier barrier = barrier_alloc(1);
+      LaneCtx restore_lane_ctx = tctx_set_lane_ctx((LaneCtx){.lane_count = 1, .barrier = barrier, .broadcast_memory = &broadcast_memory});
+      RDIM_BakeParams converted = d2r_convert(convert_arena, &params);
+      tctx_set_lane_ctx(restore_lane_ctx);
+      barrier_release(barrier);
+      TestCheck(converted.units.total_count == 1);
+      RDIM_Unit *unit = &converted.units.first->v[0];
+      TestCheck(unit->procedures.total_count == 1);
+      RDIM_Symbol *procedure = &unit->procedures.first->v[0];
+      TestCheck(procedure->location_cases.count == 1);
+      TestCheck(procedure->root_scope != 0);
+      RDIM_SymbolChunkList *locals = &procedure->root_scope->locals;
+      RDIM_SymbolChunkList *variables = locals->total_count ? locals : &unit->thread_variables;
+      TestCheck(variables->total_count == 1);
+      RDIM_Symbol *variable = &variables->first->v[0];
+      TestCheck(variable->location_cases.count == 1);
+      RDIM_Location *location = &variable->location_cases.first->location;
+      if(cases[case_idx].kind != RDI_LocationKind_NULL)
+      {
+        test_outf("location kind: got %u, expected %u\n", location->kind, cases[case_idx].kind);
+        TestCheck(location->kind == cases[case_idx].kind);
+      }
+      if(cases[case_idx].required_op != 0)
+      {
+        U64 matches = 0;
+        for EachNode(op, RDIM_EvalBytecodeOp, location->bytecode.first_op)
+        {
+          matches += (op->op == cases[case_idx].required_op);
+        }
+        TestCheck(matches == 1);
+      }
+      arena_release(convert_arena);
+    }
+  }
+}
+
 SkippedTest(d2r_regressions)
 {
   String8 radbin_path = test_build_exe_path(arena, s("radbin"));
