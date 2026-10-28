@@ -5,6 +5,7 @@
 //~ rjf: Generated Code
 
 #include "window_manager/generated/window_manager.meta.c"
+#include <stdio.h>
 
 ////////////////////////////////
 //~ rjf: Handle Type Helpers
@@ -121,8 +122,8 @@ wm_codepoint_from_modifiers_and_key(WM_Modifiers modifiers, WM_Key key)
     {'"', WM_Key_Quote, WM_Modifier_Shift},
     {'.', WM_Key_Period, 0},
     {',', WM_Key_Comma, 0},
-    {'<', WM_Key_Period, WM_Modifier_Shift},
-    {'>', WM_Key_Comma, WM_Modifier_Shift},
+    {'<', WM_Key_Comma, WM_Modifier_Shift},
+    {'>', WM_Key_Period, WM_Modifier_Shift},
     {'/', WM_Key_Slash, 0},
     {'?', WM_Key_Slash, WM_Modifier_Shift},
     {'a', WM_Key_A, 0},
