@@ -1778,13 +1778,25 @@ lnk_fixup_cv_type_indices(LNK_MergedTypes *ctx, U32 obj_idx, String8 data, CV_Ty
       lnk_error_obj(LNK_Error_CvIllSymbolData, ctx->input->obj_arr[obj_idx], "type index outside debug record");
       continue;
     }
-    CV_TypeIndex  ti     = memory_read32(ti_ptr);
+
+    CV_TypeIndex ti = memory_read32(ti_ptr);
 
     // skip basic types
     if (ti < ctx->input->min_type_indices[n->source]) { continue; }
 
-    LNK_LeafRef  leaf_ref = lnk_leaf_ref_from_ti(ctx->input, obj_idx, n->source, ti);
-    CV_TypeIndex final_ti = lnk_assigned_ti_hash_search(&ctx->assigned_ti_arr[n->source], ctx->input, leaf_ref);
+    CV_TypeIndex final_ti = 0;
+    {
+      CV_DebugT *debug_t = ctx->input->debug_t_arr + obj_idx;
+      if (ti >= debug_t->ti_ranges[n->source].max) {
+        Temp scratch = scratch_begin(0,0);
+        lnk_error_obj(LNK_Error_InvalidTypeIndex, ctx->input->obj_arr[obj_idx], "%S", push_str8f(scratch.arena, "out of bounds type index 0x%x", ti));
+        scratch_end(scratch);
+      } else {
+        LNK_LeafRef leaf_ref = lnk_leaf_ref_from_ti(ctx->input, obj_idx, n->source, ti);
+        final_ti = lnk_assigned_ti_hash_search(&ctx->assigned_ti_arr[n->source], ctx->input, leaf_ref);
+      }
+    }
+
     memory_write32(ti_ptr, final_ti);
 
 #if LNK_PARANOID
