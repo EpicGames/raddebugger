@@ -284,6 +284,15 @@ THREAD_POOL_TASK_FUNC(lnk_obj_initer)
             }
           }
         }
+      } else if (interp == COFF_SymbolValueInterp_Weak) {
+        if (symbol.aux_symbol_count == 0) {
+          lnk_error_input_obj(LNK_Error_IllData, input, "weak symbol %S (No. 0x%x) is missing auxiliary symbol", symbol.name, symbol_idx);
+        } else {
+          COFF_SymbolWeakExt *ext = coff_parse_weak_tag(symbol, header.is_big_obj);
+          if (ext->tag_index >= header.symbol_count) {
+            lnk_error_input_obj(LNK_Error_IllData, input, "out of bounds tag index 0x%x on weak symbol %S (No. 0x%x)", ext->tag_index, symbol.name, symbol_idx);
+          }
+        }
       }
     }
     while (next_block < symbol_block_count) {
