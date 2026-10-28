@@ -299,7 +299,26 @@ cfm_worker(void *raw_ctx)
 
     // replace placeholder segment with decoded data
     ProfBegin("CFM map decoded");
-    void *target         = job.map->data.str + job.segment->index * job.map->compressor_info.v.segment_size;
+    void *target = job.map->data.str + job.segment->index * job.map->compressor_info.v.segment_size;
+
+    // first decode of this segment: carve its placeholder out of the map's reservation.
+    // this worker is the segment's sole owner until it goes live, so its bit is only read
+    // and set by the owner; the set happens under carve_mutex, which also serializes the
+    // splits (the kernel fails concurrent splits of the same placeholder) and keeps
+    // neighbouring bits written by other workers from racing on the same word
+    if ( ! bit_array_get_bit32(job.map->carved, job.segment->index)) {
+      ProfBegin("CFM carve placeholder");
+      B32 is_carved = 0;
+      MutexScope(ctx->carve_mutex) {
+        is_carved = carve_memory_placeholder(target, job.map->compressor_info.v.segment_size);
+        if (is_carved) {
+          bit_array_set_bit32(job.map->carved, job.segment->index, 1);
+        }
+      }
+      ProfEnd();
+      AssertAlways(is_carved); // TODO: handle failed placeholder split
+    }
+
     void *replace_result = shared_memory_view_replace_placeholder(job.segment->memory, target, r1u64(0, job.map->compressor_info.v.segment_size), AccessFlag_Read);
     if (target != replace_result) {
       // TODO: handle failed placeholder replace
@@ -345,6 +364,7 @@ cfm_alloc(U64        cache_cap,
   MemoryCopyArray(ctx->sdk_paths, sdk_paths);
   ctx->arena          = arena;
   ctx->mutex          = rw_mutex_alloc();
+  ctx->carve_mutex    = mutex_alloc();
   ctx->work           = cond_var_alloc();
   ctx->workers_ctxs   = push_array(arena, CFM_Worker, worker_count);
 
@@ -472,114 +492,119 @@ cfm_map_address_is_before(void *a, void *b)
   return IntFromPtr(map_a->data.str) < IntFromPtr(map_b->data.str);
 }
 
-internal CFM_Map **
-cfm_map_open_batch(Arena *arena, CFM_Context *ctx, U64 file_count, File *files, CFM_Status *out_status)
+internal CFM_Status
+cfm_map_prepare(CFM_Context *ctx, File file, CFM_Map **out)
 {
-  Temp scratch = scratch_begin(&arena, 1);
+  CFM_Status status = CFM_Unknown;
+  *out = 0;
 
-  CFM_Map **result = push_array(arena, CFM_Map *, file_count);
-  CFM_Map **batch  = push_array(scratch.arena, CFM_Map *, file_count);
-  U64 batch_count = 0;
-
-  for EachIndex(file_idx, file_count) {
-    File file = files[file_idx];
-
-    // open file
-    FileMap storage = file_map_open(AccessFlag_Read, file);
-    if (MemoryIsZeroStruct(&storage)) {
-      out_status[file_idx] = CFM_Unknown;
-      goto close_storage;
-    }
-
-    // create file view
-    FileProperties file_props = properties_from_file(file);
-    void *file_view = file_map_view_open(storage, AccessFlag_Read, r1u64(0, file_props.size));
-    if (file_view == NULL) {
-      out_status[file_idx] = CFM_MapFailure;
-      goto close_storage;
-    }
-    String8 file_raw = str8(file_view, file_props.size);
-
-    // infer CFM codec from file view
-    CFM_Codec *codec = 0;
-    for EachIndex(codec_idx, ctx->codecs_count) {
-      CFM_Codec *candidate = ctx->codecs + codec_idx;
-      if (candidate->matches(file_raw)) {
-        codec = candidate;
-        break;
-      }
-    }
-    if (codec == 0) {
-      out_status[file_idx] = CFM_InvalidFormat;
-      goto close_view;
-    }
-
-    // unpack compressor info
-    CMP_CompressorInfoUnpacked compressor_info = {0};
-    B32 is_compressor_ok = codec->compressor_info(file_raw, &compressor_info);
-    if ( ! is_compressor_ok) {
-      out_status[file_idx] = CFM_InvalidFormat;
-      goto close_view;
-    }
-
-    // verify segment size
-    if (compressor_info.v.segment_size == 0 || ( ! IsPow2(compressor_info.v.segment_size))) {
-      out_status[file_idx] = CFM_InvalidFormat;
-      goto close_view;
-    }
-    if (ins_atomic_u32_eval(&ctx->first_segment_size) == 0) {
-      ins_atomic_u32_eval_assign(&ctx->first_segment_size, compressor_info.v.segment_size);
-    }
-    if (ctx->first_segment_size != compressor_info.v.segment_size) {
-      out_status[file_idx] = CFM_MixedSegmentSizes;
-      goto close_view;
-    }
-    if (compressor_info.v.segment_size > ctx->cache_cap) {
-      out_status[file_idx] = CFM_OutOfMemory;
-      goto close_view;
-    }
-
-    U64 granularity = get_system_info()->allocation_granularity;
-    AssertAlways(compressor_info.v.segment_size % granularity == 0); // TODO: error handling
-
-    // reserve placeholder segments for the decompressed file
-    ProfMsg("CFM map raw=%llu encoded=%llu segments=%llu segment_size=%u", compressor_info.v.raw_size, file_raw.size, compressor_info.v.segment_count, compressor_info.v.segment_size);
-    U64      placeholders_size = compressor_info.v.segment_count * compressor_info.v.segment_size;
-    void    *placeholders_ptr  = reserve_memory_placeholders(placeholders_size, compressor_info.v.segment_size);
-    String8  placeholders_data = str8(placeholders_ptr, placeholders_size);
-    AssertAlways(placeholders_ptr); // TODO: error handling
-
-    MutexScopeW(ctx->mutex) {
-      CFM_MapNode *map_node = ctx->free_maps;
-      if (map_node) { SLLStackPop(ctx->free_maps);                       }
-      else          { map_node = push_array(ctx->arena, CFM_MapNode, 1); }
-      MemoryZeroStruct(map_node);
-
-      CFM_Map *map = &map_node->v;
-      map->context         = ctx;
-      map->storage         = storage;
-      map->encoded         = file_raw;
-      map->codec           = codec;
-      map->reserve_size    = placeholders_size;
-      map->data            = placeholders_data;
-      map->compressor_info = compressor_info;
-
-      result[file_idx]     = map;
-      batch[batch_count++] = map;
-      out_status[file_idx] = CFM_Ok;
-    }
-
-    continue;
-
-    close_view:;
-    file_map_view_close(storage, file_view, r1u64(0, file_props.size));
-    close_storage:;
-    file_map_close(storage);
+  // open file
+  FileMap storage = file_map_open(AccessFlag_Read, file);
+  if (MemoryIsZeroStruct(&storage)) {
+    status = CFM_Unknown;
+    goto close_storage;
   }
+
+  // create file view
+  ProfBegin("CFM prepare: view");
+  FileProperties file_props = properties_from_file(file);
+  void *file_view = file_map_view_open(storage, AccessFlag_Read, r1u64(0, file_props.size));
+  ProfEnd();
+  if (file_view == NULL) {
+    status = CFM_MapFailure;
+    goto close_storage;
+  }
+  String8 file_raw = str8(file_view, file_props.size);
+
+  // infer CFM codec from file view
+  CFM_Codec *codec = 0;
+  for EachIndex(codec_idx, ctx->codecs_count) {
+    CFM_Codec *candidate = ctx->codecs + codec_idx;
+    if (candidate->matches(file_raw)) {
+      codec = candidate;
+      break;
+    }
+  }
+  if (codec == 0) {
+    status = CFM_InvalidFormat;
+    goto close_view;
+  }
+
+  // unpack compressor info
+  ProfBegin("CFM prepare: validate");
+  CMP_CompressorInfoUnpacked compressor_info = {0};
+  B32 is_compressor_ok = codec->compressor_info(file_raw, &compressor_info);
+  ProfEnd();
+  if ( ! is_compressor_ok) {
+    status = CFM_InvalidFormat;
+    goto close_view;
+  }
+
+  // verify segment size
+  if (compressor_info.v.segment_size == 0 || ( ! IsPow2(compressor_info.v.segment_size))) {
+    status = CFM_InvalidFormat;
+    goto close_view;
+  }
+  ins_atomic_u64_eval_cond_assign(&ctx->first_segment_size, compressor_info.v.segment_size, 0);
+  if (ins_atomic_u64_eval(&ctx->first_segment_size) != compressor_info.v.segment_size) {
+    status = CFM_MixedSegmentSizes;
+    goto close_view;
+  }
+  if (compressor_info.v.segment_size > ctx->cache_cap) {
+    status = CFM_OutOfMemory;
+    goto close_view;
+  }
+
+  U64 granularity = get_system_info()->allocation_granularity;
+  AssertAlways(compressor_info.v.segment_size % granularity == 0); // TODO: error handling
+
+  // reserve the decompressed file's address range as a single placeholder; segments are
+  // carved out of it on first decode (each split is a serialized kernel call, and only a
+  // fraction of segments is ever touched)
+  ProfMsg("CFM map raw=%llu encoded=%llu segments=%llu segment_size=%u", compressor_info.v.raw_size, file_raw.size, compressor_info.v.segment_count, compressor_info.v.segment_size);
+  U64      placeholders_size = compressor_info.v.segment_count * compressor_info.v.segment_size;
+  ProfBegin("CFM prepare: reserve placeholders");
+  void    *placeholders_ptr  = reserve_memory_placeholders(placeholders_size, placeholders_size);
+  ProfEnd();
+  String8  placeholders_data = str8(placeholders_ptr, placeholders_size);
+  AssertAlways(placeholders_ptr); // TODO: error handling
+
+  MutexScopeW(ctx->mutex) {
+    CFM_MapNode *map_node = ctx->free_maps;
+    if (map_node) { SLLStackPop(ctx->free_maps);                       }
+    else          { map_node = push_array(ctx->arena, CFM_MapNode, 1); }
+    MemoryZeroStruct(map_node);
+
+    CFM_Map *map = &map_node->v;
+    map->context         = ctx;
+    map->storage         = storage;
+    map->encoded         = file_raw;
+    map->codec           = codec;
+    map->reserve_size    = placeholders_size;
+    map->data            = placeholders_data;
+    map->carved          = bit_array_init32(ctx->arena, compressor_info.v.segment_count);
+    map->compressor_info = compressor_info;
+
+    *out = map;
+  }
+
+  return CFM_Ok;
+
+  close_view:;
+  file_map_view_close(storage, file_view, r1u64(0, file_props.size));
+  close_storage:;
+  file_map_close(storage);
+  return status;
+}
+
+internal void
+cfm_map_register_batch(CFM_Context *ctx, U64 count, CFM_Map **maps)
+{
+  if (count == 0) { return; }
 
   MutexScopeW(ctx->mutex) {
     if (ctx->registry == NULL) {
-      U64 capacity = Max(batch_count * 2, 256);
+      U64 capacity = Max(count * 2, 256);
       ctx->registry = cfm_make_registry(ctx, capacity);
     }
 
@@ -589,7 +614,7 @@ cfm_map_open_batch(Arena *arena, CFM_Context *ctx, U64 file_count, File *files, 
     }
 
     CFM_Registry *registry = ctx->registry;
-    U64 new_count = registry->count + batch_count;
+    U64 new_count = registry->count + count;
     if (new_count > registry->capacity) {
       CFM_Registry *old = registry;
       AssertAlways(old->refs == 0);
@@ -610,8 +635,8 @@ cfm_map_open_batch(Arena *arena, CFM_Context *ctx, U64 file_count, File *files, 
     }
 
     // append batch & sort file maps by address
-    MemoryCopyTyped(registry->maps + registry->count, batch, batch_count);
-    registry->count += batch_count;
+    MemoryCopyTyped(registry->maps + registry->count, maps, count);
+    registry->count += count;
     radsort(registry->maps, registry->count, cfm_map_address_is_before);
 
     // fill out file maps lookup ranges
@@ -620,6 +645,25 @@ cfm_map_open_batch(Arena *arena, CFM_Context *ctx, U64 file_count, File *files, 
       registry->ranges.v[i] = r1u64s(IntFromPtr(registry->maps[i]->data.str), registry->maps[i]->data.size);
     }
   }
+}
+
+internal CFM_Map **
+cfm_map_open_batch(Arena *arena, CFM_Context *ctx, U64 file_count, File *files, CFM_Status *out_status)
+{
+  Temp scratch = scratch_begin(&arena, 1);
+
+  CFM_Map **result = push_array(arena, CFM_Map *, file_count);
+  CFM_Map **batch  = push_array(scratch.arena, CFM_Map *, file_count);
+  U64 batch_count = 0;
+
+  for EachIndex(file_idx, file_count) {
+    out_status[file_idx] = cfm_map_prepare(ctx, files[file_idx], &result[file_idx]);
+    if (out_status[file_idx] == CFM_Ok) {
+      batch[batch_count++] = result[file_idx];
+    }
+  }
+
+  cfm_map_register_batch(ctx, batch_count, batch);
 
   scratch_end(scratch);
   return result;

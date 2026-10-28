@@ -364,7 +364,17 @@ internal B32
 release_memory_placeholders(void *ptr, U64 size, U64 block_size)
 {
   Assert(block_size > 0 && size > 0);
-  if (size > block_size && VirtualFree(ptr, size, MEM_RELEASE|MEM_COALESCE_PLACEHOLDERS) == 0) { return 0; }
+  if (size > block_size && VirtualFree(ptr, size, MEM_RELEASE|MEM_COALESCE_PLACEHOLDERS) == 0) {
+    // coalescing is rejected when the range already is one placeholder (never split, or
+    // split and fully re-coalesced); anything else is a real failure
+    MEMORY_BASIC_INFORMATION info = {0};
+    if (VirtualQuery(ptr, &info, sizeof(info)) != sizeof(info) ||
+        info.State          != MEM_RESERVE ||
+        info.AllocationBase != ptr         ||
+        info.RegionSize     != size) {
+      return 0;
+    }
+  }
   return VirtualFree(ptr, 0, MEM_RELEASE) != 0;
 }
 
@@ -386,6 +396,25 @@ internal B32
 split_memory_placeholder(void *ptr, U64 size, U64 first_size)
 {
   return first_size == size || (first_size && first_size < size && VirtualFree(ptr, first_size, MEM_RELEASE|MEM_PRESERVE_PLACEHOLDER));
+}
+
+internal B32
+carve_memory_placeholder(void *ptr, U64 size)
+{
+  // splits the enclosing placeholder into up to three (before, range, after)
+  if (VirtualFree(ptr, size, MEM_RELEASE|MEM_PRESERVE_PLACEHOLDER)) { return 1; }
+
+  // the split is rejected (ERROR_INVALID_ADDRESS) when the range already is a whole placeholder
+  MEMORY_BASIC_INFORMATION info = {0};
+  if (VirtualQuery(ptr, &info, sizeof(info)) == sizeof(info) &&
+      info.State          == MEM_RESERVE &&
+      info.AllocationBase == ptr         &&
+      info.BaseAddress    == ptr         &&
+      info.RegionSize     == size) {
+    return 1;
+  }
+
+  return 0;
 }
 
 internal B32

@@ -19,6 +19,7 @@ internal void *reserve_memory_placeholders(U64 size, U64 block_size);
 internal B32   release_memory_placeholders(void *ptr, U64 size, U64 block_size);
 internal B32   unmap_memory_preserve_placeholder(void *ptr, U64 size);
 internal B32   split_memory_placeholder(void *ptr, U64 size, U64 first_size);
+internal B32   carve_memory_placeholder(void *ptr, U64 size); // makes [ptr, ptr+size) its own placeholder (no-op if it already is)
 internal B32   coalesce_memory_placeholders(void *ptr, U64 size);
 union Rng1U64;
 internal void  prefetch_memory_ranges(U64 count, union Rng1U64 *ranges);

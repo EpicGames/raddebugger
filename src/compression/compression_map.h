@@ -5,6 +5,8 @@
 
 #pragma once
 
+#include "linker/base_ext/base_bit_array.h"
+
 ////////////////////////////////
 
 #define CFM_MIN_CACHE_SIZE   KB(64)
@@ -21,6 +23,7 @@ typedef struct
   String8      encoded;
   String8      data;
   U64          reserve_size;
+  U32Array     carved; // bit per segment: its placeholder has been carved out of the map's reservation (written under carve_mutex)
   CFM_Codec   *codec;
   CMP_CompressorInfoUnpacked compressor_info;
 } CFM_Map;
@@ -119,7 +122,8 @@ struct CFM_Context
   String8     sdk_paths[CMP_SdkType_Count];
   CMP_Ctx    *sdks[CMP_SdkType_Count];
   Arena      *arena;
-  RWMutex     mutex; // guards registry, maps, segment list/tracker, refs
+  RWMutex     mutex;       // guards registry, maps, segment list/tracker, refs
+  Mutex       carve_mutex; // serializes placeholder splits: the kernel rejects concurrent splits of one placeholder
   CFM_Worker *workers_ctxs;
   CondVar     work;
 
@@ -149,6 +153,10 @@ struct CFM_Context
 
 internal CFM_Context * cfm_alloc(U64 cache_cap, U64 prefetch_bytes, U64 worker_count, U64 codecs_count, CFM_Codec *codecs, String8 sdk_paths[CMP_SdkType_Count]);
 internal B32           cfm_install_fault_handler(CFM_Context *ctx);
+internal CFM_Status    cfm_map_prepare(CFM_Context *ctx, File file, CFM_Map **out);
+internal void          cfm_map_register_batch(CFM_Context *ctx, U64 count, CFM_Map **maps);
+internal CFM_Map **    cfm_map_open_batch(Arena *arena, CFM_Context *ctx, U64 file_count, File *files, CFM_Status *out_status);
+internal CFM_Status    cfm_map_open(CFM_Context *ctx, File file, CFM_Map **out);
 internal void          cfm_map_close(CFM_Map *map);
 internal B32           cfm_raw_view(CFM_Map *map, Rng1U64 range, String8 *out);
 internal void          cfm_lease_release(CFM_Context *ctx, CFM_Lease *lease);

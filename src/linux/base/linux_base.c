@@ -1089,6 +1089,13 @@ split_memory_placeholder(void *ptr, U64 size, U64 first_size)
 }
 
 internal B32
+carve_memory_placeholder(void *ptr, U64 size)
+{
+  // MAP_FIXED replaces any sub-range of a reservation; nothing to carve
+  return ptr != 0 && size > 0;
+}
+
+internal B32
 coalesce_memory_placeholders(void *ptr, U64 size)
 {
   return 1;

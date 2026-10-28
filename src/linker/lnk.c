@@ -1424,6 +1424,29 @@ lnk_require_import_metadata(LNK_Link *link, LNK_Obj *obj)
   }
 }
 
+typedef struct LNK_CfmMapOpener
+{
+  CFM_Context       *cfm;
+  LNK_InputPtrArray  inputs;
+  CFM_Status        *statuses;
+  CFM_Map          **maps;
+} LNK_CfmMapOpener;
+
+THREAD_POOL_TASK_FUNC(lnk_cfm_map_opener)
+{
+  ProfBeginFunction();
+  LNK_CfmMapOpener *task  = raw_task;
+  LNK_Input        *input = task->inputs.v[task_id];
+
+  // release the plain file view; the CFM map takes over the data pointer
+  ProfBegin("release file map");
+  lnk_input_release_file_map(input);
+  ProfEnd();
+
+  task->statuses[task_id] = cfm_map_prepare(task->cfm, input->handle, &task->maps[task_id]);
+  ProfEnd();
+}
+
 internal void
 lnk_load_inputs(TP_Context *tp, TP_Arena *arena, LNK_Config *config, LNK_Inputer *inputer, LNK_SymbolTable *symtab, LNK_Link *link)
 {
@@ -1444,16 +1467,19 @@ lnk_load_inputs(TP_Context *tp, TP_Arena *arena, LNK_Config *config, LNK_Inputer
   MemoryCopy(all.v + direct.count, members.v, members.count * sizeof(*all.v));
 
   {
+    ProfBegin("Open Compressed Inputs");
+
     // gather compressed objects
-    U64List compressed_inputs = {0};
+    LNK_InputPtrArray compressed = { .v = push_array(scratch.arena, LNK_Input *, all.count) };
     for EachIndex(i, all.count) {
       LNK_Input *input = all.v[i];
       if (lnk_obj_codec_matches(input->data)) {
-        u64_list_push(scratch.arena, &compressed_inputs, i);
+        AssertAlways(input->type == COFF_DataType_BigObj || input->type == COFF_DataType_Obj);
+        compressed.v[compressed.count++] = input;
       }
     }
 
-    if (compressed_inputs.count > 0) {
+    if (compressed.count > 0) {
       // lazy init CFM when input has compressed objects
       if (inputer->cfm == NULL) {
         String8 sdk_paths[CMP_SdkType_Count] = { [CMP_SdkType_Oodle2] = config->oodle2_path };
@@ -1463,16 +1489,20 @@ lnk_load_inputs(TP_Context *tp, TP_Arena *arena, LNK_Config *config, LNK_Inputer
         AssertAlways(is_handler_installed);
       }
 
-      for EachNode(n, U64Node, compressed_inputs.first) {
-        LNK_Input *input = all.v[n->data];
-        AssertAlways(input->type == COFF_DataType_BigObj || input->type == COFF_DataType_Obj);
+      // validate containers and reserve their address ranges on the pool; the header
+      // page-in and the per-segment placeholder splits dominate and are independent per file
+      LNK_CfmMapOpener task = {
+        .cfm      = inputer->cfm,
+        .inputs   = compressed,
+        .statuses = push_array(scratch.arena, CFM_Status, compressed.count),
+        .maps     = push_array(scratch.arena, CFM_Map *,  compressed.count),
+      };
+      tp_for_parallel_prof(tp, arena, compressed.count, lnk_cfm_map_opener, &task, "Prepare CFM maps");
 
-        // release file map
-        lnk_input_release_file_map(input);
-
-        // reopen file map with compressed backing
-        CFM_Status status = cfm_map_open(inputer->cfm, input->handle, &input->cfm_map);
-        if (status != 0) {
+      for EachIndex(i, compressed.count) {
+        LNK_Input *input  = compressed.v[i];
+        CFM_Status status = task.statuses[i];
+        if (status != CFM_Ok) {
           if (status == CFM_MixedSegmentSizes) {
             lnk_error(LNK_Error_MixedSegmentSizes, "mixed segment sizes is not a supported case; please compress objects with the same segment size; expected %llu, %S", inputer->cfm->first_segment_size, input->path);
           } else {
@@ -1480,12 +1510,23 @@ lnk_load_inputs(TP_Context *tp, TP_Arena *arena, LNK_Config *config, LNK_Inputer
           }
           lnk_exit(1);
         }
+      }
 
-        // update inputs data
+      // register all maps to the fault handler at once (single registry sort)
+      ProfBegin("Register CFM maps");
+      cfm_map_register_batch(inputer->cfm, compressed.count, task.maps);
+      ProfEnd();
+
+      // update inputs data
+      for EachIndex(i, compressed.count) {
+        LNK_Input *input = compressed.v[i];
         Assert(input->data.size == 0 && input->data.str == NULL);
-        input->data = input->cfm_map->data;
+        input->cfm_map = task.maps[i];
+        input->data    = input->cfm_map->data;
       }
     }
+
+    ProfEnd();
   }
 
   lnk_obj_from_input_many(tp, arena, all, config->remove_sections);
