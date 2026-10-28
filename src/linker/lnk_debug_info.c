@@ -2826,9 +2826,17 @@ THREAD_POOL_TASK_FUNC(lnk_build_pdb_strings_modules_and_globals)
               if (str8_deserial_read_struct(checksums, cursor, &checksum) != sizeof(checksum)) {
                 break;
               }
+              if (checksum.name_off >= strings.size) {
+                lnk_error_obj(LNK_Error_IllData, task->cv->obj_arr[obj_idx], "file checksum at offset 0x%llx has out of bounds string table offset 0x%x (string table size 0x%llx)", cursor, checksum.name_off, strings.size);
+              }
+              
               String8          name   = str8_cstring_capped(strings.str + checksum.name_off, strings.str + strings.size);
               CV_StringBucket *bucket = cv_string_hash_table_lookup(task->string_ht, name);
-              U64              offset = task->string_table_base_offset + bucket->u.offset;
+              if (bucket == 0) {
+                lnk_error_obj(LNK_Error_IllData, task->cv->obj_arr[obj_idx], "file checksum at offset 0x%llx has string table offset 0x%x that does not point to the start of a string", cursor, checksum.name_off);
+              }
+
+              U64 offset = task->string_table_base_offset + bucket->u.offset;
               memory_write32(checksums.str + cursor + OffsetOf(CV_C13Checksum, name_off), safe_cast_u32(offset));
               cursor += AlignPow2(sizeof(checksum) + checksum.len, CV_FileCheckSumsAlign);
             }
