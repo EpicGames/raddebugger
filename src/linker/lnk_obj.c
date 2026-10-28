@@ -972,14 +972,17 @@ lnk_coff_section_header_from_section_number(LNK_Obj *obj, U64 section_number)
   return &obj->coff.sections.headers[section_number];
 }
 
-internal force_inline U64
+internal U64
 lnk_obj_primary_symbol_idx_from_coff_symbol_idx(LNK_Obj *obj, U64 symbol_idx)
 {
   U64 block_idx = symbol_idx >> 6;
   U64 word_idx  = symbol_idx >> 5;
   U32 bit_idx   = symbol_idx & 31;
   U32Array primary_bits = obj->coff.symbols.primary_bits;
-  Assert(bit_array_get_bit32(primary_bits, symbol_idx));
+
+  if ( ! bit_array_get_bit32(primary_bits, symbol_idx)) {
+    lnk_error_obj(LNK_Error_IllData, obj, "invalid symbol access, symbol 0x%x is not primary", symbol_idx);
+  }
 
   U64 primary_idx = obj->coff.symbols.block_bases[block_idx];
   if (word_idx & 1) {
@@ -989,7 +992,7 @@ lnk_obj_primary_symbol_idx_from_coff_symbol_idx(LNK_Obj *obj, U64 symbol_idx)
   return primary_idx;
 }
 
-internal force_inline B32
+internal B32
 lnk_obj_symbol_iter_next(LNK_Obj *obj, LNK_ObjSymbolIter *it)
 {
   if (it->next_primary_idx >= obj->coff.symbols.count) {
@@ -1014,7 +1017,7 @@ lnk_obj_symbol_iter_next(LNK_Obj *obj, LNK_ObjSymbolIter *it)
   return 1;
 }
 
-internal force_inline COFF_ParsedSymbol
+internal COFF_ParsedSymbol
 lnk_parsed_symbol_from_coff_symbol_idx_no_name(LNK_Obj *obj, U64 symbol_idx)
 {
   U64 primary_idx = lnk_obj_primary_symbol_idx_from_coff_symbol_idx(obj, symbol_idx);
