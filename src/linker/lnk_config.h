@@ -148,6 +148,7 @@ typedef enum
   LNK_CmdSwitch_Rad_SortImports,
   LNK_CmdSwitch_Rad_TimeStamp,
   LNK_CmdSwitch_Rad_DebugTypeHash,
+  LNK_CmdSwitch_Rad_FastExit,
   LNK_CmdSwitch_Rad_UnresolvedSymbolLimit,
   LNK_CmdSwitch_Rad_UnresolvedSymbolRefLimit,
   LNK_CmdSwitch_Rad_Version,
@@ -416,6 +417,7 @@ typedef struct LNK_Config
   B32                         build_imp_lib;
   B32                         build_exp;
   LNK_SwitchState             write_temp_files;
+  LNK_SwitchState             fast_exit;
   String8                     temp_out_path;
   String8                     temp_pdb_name;
   String8                     temp_rad_debug_name;

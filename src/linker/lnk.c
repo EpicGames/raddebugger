@@ -6866,6 +6866,20 @@ lnk_run_linker(LNK_Config *config)
   ProfBeginFunction();
   Temp scratch = scratch_begin(0,0);
 
+  //
+  // Fast Exit
+  //
+  if (config->fast_exit == LNK_SwitchState_Yes) {
+    lnk_fast_exit_child_init();
+    if ( ! lnk_fast_exit_is_child()) {
+      U32 exit_code = 0;
+      if (lnk_fast_exit_run_child(&exit_code)) {
+        lnk_exit(exit_code);
+      }
+      lnk_error(LNK_Error_FastExit, "could not launch the child process; linking in current process");
+    }
+  }
+
   TP_Context *tp    = tp_alloc(scratch.arena, config->worker_count, config->max_worker_count, config->shared_thread_pool_name);
   TP_Arena   *arena = tp_arena_alloc(tp);
 
@@ -6987,10 +7001,13 @@ lnk_run_linker(LNK_Config *config)
   }
 
   //
-  // fater to release file maps in parallel on Windows
+  // faster to release file maps in parallel on Windows; with a fast-exit parent waiting
+  // nobody pays for our teardown, so skip it and let process exit do the work
   //
 #if OS_WINDOWS
-  lnk_inputer_release_file_maps(tp, inputer);
+  if ( ! lnk_fast_exit_is_child()) {
+    lnk_inputer_release_file_maps(tp, inputer);
+  }
 #endif
 
   //
@@ -7009,6 +7026,12 @@ lnk_run_linker(LNK_Config *config)
   }
   
   tp_release(tp);
+
+  //
+  // outputs are on disk and logs are flushed: let the parent return while we tear down
+  //
+  lnk_fast_exit_signal(0);
+
   scratch_end(scratch);
   ProfEnd();
 }
@@ -7542,6 +7565,152 @@ lnk_run_decompress(LNK_Config *config)
   ProfEnd();
 }
 
+// --- Fast Exit ---------------------------------------------------------------
+
+#define LNK_FAST_EXIT_PIPE_ENV L"RADLINK_FAST_EXIT_PIPE"
+
+#if OS_WINDOWS
+
+global HANDLE g_fast_exit_pipe = INVALID_HANDLE_VALUE;
+
+internal B32
+lnk_fast_exit_is_child(void)
+{
+  return g_fast_exit_pipe != INVALID_HANDLE_VALUE;
+}
+
+internal void
+lnk_fast_exit_child_init(void)
+{
+  WCHAR value[32] = {0};
+  DWORD length = GetEnvironmentVariableW(LNK_FAST_EXIT_PIPE_ENV, value, ArrayCount(value));
+  if (length > 0 && length < ArrayCount(value)) {
+    U64 handle = 0;
+    for EachIndex(i, length) {
+      if (value[i] < L'0' || value[i] > L'9') { return; }
+      handle = handle * 10 + (U64)(value[i] - L'0');
+    }
+    g_fast_exit_pipe = (HANDLE)handle;
+    SetEnvironmentVariableW(LNK_FAST_EXIT_PIPE_ENV, 0); // processes we launch must not report to our parent
+  }
+}
+
+internal void
+lnk_fast_exit_signal(U32 exit_code)
+{
+  if (lnk_fast_exit_is_child()) {
+    fflush(stdout);
+    fflush(stderr);
+    DWORD written = 0;
+    WriteFile(g_fast_exit_pipe, &exit_code, sizeof(exit_code), &written, 0);
+    CloseHandle(g_fast_exit_pipe);
+    g_fast_exit_pipe = INVALID_HANDLE_VALUE;
+  }
+}
+
+internal B32
+lnk_fast_exit_run_child(U32 *exit_code_out)
+{
+  ProfBeginFunction();
+  Temp scratch = scratch_begin(0, 0);
+  B32 is_done = 0;
+
+  HANDLE pipe_read  = INVALID_HANDLE_VALUE;
+  HANDLE pipe_write = INVALID_HANDLE_VALUE;
+  HANDLE job        = 0;
+  PROCESS_INFORMATION process = {0};
+
+  do {
+    // the child inherits the write end only
+    SECURITY_ATTRIBUTES inheritable = { .nLength = sizeof(inheritable), .bInheritHandle = TRUE };
+    if ( ! CreatePipe(&pipe_read, &pipe_write, &inheritable, 0)) { break; }
+    SetHandleInformation(pipe_read, HANDLE_FLAG_INHERIT, 0);
+
+    // tell the child where to report
+    WCHAR pipe_value[32];
+    swprintf_s(pipe_value, ArrayCount(pipe_value), L"%llu", (U64)pipe_write);
+    if ( ! SetEnvironmentVariableW(LNK_FAST_EXIT_PIPE_ENV, pipe_value)) { break; }
+
+    // the child shares our console / redirections
+    STARTUPINFOW startup_info = { .cb = sizeof(startup_info), .dwFlags = STARTF_USESTDHANDLES };
+    startup_info.hStdInput  = GetStdHandle(STD_INPUT_HANDLE);
+    startup_info.hStdOutput = GetStdHandle(STD_OUTPUT_HANDLE);
+    startup_info.hStdError  = GetStdHandle(STD_ERROR_HANDLE);
+    SetHandleInformation(startup_info.hStdInput,  HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT);
+    SetHandleInformation(startup_info.hStdOutput, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT);
+    SetHandleInformation(startup_info.hStdError,  HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT);
+
+    // relaunch ourselves with the command line verbatim (CreateProcessW may edit its copy)
+    U64    exe_path_cap    = KB(32);
+    WCHAR *exe_path        = push_array_no_zero(scratch.arena, WCHAR, exe_path_cap);
+    DWORD  exe_path_length = GetModuleFileNameW(0, exe_path, exe_path_cap);
+    if (exe_path_length == 0 || exe_path_length >= exe_path_cap) { break; }
+    WCHAR *cmd_line        = GetCommandLineW();
+    U64    cmd_line_length = wcslen(cmd_line);
+    WCHAR *cmd_line_copy   = push_array_no_zero(scratch.arena, WCHAR, cmd_line_length + 1);
+    MemoryCopy(cmd_line_copy, cmd_line, (cmd_line_length + 1) * sizeof(WCHAR));
+
+    // a job with kill-on-close ties the child's life-time to ours: if we are terminated
+    // the orphaned link stops too, and once we exit normally the child's remaining
+    // teardown is cut short by the kernel instead of running to completion
+    job = CreateJobObjectW(0, 0);
+    if (job) {
+      JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits = {0};
+      limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+      SetInformationJobObject(job, JobObjectExtendedLimitInformation, &limits, sizeof(limits));
+    }
+
+    if ( ! CreateProcessW(exe_path, cmd_line_copy, 0, 0, TRUE, job ? CREATE_SUSPENDED : 0, 0, 0, &startup_info, &process)) { break; }
+    if (job) {
+      // nested jobs need Windows 8+; without one the child simply outlives a killed parent
+      AssignProcessToJobObject(job, process.hProcess);
+      ResumeThread(process.hThread);
+    }
+
+    // our copy of the write end has to go, otherwise the pipe never breaks when the child dies
+    CloseHandle(pipe_write);
+    pipe_write = INVALID_HANDLE_VALUE;
+    SetEnvironmentVariableW(LNK_FAST_EXIT_PIPE_ENV, 0);
+
+    // wait for the child to report, or to die
+    DWORD exit_code = 0;
+    DWORD read      = 0;
+    if (ReadFile(pipe_read, &exit_code, sizeof(exit_code), &read, 0) && read == sizeof(exit_code)) {
+      *exit_code_out = exit_code;
+    } else {
+      WaitForSingleObject(process.hProcess, INFINITE);
+      if ( ! GetExitCodeProcess(process.hProcess, &exit_code)) { exit_code = 1; }
+      *exit_code_out = exit_code;
+    }
+    is_done = 1;
+  } while (0);
+
+  if (process.hThread)  { CloseHandle(process.hThread);  }
+  if (process.hProcess) { CloseHandle(process.hProcess); }
+  if (pipe_write != INVALID_HANDLE_VALUE) { CloseHandle(pipe_write); }
+  if (pipe_read  != INVALID_HANDLE_VALUE) { CloseHandle(pipe_read);  }
+  if ( ! is_done) {
+    // no child to tie to us; the job is closed with our process otherwise, which is when the child should go
+    if (job) { CloseHandle(job); }
+    SetEnvironmentVariableW(LNK_FAST_EXIT_PIPE_ENV, 0);
+  }
+
+  scratch_end(scratch);
+  ProfEnd();
+  return is_done;
+}
+
+#else
+
+internal B32  lnk_fast_exit_is_child(void)                { return 0; }
+internal void lnk_fast_exit_child_init(void)              {}
+internal void lnk_fast_exit_signal(U32 exit_code)         { (void)exit_code; }
+internal B32  lnk_fast_exit_run_child(U32 *exit_code_out) { (void)exit_code_out; return 0; }
+
+#endif
+
+// -----------------------------------------------------------------------------
+
 internal void
 entry_point(CmdLine *cmdline)
 {
@@ -7564,3 +7733,4 @@ entry_point(CmdLine *cmdline)
   lnk_log_end();
   scratch_end(scratch);
 }
+

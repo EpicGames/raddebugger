@@ -83,6 +83,7 @@ typedef enum
   LNK_Error_UnresolvedSymbol,
   LNK_Error_PrecompSigMismatch,
   LNK_Error_PrecompObjNotFound,
+  LNK_Error_FastExit,
   LNK_Error_ContinueLast,
   
   LNK_Warning_First,

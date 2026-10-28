@@ -105,6 +105,7 @@ global LNK_CmdSwitch g_cmd_switch_map[] =
   { LNK_CmdSwitch_Rad_WriteTempFiles,               0, LNK_CmdValueKind_Scalar, "RAD_WRITE_TEMP_FILES",                 "[:NO]",                "When speicifed linker writes image and debug info to temporary files and renames after link is done." },
   { LNK_CmdSwitch_Rad_TimeStamp,                    0, LNK_CmdValueKind_Scalar, "RAD_TIME_STAMP",                       ":#",                   "Time stamp embeded in EXE and PDB."                                               },
   { LNK_CmdSwitch_Rad_DebugTypeHash,                0, LNK_CmdValueKind_Scalar, "RAD_DEBUG_TYPE_HASH",                  ":{BLAKE3|XXHASH}",     "Sets hashing algorithm for debug type merging."                                   },
+  { LNK_CmdSwitch_Rad_FastExit,                     0, LNK_CmdValueKind_Scalar, "RAD_FAST_EXIT",                        "[:NO]",                "Link in a child process and exit as soon as outputs are written, leaving memory teardown to the background. (Windows only; on by default, off under a debugger)" },
   { LNK_CmdSwitch_Rad_UnresolvedSymbolLimit,        0, LNK_CmdValueKind_Scalar, "RAD_UNRESOLVED_SYMBOL_LIMIT",          ":#",                   "Limits number of unresolved symbol errors linker reports."                        },
   { LNK_CmdSwitch_Rad_UnresolvedSymbolRefLimit,     0, LNK_CmdValueKind_Scalar, "RAD_UNRESOLVED_SYMBOL_REF_LIMIT",      ":#",                   "Limit number of unresolved symbol references linker reports."                     },
   { LNK_CmdSwitch_Rad_Version,                      0, LNK_CmdValueKind_Null,   "RAD_VERSION",                          "",                     "Print version and exit."                                                          },
@@ -2275,6 +2276,10 @@ lnk_apply_cmd_option_to_config(LNK_Config *config, String8 cmd_name, String8 val
     }
   } break;
 
+  case LNK_CmdSwitch_Rad_FastExit: {
+    lnk_cmd_switch_parse_flag(obj, cmd_switch, value, &config->fast_exit);
+  } break;
+
   case LNK_CmdSwitch_Rad_TimeStamp: {
     lnk_cmd_switch_parse_u32(obj, cmd_switch, value, &config->time_stamp, 0);
   } break;
@@ -2894,6 +2899,10 @@ lnk_make_default_cmd_line(Arena *arena, LNK_CmdLine user_cmd_line, LNK_Tool tool
 
     "/RAD_OODLE2:oo2core_9_win64.dll",
     (char*)str8f(scratch.arena, "/RAD_OBJ_SEGMENT_SIZE:%llu", KB(512)).str,
+
+#if OS_WINDOWS && !PROFILE_TELEMETRY
+    (char*)str8f(scratch.arena, "/RAD_FAST_EXIT:%s", IsDebuggerPresent() ? "NO" : "YES").str,
+#endif
   };
 
   char *push_opts[] = {
