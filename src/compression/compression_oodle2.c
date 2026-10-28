@@ -7,20 +7,9 @@
 
 #if OODLE_SDK
 
-#include <oodle2base.h>
-
-// The SDK's C inline helpers use GNU89 inline semantics. Under GCC's C99
-// semantics, helpers referenced by its external definitions can be unresolved.
-#if COMPILER_GCC
-# pragma push_macro("OOINLINEFUNC")
-# undef OOINLINEFUNC
-# define OOINLINEFUNC inline __attribute__((gnu_inline))
-#endif
+#define CMP_OODLE2_COMPRESSOR OodleLZ_Compressor_Kraken
 
 #include <oodle2.h>
-#if COMPILER_GCC
-# pragma pop_macro("OOINLINEFUNC")
-#endif
 
 #if !OODLE_STATIC
 typedef OO_BOOL  (OOFUNC2 CMP_Oodle2_CheckVersion)(OO_U32, OO_U32 *);
@@ -73,7 +62,7 @@ internal CMP_SCRATCH(cmp_scratch_oodle2)
 {
   if (size == 0 || size > max_S64) { return 0; }
 #if OODLE_STATIC
-  OO_S32 result = OodleLZDecoder_MemorySizeNeeded(OodleLZ_Compressor_Kraken, (OO_SINTa)size);
+  OO_S32 result = OodleLZDecoder_MemorySizeNeeded(CMP_OODLE2_COMPRESSOR, (OO_SINTa)size);
 #else
   CMP_Oodle2_API *api = ctx->api;
   OO_S32 result = api->Scratch(api->compressor, (OO_SINTa)size);
@@ -87,9 +76,9 @@ internal CMP_ENCODE(cmp_encode_oodle2)
 {
   if (src.str == 0 || dst.str == 0 || src.size == 0 || src.size > max_S64) { return 0; }
 #if OODLE_STATIC
-  OO_SINTa bound = OodleLZ_GetCompressedBufferSizeNeeded(OodleLZ_Compressor_Kraken, (OO_SINTa)src.size);
+  OO_SINTa bound = OodleLZ_GetCompressedBufferSizeNeeded(CMP_OODLE2_COMPRESSOR, (OO_SINTa)src.size);
   if (bound <= 0 || dst.size < (U64)bound) { return 0; }
-  OO_SINTa result = OodleLZ_Compress(OodleLZ_Compressor_Kraken, src.str, (OO_SINTa)src.size, dst.str,
+  OO_SINTa result = OodleLZ_Compress(CMP_OODLE2_COMPRESSOR, src.str, (OO_SINTa)src.size, dst.str,
                                    OodleLZ_CompressionLevel_Normal, 0, 0, 0, 0, 0);
 #else
   CMP_Oodle2_API *api = ctx->api;
@@ -133,7 +122,7 @@ internal CMP_BOUND(cmp_bound_oodle2)
 {
   if (size == 0 || size > max_S64) { return 0; }
 #if OODLE_STATIC
-  OO_SINTa result = OodleLZ_GetCompressedBufferSizeNeeded(OodleLZ_Compressor_Kraken, (OO_SINTa)size);
+  OO_SINTa result = OodleLZ_GetCompressedBufferSizeNeeded(CMP_OODLE2_COMPRESSOR, (OO_SINTa)size);
 #else
   CMP_Oodle2_API *api = ctx->api;
   OO_SINTa result = api->Bound(api->compressor, (OO_SINTa)size);
@@ -176,7 +165,7 @@ internal CMP_OPEN(cmp_open_oodle2)
   }
 
   // set default compressor
-  api->compressor = OodleLZ_Compressor_Kraken;
+  api->compressor = CMP_OODLE2_COMPRESSOR;
 
   // fill out compression context
   CMP_Ctx *ctx = push_array(arena, CMP_Ctx, 1);
