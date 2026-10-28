@@ -1426,13 +1426,20 @@ lnk_hash_cv_leaf_deep(Arena               *arena,
       U32         obj_idx  = lnk_leaf_ref_obj_idx(leaf_ref);
       U32         leaf_idx = lnk_leaf_ref_leaf_idx(leaf_ref);
       if (input->debug_h_arr[obj_idx].v[leaf_idx] != 0) { continue; }
-      input->debug_h_arr[obj_idx].v[leaf_idx] = 1;
 
+      CV_Leaf leaf = cv_debug_t_get_leaf(&input->debug_t_arr[obj_idx], leaf_idx);
+      CV_TypeIndexInfoList ti_info_list = {0};
+      if ( ! cv_get_leaf_type_index_offsets(temp.arena, leaf.kind, leaf.data, &ti_info_list)) {
+        lnk_error_obj(LNK_Error_IllData, input->obj_arr[obj_idx], "invalid CodeView Leaf 0x%x", leaf_idx);
+        continue;
+      }
+
+      input->debug_h_arr[obj_idx].v[leaf_idx] = 1;
       // recurse down to sub types
       HashStack *frame = push_array(temp.arena, HashStack, 1);
       frame->leaf_ref     = leaf_ref;
-      frame->leaf         = cv_debug_t_get_leaf(&input->debug_t_arr[obj_idx], leaf_idx);
-      frame->ti_info_list = cv_get_leaf_type_index_offsets(temp.arena, frame->leaf.kind, frame->leaf.data);
+      frame->leaf         = leaf;
+      frame->ti_info_list = ti_info_list;
       frame->ti_info      = frame->ti_info_list.first;
       frame->ti           = ti;
       frame->ti_source    = ti_info->source;
@@ -1479,7 +1486,11 @@ THREAD_POOL_TASK_FUNC(lnk_hash_debug_t_task)
   for EachIndex(leaf_idx, debug_t->count) {
     Temp                 temp    = temp_begin(scratch.arena);
     CV_Leaf              leaf    = cv_debug_t_get_leaf(debug_t, leaf_idx);
-    CV_TypeIndexInfoList ti_list = cv_get_leaf_type_index_offsets(temp.arena, leaf.kind, leaf.data);
+    CV_TypeIndexInfoList ti_list;
+    if ( ! cv_get_leaf_type_index_offsets(temp.arena, leaf.kind, leaf.data, &ti_list)) {
+      lnk_error_obj(LNK_Error_IllData, task->input->obj_arr[obj_idx], "invalid CodeView Leaf 0x%x", leaf_idx);
+      continue;
+    }
     lnk_hash_cv_leaf(task->input, lnk_leaf_ref_make(obj_idx, leaf_idx), ti_list, 1);
     temp_end(temp);
   }
@@ -1498,7 +1509,11 @@ THREAD_POOL_TASK_FUNC(lnk_hash_debug_t_deep_task)
     if (task->input->debug_h_arr[obj_idx].v[leaf_idx] != 0) { continue; }
     Temp                 temp    = temp_begin(scratch.arena);
     CV_Leaf              leaf    = cv_debug_t_get_leaf(debug_t, leaf_idx);
-    CV_TypeIndexInfoList ti_list = cv_get_leaf_type_index_offsets(temp.arena, leaf.kind, leaf.data);
+    CV_TypeIndexInfoList ti_list = {0};
+    if ( ! cv_get_leaf_type_index_offsets(temp.arena, leaf.kind, leaf.data, &ti_list)) {
+      lnk_error_obj(LNK_Error_IllData, task->input->obj_arr[obj_idx], "invalid CodeView Leaf 0x%x", leaf_idx);
+      continue;
+    }
     lnk_hash_cv_leaf_deep(temp.arena, task->input, lnk_leaf_ref_make(obj_idx, leaf_idx), ti_list);
     temp_end(temp);
   }
@@ -1818,10 +1833,14 @@ lnk_raw_type_from_index(LNK_MergedTypes *types, CV_TypeIndexSource source, U64 i
 internal void
 lnk_patch_type_copy(Arena *arena, LNK_MergedTypes *types, CV_TypeIndexSource source, U64 leaf_idx, U8 *dst)
 {
-  CV_Leaf leaf = cv_leaf_from_ptr(dst);
-  U32 obj_idx = lnk_leaf_ref_obj_idx(types->leaf_refs[source].v[leaf_idx]);
-  CV_TypeIndexInfoList indices = cv_get_leaf_type_index_offsets(arena, leaf.kind, leaf.data);
-  lnk_fixup_cv_type_indices(types, obj_idx, leaf.data, indices);
+  CV_Leaf              leaf    = cv_leaf_from_ptr(dst);
+  U32                  obj_idx = lnk_leaf_ref_obj_idx(types->leaf_refs[source].v[leaf_idx]);
+  CV_TypeIndexInfoList indices;
+  if (cv_get_leaf_type_index_offsets(arena, leaf.kind, leaf.data, &indices)) {
+    lnk_fixup_cv_type_indices(types, obj_idx, leaf.data, indices);
+  } else {
+    lnk_error_obj(LNK_Error_IllData, types->input->obj_arr[obj_idx], "invalid CodeView Leaf 0x%x", leaf_idx);
+  }
 }
 
 internal void

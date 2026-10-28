@@ -659,8 +659,8 @@ cv_get_symbol_type_index_offsets(Arena *arena, CV_SymKind kind, String8 data)
   return list;
 }
 
-internal CV_TypeIndexInfoList
-cv_get_leaf_type_index_offsets(Arena *arena, CV_LeafKind leaf_kind, String8 data)
+internal B32
+cv_get_leaf_type_index_offsets(Arena *arena, CV_LeafKind leaf_kind, String8 data, CV_TypeIndexInfoList *list_out)
 {
   CV_TypeIndexInfoList list = {0};
   switch (leaf_kind) {
@@ -951,11 +951,12 @@ cv_get_leaf_type_index_offsets(Arena *arena, CV_LeafKind leaf_kind, String8 data
       cv_symbol_type_index_info_push(arena, &list, CV_TypeIndexSource_TPI, OffsetOf(CV_LeafNestTypeEx, itype));
     } break;
     case CV_LeafKind_ENDPRECOMP: {} break;
-    default: {
-      NotImplemented;
-    } break;
+
+    default: return 0;
   }
-  return list;
+
+  *list_out = list;
+  return 1;
 }
 
 internal CV_TypeIndexInfoList
