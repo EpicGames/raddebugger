@@ -772,16 +772,22 @@ cv_get_leaf_type_index_offsets(Arena *arena, CV_LeafKind leaf_kind, String8 data
       cv_symbol_type_index_info_push(arena, &list, CV_TypeIndexSource_TPI, OffsetOf(CV_LeafSkip, itype));
     } break;
     case CV_LeafKind_SUBSTR_LIST: {
-      Assert(sizeof(CV_LeafArgList) <= data.size);
+      if (sizeof(CV_LeafArgList) > data.size) { return 0; }
+
       CV_LeafArgList *arg_list = (CV_LeafArgList*)data.str;
-      for (U32 i = 0; i < arg_list->count; ++i) {
+      if (sizeof(CV_LeafArgList) + sizeof(CV_TypeIndex) * arg_list->count > data.size) { return 0; }
+
+      for EachIndex(i, arg_list->count) {
         cv_symbol_type_index_info_push(arena, &list, CV_TypeIndexSource_IPI, sizeof(CV_LeafArgList) + i * sizeof(CV_TypeIndex));
       }
     } break;
     case CV_LeafKind_ARGLIST: {
-      Assert(sizeof(CV_LeafArgList) <= data.size);
+      if (sizeof(CV_LeafArgList) > data.size) { return 0; }
+
       CV_LeafArgList *arg_list = (CV_LeafArgList*)data.str;
-      for (U32 i = 0; i < arg_list->count; ++i) {
+      if (sizeof(CV_LeafArgList) + sizeof(CV_TypeIndex) * arg_list->count > data.size) { return 0; }
+
+      for EachIndex(i, arg_list->count) {
         cv_symbol_type_index_info_push(arena, &list, CV_TypeIndexSource_TPI, sizeof(CV_LeafArgList) + i * sizeof(CV_TypeIndex));
       }
     } break;
