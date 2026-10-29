@@ -984,9 +984,13 @@ lnk_coff_section_header_from_section_number(LNK_Obj *obj, U64 section_number)
 internal U64
 lnk_obj_primary_symbol_idx_from_coff_symbol_idx(LNK_Obj *obj, U64 symbol_idx)
 {
-  U64 block_idx = symbol_idx >> 6;
-  U64 word_idx  = symbol_idx >> 5;
-  U32 bit_idx   = symbol_idx & 31;
+  if (symbol_idx >= obj->coff.header.symbol_count) {
+    lnk_error_obj(LNK_Error_IllData, obj, "accessing out of bounds symbol index 0%x", symbol_idx);
+  }
+
+  U64      block_idx    = symbol_idx >> 6;
+  U64      word_idx     = symbol_idx >> 5;
+  U32      bit_idx      = symbol_idx & 31;
   U32Array primary_bits = obj->coff.symbols.primary_bits;
 
   if ( ! bit_array_get_bit32(primary_bits, symbol_idx)) {
@@ -998,6 +1002,7 @@ lnk_obj_primary_symbol_idx_from_coff_symbol_idx(LNK_Obj *obj, U64 symbol_idx)
     primary_idx += count_bits_set32(primary_bits.v[word_idx - 1]);
   }
   primary_idx += count_bits_set32(primary_bits.v[word_idx] & ((1u << bit_idx) - 1));
+
   return primary_idx;
 }
 
