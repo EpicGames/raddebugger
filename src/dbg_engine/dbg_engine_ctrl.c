@@ -936,7 +936,7 @@ d_entity_ctx_rw_store_alloc(void)
   store->ctx.hash_slots_count = 1024;
   store->ctx.hash_slots = push_array(arena, D_EntityHashSlot, store->ctx.hash_slots_count);
   D_Entity *root = store->ctx.root = d_entity_alloc(store, &d_entity_nil, D_EntityKind_Root, Arch_Null, d_handle_zero(), 0);
-  D_Entity *local_server = d_entity_alloc(store, root, D_EntityKind_Server, Arch_CURRENT, d_handle_from_dmn(D_ServerID_LocalHost, dmn_handle_zero()), 0);
+  D_Entity *local_server = d_entity_alloc(store, root, D_EntityKind_Server, Arch_CURRENT, d_handle_from_server_id(D_ServerID_LocalHost), 0);
   Temp scratch = scratch_begin(0, 0);
   String8 local_server_name = str8f(scratch.arena, "Local (%S)", get_system_info()->machine_name);
   d_entity_equip_string(store, local_server, local_server_name);
@@ -4426,9 +4426,14 @@ internal D_Handle
 d_ctrl_thread__handle_from_addr_or_connect(String8 addr)
 {
   D_Handle handle = {0};
+  if(addr.size == 0)
+  {
+    handle = d_handle_from_server_id(D_ServerID_LocalHost);
+  }
   
   //- rjf: try to find existing handle for this server address
   B32 found = 0;
+  if(addr.size != 0)
   {
     D_EntityArray servers = d_entity_array_from_kind(D_EntityKind_Server);
     for EachIndex(idx, servers.count)
@@ -4443,7 +4448,7 @@ d_ctrl_thread__handle_from_addr_or_connect(String8 addr)
   }
   
   //- rjf: if not found, connect to server & handshake
-  if(!found)
+  if(!found && addr.size != 0)
   {
     SOCK_Endpoint endpoint = sock_endpoint_from_string(addr);
     
@@ -4663,6 +4668,8 @@ d_ctrl_thread__launch(DMN_CtrlCtx *ctrl_ctx, D_Msg *msg)
     D_Handle server_handle = d_ctrl_thread__handle_from_addr_or_connect(msg->address);
     D_ServerID server_id = server_handle.server_id;
     D_ServerState *ss = d_server_state_from_id(server_id);
+    fprintf(stderr, "server_id: %i\n", server_id);
+    fprintf(stderr, "address: \"%.*s\"\n", str8_varg(msg->address));
     ss->launch_or_attach_counter += 1;
   }
   

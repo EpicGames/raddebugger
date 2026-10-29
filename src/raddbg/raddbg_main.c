@@ -826,6 +826,7 @@ entry_point(CmdLine *cmd_line)
             U64 header_size = sizeof(IPCPacketHeader);
             U64 payload_size_per_packet = (IPC_PACKET_SIZE - header_size);
             U64 packet_count = (cmd_outputs.size + payload_size_per_packet-1) / payload_size_per_packet;
+            packet_count = Max(1, packet_count);
             for EachIndex(packet_idx, packet_count)
             {
               Temp scratch2 = scratch_begin(&scratch.arena, 1);

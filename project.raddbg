@@ -19,7 +19,6 @@ target:
   remote: 0
   deploy: 0
   arguments: "--quiet"
-  enabled: 1
 }
 target:
 {
