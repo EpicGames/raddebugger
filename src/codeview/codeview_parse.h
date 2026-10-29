@@ -100,6 +100,10 @@ struct CV_C13InlineSiteDecoder
 {
   U64                cursor;
   U64                parent_voff;
+  U64Array           separated_code_voffs;
+  U64                code_offset_base;
+  B32                code_chunk_changed;
+  B32                error;
   CV_InlineRangeKind range_kind;
   U32                code_length;
   U32                code_offset;
@@ -126,6 +130,7 @@ enum
   CV_C13InlineSiteDecoderStepFlag_ExtendLastRange = (1 << 1),
   CV_C13InlineSiteDecoderStepFlag_EmitFile        = (1 << 2),
   CV_C13InlineSiteDecoderStepFlag_EmitLine        = (1 << 3),
+  CV_C13InlineSiteDecoderStepFlag_Error           = (1 << 4),
 };
 
 typedef struct CV_C13InlineSiteDecoderStep CV_C13InlineSiteDecoderStep;
@@ -285,7 +290,7 @@ internal U64 cv_decode_inline_annot_u32(String8 data, U64 offset, U32 *out_value
 internal U64 cv_decode_inline_annot_s32(String8 data, U64 offset, S32 *out_value);
 internal S32 cv_inline_annot_signed_from_unsigned_operand(U32 value);
 
-internal CV_C13InlineSiteDecoder      cv_c13_inline_site_decoder_init(U32 file_off, U32 first_source_ln, U32 parent_voff);
+internal CV_C13InlineSiteDecoder      cv_c13_inline_site_decoder_init(U32 file_off, U32 first_source_ln, U64 parent_voff);
 internal CV_C13InlineSiteDecoderStep cv_c13_inline_site_decoder_step(CV_C13InlineSiteDecoder *decoder, String8 binary_annots);
 
 //- Symbol/Leaf Helpers

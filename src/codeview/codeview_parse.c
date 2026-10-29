@@ -179,6 +179,11 @@ cv_f64_from_numeric(CV_NumericParsed *num)
 internal U64
 cv_decode_inline_annot_u32(String8 data, U64 offset, U32 *out_value)
 {
+  // validate the complete compressed integer before consuming any bytes
+  if (offset >= data.size) { return 0; }
+  U8 first = data.str[offset];
+  U64 encoded_size = first < 0x80 ? 1 : first < 0xc0 ? 2 : first < 0xe0 ? 4 : 0;
+  if (encoded_size == 0 || encoded_size > data.size - offset) { return 0; }
   U64 cursor = offset;
   
   // rjf: read header
@@ -232,8 +237,9 @@ cv_decode_inline_annot_u32(String8 data, U64 offset, U32 *out_value)
 internal U64
 cv_decode_inline_annot_s32(String8 data, U64 offset, S32 *out_value)
 {
-  U32 value;
+  U32 value = 0;
   U64 read_size = cv_decode_inline_annot_u32(data, offset, &value);
+  if (read_size == 0) { return 0; }
   if(value & 1)
   {
     value = -(value >> 1);
@@ -262,10 +268,12 @@ cv_inline_annot_signed_from_unsigned_operand(U32 value)
 }
 
 internal CV_C13InlineSiteDecoder
-cv_c13_inline_site_decoder_init(U32 file_off, U32 first_source_ln, U32 parent_voff)
+cv_c13_inline_site_decoder_init(U32 file_off, U32 first_source_ln, U64 parent_voff)
 {
   CV_C13InlineSiteDecoder decoder = {0};
   decoder.parent_voff             = parent_voff;
+  decoder.code_offset_base        = parent_voff;
+  decoder.code_chunk_changed      = 1;
   decoder.file_off                = file_off;
   decoder.ln                      = (S32)first_source_ln;
   decoder.cn                      = 1;
@@ -277,10 +285,16 @@ internal CV_C13InlineSiteDecoderStep
 cv_c13_inline_site_decoder_step(CV_C13InlineSiteDecoder *decoder, String8 binary_annots)
 {
   CV_C13InlineSiteDecoderStep result = {0};
+
+#define read_annot(kind, dst) do {                                                      \
+  U64 read_size = cv_decode_inline_annot_##kind(binary_annots, decoder->cursor, (dst)); \
+  if (read_size == 0) { goto bad_annotation; }                                          \
+  decoder->cursor += read_size;                                                         \
+} while (0)
   
   for (; decoder->cursor < binary_annots.size && result.flags == 0; ) {
     U32 op = CV_InlineBinaryAnnotation_Null;
-    decoder->cursor += cv_decode_inline_annot_u32(binary_annots, decoder->cursor, &op);
+    read_annot(u32, &op);
     
     switch (op) {
       case CV_InlineBinaryAnnotation_Null: {
@@ -290,22 +304,37 @@ cv_c13_inline_site_decoder_step(CV_C13InlineSiteDecoder *decoder, String8 binary
         decoder->code_length_changed = 1;
       } break;
       case CV_InlineBinaryAnnotation_CodeOffset: {
-        decoder->cursor += cv_decode_inline_annot_u32(binary_annots, decoder->cursor, &decoder->code_offset);
+        read_annot(u32, &decoder->code_offset);
         decoder->code_offset_lo         = decoder->code_offset;
         decoder->code_offset_lo_changed = 1;
         decoder->code_offset_changed    = 1;
       } break;
       case CV_InlineBinaryAnnotation_ChangeCodeOffsetBase: {
-        AssertAlways(!"TODO: test case");
-        // U32 delta = 0;
-        // decoder->cursor += cv_decode_inline_annot_u32(binary_annots, decoder->cursor, &delta);
-        // decoder->code_offset_base = decoder->code_offset;
-        // decoder->code_offset_end  = decoder->code_offset + delta;
-        // decoder->code_offset     += delta;
+        // MSVC PGO starts new offsets in the selected chunk; source state
+        // (file, line and column) survives the switch
+        U32 chunk_idx = 0;
+        read_annot(u32, &chunk_idx);
+        if (chunk_idx > decoder->separated_code_voffs.count) { goto bad_annotation; }
+        U64 base = decoder->parent_voff;
+        if (chunk_idx != 0) {
+          if (decoder->separated_code_voffs.v == 0) { goto bad_annotation; }
+          base = decoder->separated_code_voffs.v[chunk_idx - 1];
+        }
+        if (base == max_U64) { goto bad_annotation; }
+        decoder->code_offset_base       = base;
+        decoder->code_offset            = 0;
+        decoder->code_offset_lo         = 0;
+        decoder->code_length            = 0;
+        decoder->code_offset_changed    = 0;
+        decoder->code_offset_lo_changed = 0;
+        decoder->code_length_changed    = 0;
+        decoder->code_chunk_changed     = 1;
+        decoder->ln_changed             = 1;
+        decoder->file_off_changed       = 1; // end the previous line sequence even if the file hasn't changed
       } break;
       case CV_InlineBinaryAnnotation_ChangeCodeOffset: {
         U32 delta = 0;
-        decoder->cursor += cv_decode_inline_annot_u32(binary_annots, decoder->cursor, &delta);
+        read_annot(u32, &delta);
         
         decoder->code_offset += delta;
         
@@ -317,20 +346,20 @@ cv_c13_inline_site_decoder_step(CV_C13InlineSiteDecoder *decoder, String8 binary
       } break;
       case CV_InlineBinaryAnnotation_ChangeCodeLength: {
         decoder->code_length = 0;
-        decoder->cursor += cv_decode_inline_annot_u32(binary_annots, decoder->cursor, &decoder->code_length);
+        read_annot(u32, &decoder->code_length);
         decoder->code_length_changed = 1;
       } break;
       case CV_InlineBinaryAnnotation_ChangeFile: {
         U32 old_file_off = decoder->file_off;
-        decoder->cursor += cv_decode_inline_annot_u32(binary_annots, decoder->cursor, &decoder->file_off);
+        read_annot(u32, &decoder->file_off);
         decoder->file_off_changed = old_file_off != decoder->file_off;
-        // Compiler isn't obligated to terminate code sequence before chaning files,
-        // so we have to always force emit code range on file change.
+        // compiler isn't obligated to terminate code sequence before chaning files,
+        // so we have to always force emit code range on file change
         decoder->code_length_changed = decoder->file_off_changed;
       } break;
       case CV_InlineBinaryAnnotation_ChangeLineOffset: {
         S32 delta = 0;
-        decoder->cursor += cv_decode_inline_annot_s32(binary_annots, decoder->cursor, &delta);
+        read_annot(s32, &delta);
         
         decoder->ln         += delta;
         decoder->ln_changed  = 1;
@@ -359,7 +388,7 @@ cv_c13_inline_site_decoder_step(CV_C13InlineSiteDecoder *decoder, String8 binary
       } break;
       case CV_InlineBinaryAnnotation_ChangeCodeOffsetAndLineOffset: {
         U32 code_offset_and_line_offset = 0;
-        decoder->cursor += cv_decode_inline_annot_u32(binary_annots, decoder->cursor, &code_offset_and_line_offset);
+        read_annot(u32, &code_offset_and_line_offset);
         
         S32 line_delta = cv_inline_annot_signed_from_unsigned_operand(code_offset_and_line_offset >> 4);
         U32 code_delta = (code_offset_and_line_offset & 0xf);
@@ -377,8 +406,8 @@ cv_c13_inline_site_decoder_step(CV_C13InlineSiteDecoder *decoder, String8 binary
       } break;
       case CV_InlineBinaryAnnotation_ChangeCodeLengthAndCodeOffset: {
         U32 offset_delta = 0;
-        decoder->cursor += cv_decode_inline_annot_u32(binary_annots, decoder->cursor, &decoder->code_length);
-        decoder->cursor += cv_decode_inline_annot_u32(binary_annots, decoder->cursor, &offset_delta); 
+        read_annot(u32, &decoder->code_length);
+        read_annot(u32, &offset_delta);
         
         decoder->code_offset += offset_delta;
         
@@ -395,22 +424,24 @@ cv_c13_inline_site_decoder_step(CV_C13InlineSiteDecoder *decoder, String8 binary
         // U32 column_end = 0;
         // decoder->cursor += cv_decode_inline_annot_u32(binary_annots, decoder->cursor, &column_end);
       } break;
+      default: goto bad_annotation;
     }
     
     U64 line_code_offset = decoder->code_offset;
     
     if (decoder->code_length_changed) {
       // compute upper bound of the range
-      U64 code_offset_hi = decoder->code_offset + decoder->code_length;
+      U64 code_offset_hi = (U64)decoder->code_offset + decoder->code_length;
+      if (code_offset_hi > max_U32 || code_offset_hi > max_U64 - decoder->code_offset_base) { goto bad_annotation; }
       
       // can last code range be extended to cover current sequence too?
-      if (decoder->last_range.max == decoder->parent_voff + decoder->code_offset_lo) {
-        decoder->last_range.max = decoder->parent_voff + code_offset_hi;
+      if ( ! decoder->code_chunk_changed && decoder->last_range.max == decoder->code_offset_base + decoder->code_offset_lo) {
+        decoder->last_range.max = decoder->code_offset_base + code_offset_hi;
         
         result.flags |= CV_C13InlineSiteDecoderStepFlag_ExtendLastRange;
         result.range  = decoder->last_range;
       } else {
-        decoder->last_range      = rng_1u64(decoder->parent_voff + decoder->code_offset_lo, decoder->parent_voff + code_offset_hi);
+        decoder->last_range      = rng_1u64(decoder->code_offset_base + decoder->code_offset_lo, decoder->code_offset_base + code_offset_hi);
         decoder->file_last_range = decoder->last_range;
         
         result.flags |= CV_C13InlineSiteDecoderStepFlag_EmitRange;
@@ -423,6 +454,7 @@ cv_c13_inline_site_decoder_step(CV_C13InlineSiteDecoder *decoder, String8 binary
       decoder->code_offset_lo_changed = 0;
       decoder->code_length_changed    = 0;
       decoder->code_length            = 0;
+      decoder->code_chunk_changed     = 0;
     }
     
     if (decoder->file_off_changed || (decoder->file_count == 0)) {
@@ -441,7 +473,8 @@ cv_c13_inline_site_decoder_step(CV_C13InlineSiteDecoder *decoder, String8 binary
         result.flags         |= CV_C13InlineSiteDecoderStepFlag_EmitLine;
         result.ln             = decoder->ln;
         result.cn             = decoder->cn;
-        result.line_voff      = decoder->parent_voff + line_code_offset;
+        if (line_code_offset > max_U64 - decoder->code_offset_base) { goto bad_annotation; }
+        result.line_voff      = decoder->code_offset_base + line_code_offset;
         result.line_voff_end  = decoder->last_range.max;
         
         // update state
@@ -456,6 +489,14 @@ cv_c13_inline_site_decoder_step(CV_C13InlineSiteDecoder *decoder, String8 binary
   }
   
   return result;
+
+bad_annotation:
+  decoder->error = 1;
+  decoder->cursor = binary_annots.size;
+  MemoryZeroStruct(&result);
+  result.flags = CV_C13InlineSiteDecoderStepFlag_Error;
+  return result;
+#undef read_annot
 }
 
 //- Symbol/Leaf Helpers

@@ -171,6 +171,37 @@ struct CV2R_TypeIdChain
   CV_TypeId itype;
 };
 
+//- separated procedure chunks
+
+typedef struct CV2R_SeparatedCodeChunk CV2R_SeparatedCodeChunk;
+struct CV2R_SeparatedCodeChunk
+{
+  CV2R_SeparatedCodeChunk *next;
+  CV_SymSepcode *sym;
+  U64 voff;
+};
+
+typedef struct CV2R_SeparatedCode CV2R_SeparatedCode;
+struct CV2R_SeparatedCode
+{
+  CV2R_SeparatedCode *next;
+  U16 parent_sec;
+  U32 parent_off;
+  CV2R_SeparatedCodeChunk *first;
+  CV2R_SeparatedCodeChunk *last;
+  U64Array voffs;
+  RDIM_Scope *root_scope;
+  U64 procedure_num;
+  CV_ProcFlags proc_flags;
+};
+
+typedef struct CV2R_SeparatedCodeMap CV2R_SeparatedCodeMap;
+struct CV2R_SeparatedCodeMap
+{
+  CV2R_SeparatedCode **slots;
+  U64 slots_count;
+};
+
 ////////////////////////////////
 //~ rjf: Basic Helpers
 
@@ -178,6 +209,10 @@ internal U64 cv2r_end_of_cplusplus_container_name(String8 str);
 internal U64 cv2r_hash_from_voff(U64 voff);
 internal int cv2r_namespace_node_is_before(void *raw_a, void *raw_b);
 internal U64 cv2r_voff_from_soff(CV2R_Section *sections, U64 sections_count, U64 sec_idx, U64 soff);
+internal B32 cv2r_rec_has_header(CV_RecIter *iter, U64 size);
+internal CV2R_SeparatedCode *cv2r_separated_code_from_parent(CV2R_SeparatedCodeMap *map, U16 sec, U32 off);
+internal CV2R_SeparatedCodeMap cv2r_separated_code_map_from_sym(Arena *arena, CV_SymParsed *sym, CV2R_Section *sections, U64 sections_count);
+internal B32 cv2r_inline_site_decoder_is_valid(CV_C13InlineSiteDecoder decoder, String8 binary_annots);
 
 ////////////////////////////////
 //~ rjf: String Table Functions

@@ -2093,9 +2093,15 @@ internal CV_InlineBinaryAnnotsParsed
 cv_c13_parse_inline_binary_annots(Arena                    *arena,
                                   U64                       parent_voff,
                                   CV_C13InlineeLinesParsed *inlinee_parsed,
-                                  String8                   binary_annots)
+                                  String8                   binary_annots,
+                                  U64Array                  separated_code_voffs)
 {
   Temp scratch = scratch_begin(&arena, 1);
+
+  CV_InlineBinaryAnnotsParsed result = {0};
+  if (inlinee_parsed == 0) {
+    goto exit;
+  }
 
   struct CodeRange {
     struct CodeRange *next;
@@ -2124,8 +2130,13 @@ cv_c13_parse_inline_binary_annots(Arena                    *arena,
   U64                file_count  = 0;
 
   CV_C13InlineSiteDecoder decoder = cv_c13_inline_site_decoder_init(inlinee_parsed->file_off, inlinee_parsed->first_source_ln, parent_voff);
+  decoder.separated_code_voffs = separated_code_voffs;
   for (;;) {
     CV_C13InlineSiteDecoderStep step = cv_c13_inline_site_decoder_step(&decoder, binary_annots);
+    if (decoder.error || (step.flags & CV_C13InlineSiteDecoderStepFlag_Error)) {
+      goto exit;
+    }
+
     if (step.flags == 0) {
       break;
     }
@@ -2137,13 +2148,23 @@ cv_c13_parse_inline_binary_annots(Arena                    *arena,
         code_ranges.last->v = step.range;
       }
     }
+
+    // a file change can also finish the preceding sequence's range
+    if (file_last && (step.flags & (CV_C13InlineSiteDecoderStepFlag_EmitRange | CV_C13InlineSiteDecoderStepFlag_ExtendLastRange))) {
+      file_last->last_code_range = step.range;
+    }
+
     if (step.flags & CV_C13InlineSiteDecoderStepFlag_EmitFile) {
       struct SourceFile *file = push_array(scratch.arena, struct SourceFile, 1);
       file->checksum_off      = step.file_off;
       SLLQueuePush(file_first, file_last, file);
       ++file_count;
     }
+
     if (step.flags & CV_C13InlineSiteDecoderStepFlag_EmitLine) {
+      if (step.flags & (CV_C13InlineSiteDecoderStepFlag_EmitRange | CV_C13InlineSiteDecoderStepFlag_ExtendLastRange)) {
+        file_last->last_code_range = step.range;
+      }
       struct SourceLine *line = push_array(scratch.arena, struct SourceLine, 1);
       line->voff              = step.line_voff;
       line->ln                = step.ln;
@@ -2181,11 +2202,11 @@ cv_c13_parse_inline_binary_annots(Arena                    *arena,
   }
 
   // fill out result
-  CV_InlineBinaryAnnotsParsed result = {0};
-  result.lines_count                 = file_count;
-  result.lines                       = lines;
-  result.code_ranges                 = code_ranges;
+  result.lines_count = file_count;
+  result.lines       = lines;
+  result.code_ranges = code_ranges;
 
+exit:;
   scratch_end(scratch);
   return result;
 }

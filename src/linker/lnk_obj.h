@@ -299,5 +299,5 @@ internal U32                lnk_symbol_from_section_offset(LNK_ObjSymbolMap *map
 internal LNK_ObjLineMap * lnk_line_map_from_obj(Arena *arena, LNK_Obj *obj);
 internal CV_Line *        lnk_lines_from_section_offset(LNK_ObjLineMap *map, U64 section_number, U64 offset, U64 *line_count_out);
 internal LNK_InlineSite * lnk_inline_site_from_section_offset(LNK_ObjLineMap *map, U64 section_number, U64 offset, LNK_Symbol *callee_symbol);
-internal CV_Line *        lnk_line_from_inline_site(LNK_InlineSite *site, U32 offset);
+internal CV_Line *        lnk_line_from_inline_site(LNK_InlineSite *site, U64 section_offset);
 
