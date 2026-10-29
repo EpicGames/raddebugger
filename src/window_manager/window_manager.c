@@ -5,7 +5,6 @@
 //~ rjf: Generated Code
 
 #include "window_manager/generated/window_manager.meta.c"
-#include <stdio.h>
 
 ////////////////////////////////
 //~ rjf: Handle Type Helpers
