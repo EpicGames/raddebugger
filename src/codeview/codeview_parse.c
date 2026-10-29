@@ -649,7 +649,8 @@ cv_get_symbol_type_index_offsets(Arena *arena, CV_SymKind kind, String8 data)
         cv_symbol_type_index_info_push(arena, &list, CV_TypeIndexSource_IPI, sizeof(CV_SymFunctionList) + i * sizeof(CV_TypeIndex));
       }
     } break;
-    case CV_SymKind_INLINESITE: {
+    case CV_SymKind_INLINESITE:
+    case CV_SymKind_INLINESITE2: {
       cv_symbol_type_index_info_push(arena, &list, CV_TypeIndexSource_IPI, OffsetOf(CV_SymInlineSite, inlinee));
     } break;
     case CV_SymKind_HEAPALLOCSITE: {
