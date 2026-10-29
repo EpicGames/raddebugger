@@ -698,17 +698,24 @@ coff_parse_archive_member_header(String8 raw_archive, U64 offset, COFF_ParsedArc
     String8 mode     = str8_skip_chop_whitespace(str8_cstring_capped(header->mode,     header->mode     + sizeof(header->mode)    ));
     String8 size     = str8_skip_chop_whitespace(str8_cstring_capped(header->size,     header->size     + sizeof(header->size)    ));
     String8 end      = str8_cstring_capped(header->end, header->end + sizeof(header->end));
-    
-    U32 data_size = u32_from_str8(size, 10);
-    U64 data_off  = offset + sizeof(COFF_ArchiveMemberHeader);
-    
+
+    if ( ! str8_is_integer(size, 10)) { return 0; }
+    U64 data_size = u64_from_str8(size, 10);
+    if (data_size > max_U32) { return 0; }
+
+    U64 time_stamp = 0;
+    if (str8_is_integer(date, 10)) {
+      time_stamp = u64_from_str8(date, 10);
+      if (time_stamp > max_U32) { time_stamp = 0; }
+    }
+
     header_out->name           = name;
-    header_out->time_stamp     = u32_from_str8(date, 10);
-    header_out->user_id        = u32_from_str8(user_id, 10);
-    header_out->group_id       = u32_from_str8(group_id, 10);
+    header_out->time_stamp     = time_stamp;
+    header_out->user_id        = str8_is_integer(user_id, 10) ? u32_from_str8(user_id, 10)  : 0;
+    header_out->group_id       = str8_is_integer(group_id, 10) ? u32_from_str8(group_id, 10) : 0;
     header_out->mode           = mode;
     header_out->is_end_correct = str8_match_lit("`\n", end, 0);
-    header_out->data_range     = rng_1u64(data_off, data_off + data_size);
+    header_out->data_range     = r1u64s(offset + sizeof(COFF_ArchiveMemberHeader), data_size);
     
     return sizeof(*header);
   }
