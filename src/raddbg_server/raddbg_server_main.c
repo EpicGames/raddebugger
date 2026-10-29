@@ -22,6 +22,7 @@
 #include "gnu/gnu.h"
 #include "gnu/gnu_parse.h"
 #include "elf/elf_parse.h"
+#include "stap/stap_parse.h"
 #include "demon/demon_inc.h"
 #include "dbg_server/dbg_server.h"
 
@@ -37,6 +38,7 @@
 #include "gnu/gnu.c"
 #include "gnu/gnu_parse.c"
 #include "elf/elf_parse.c"
+#include "stap/stap_parse.c"
 #include "demon/demon_inc.c"
 #include "dbg_server/dbg_server.c"
 
