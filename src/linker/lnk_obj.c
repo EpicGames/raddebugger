@@ -636,6 +636,7 @@ lnk_symlinks_from_obj(Arena *arena, LNK_SymbolTable *symtab, LNK_Obj *obj)
   for LNK_EachCoffSymbol(it, obj) {
     U64               symbol_idx = it.symbol_idx;
     COFF_ParsedSymbol symbol     = it.v;
+
     COFF_SymbolValueInterpType interp = coff_interp_from_parsed_symbol(symbol);
     if (interp != COFF_SymbolValueInterp_Regular) { continue; }
 
@@ -646,8 +647,8 @@ lnk_symlinks_from_obj(Arena *arena, LNK_SymbolTable *symtab, LNK_Obj *obj)
 
     // external symbols
     if (symbol.storage_class == COFF_SymStorageClass_External && symbol.aux_symbol_count == 0) {
-      String8 symbol_name = lnk_symbol_name_from_coff_symbol_idx(obj, symbol_idx);
-      B32 can_set_symlink = (symlink->obj == 0 || symbol.value == 0);
+      String8 symbol_name     = lnk_symbol_name_from_coff_symbol_idx(obj, symbol_idx);
+      B32     can_set_symlink = (symlink->obj == 0 || symbol.value == 0);
       if (!can_set_symlink && symlink->obj == obj) {
         COFF_ParsedSymbol leader = lnk_parsed_symbol_from_coff_symbol_idx_no_name(symlink->obj, symlink->symbol_idx);
         B32 leader_is_same_section  = leader.section_number == symbol.section_number;
@@ -663,7 +664,15 @@ lnk_symlinks_from_obj(Arena *arena, LNK_SymbolTable *symtab, LNK_Obj *obj)
       if (can_set_symlink) {
         LNK_SymbolHashTrie *link_symbol = lnk_symbol_table_search_(symtab, symbol_name);
         if (link_symbol) {
-          *symlink = lnk_ref_from_symbol(link_symbol->value);
+          // section symlink must point to a symbol with a valid section number;
+          // make sure that it was not replaced by a common symbol
+          LNK_ObjSymbolRef  leader        = lnk_ref_from_symbol(link_symbol->value);
+          COFF_ParsedSymbol leader_symbol = lnk_parsed_symbol_from_coff_symbol_idx_no_name(leader.obj, leader.symbol_idx);
+          if (coff_interp_from_parsed_symbol(leader_symbol) == COFF_SymbolValueInterp_Regular) {
+            *symlink = leader;
+          } else {
+            MemoryZeroStruct(symlink);
+          }
         }
       }
     }

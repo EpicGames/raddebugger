@@ -4709,6 +4709,75 @@ TEST(reloc_against_removed_comdat)
   T_Ok(g_last_exit_code == 0);
 }
 
+TEST(comdat_vs_larger_common)
+{
+  T_Ok(t_write_def_obj("comdat.obj", (T_COFF_DefObj){
+    .machine = T_COFF_DefSetMachine(X64),
+    .sections = (T_COFF_DefSection[]){
+      { "rdata", ".rdata", str8_lit_comp("\x01\x02\x03\x04"), .flags = "r:data", .raw_flags = COFF_SectionFlag_LnkCOMDAT },
+      {0}
+    },
+    .symbols = (T_COFF_DefSymbol[]){
+      T_COFF_DefSymbol_Secdef("rdata", COFF_ComdatSelect_Any),
+      T_COFF_DefSymbol_Extern("TEST", "rdata", 0),
+      {0}
+    }
+  }));
+
+  T_Ok(t_write_def_obj("common.obj", (T_COFF_DefObj){
+    .machine = T_COFF_DefSetMachine(X64),
+    .symbols = (T_COFF_DefSymbol[]){ T_COFF_DefSymbol_Common("TEST", 16), {0} }
+  }));
+
+  T_Ok(t_write_def_obj("entry.obj", (T_COFF_DefObj){
+    .machine = T_COFF_DefSetMachine(X64),
+    .sections = (T_COFF_DefSection[]){
+      {
+        "text", ".text",
+        str8_lit_comp(
+          "\x48\xC7\xC0\x00\x00\x00\x00" // mov rax, $imm
+          "\xC3"                         // ret
+        ),
+        .flags = "rx:code",
+        .relocs = (T_COFF_DefReloc[]){ T_COFF_DefReloc(X64_Addr32Nb, 3, "TEST"), {0} }
+      },
+      {0}
+    },
+    .symbols = (T_COFF_DefSymbol[]){
+      T_COFF_DefSymbol_Extern("entry", "text", 0),
+      T_COFF_DefSymbol_Undef("TEST"),
+      {0}
+    }
+  }));
+
+  char *orders[] = {
+    "comdat.obj common.obj entry.obj", // COMDAT defined first, replaced by common
+    "common.obj comdat.obj entry.obj", // common defined first, COMDAT discarded on arrival
+  };
+  for EachElement(i, orders) {
+    t_invoke_linkerf("/subsystem:console /entry:entry /nodefaultlib /opt:noref,noicf /out:a.exe %s", orders[i]);
+    T_Ok(g_last_exit_code == 0);
+
+    String8             exe           = t_read_file(arena, str8_lit("a.exe"));
+    PE_BinInfo          pe            = pe_bin_info_from_data(arena, exe);
+    COFF_SectionHeader *section_table = (COFF_SectionHeader *)str8_substr(exe, pe.section_table_range).str;
+    String8             string_table  = str8_substr(exe, pe.string_table_range);
+
+    // common symbol must win and land in .bss
+    COFF_SectionHeader *bss = coff_section_header_from_name(string_table, section_table, pe.section_count, str8_lit(".bss"));
+    T_Ok(bss != 0);
+    T_Ok(bss->vsize >= 16);
+
+    // reloc against TEST must resolve into the common block, not the discarded COMDAT
+    COFF_SectionHeader *text = coff_section_header_from_name(string_table, section_table, pe.section_count, str8_lit(".text"));
+    T_Ok(text != 0);
+    String8 text_data = str8_substr(exe, rng_1u64(text->foff, text->foff + text->fsize));
+    T_Ok(text_data.size >= 7);
+    U32     test_rva  = *(U32 *)(text_data.str + 3);
+    T_Ok(bss->voff <= test_rva && test_rva < bss->voff + bss->vsize);
+  }
+}
+
 TEST(sect_align)
 {
   T_Ok(t_write_def_obj("test.obj", (T_COFF_DefObj){
