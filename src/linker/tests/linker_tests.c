@@ -8937,7 +8937,8 @@ TEST(patch_cv_symbol_tree)
   str8_list_push(arena, &raw_symbols, cv_make_symbol(arena, CV_SymKind_END,            cv_make_end(arena)));
 
   String8 symbol_data = str8_list_join(arena, &raw_symbols, 0);
-  U64 tree_size = cv_patch_symbol_tree_offsets(symbol_data, sizeof(CV_Signature), 4);
+  U64 tree_size = 0;
+  T_Ok(cv_patch_symbol_tree_offsets(symbol_data, sizeof(CV_Signature), 4, &tree_size));
   T_Ok(tree_size == 84);
 
   {

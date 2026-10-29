@@ -1564,23 +1564,24 @@ cv_symbol_list_push(Arena *arena, CV_SymbolList *list, CV_Symbol v)
   return node;
 }
 
-internal U64
-cv_patch_symbol_tree_offsets(String8 raw_symbols, U64 base_offset, U64 align)
+internal B32
+cv_patch_symbol_tree_offsets(String8 raw_symbols, U64 base_offset, U64 align, U64 *tree_size_out)
 {
   Temp scratch = scratch_begin(0, 0);
 
   struct Stack { struct Stack *next; U64 symbol_pos; };
   struct Stack *stack = 0, *free_list = 0;
 
-  U64 cursor = 0;
+  B32 is_patched = 0;
+  U64 cursor     = 0;
 
   for (;;) {
     CV_SymbolHeader symbol_header;
     if (str8_deserial_read_struct(raw_symbols, cursor, &symbol_header) != sizeof(symbol_header)) { break; }
+
     U64 symbol_size = sizeof(CV_SymSize) + symbol_header.size;
     if (symbol_size < sizeof(symbol_header) || symbol_size > raw_symbols.size - cursor) {
-      Assert(0 && "malformed symbol stream");
-      break;
+      goto exit;
     }
 
     if (cv_is_scope_symbol(symbol_header.kind)) {
@@ -1605,7 +1606,7 @@ cv_patch_symbol_tree_offsets(String8 raw_symbols, U64 base_offset, U64 align)
       SLLStackPush(stack, frame);
 
     } else if (cv_is_end_symbol(symbol_header.kind)) {
-      if (stack == 0) { Assert(0 && "malformed symbol stream"); break; }
+      if (stack == 0) { goto exit; }
 
       // patch symbol end
       U32 end_offset = safe_cast_u32(base_offset + cursor);
@@ -1622,8 +1623,14 @@ cv_patch_symbol_tree_offsets(String8 raw_symbols, U64 base_offset, U64 align)
     cursor += AlignPow2(symbol_size, align);
   }
 
+  if (tree_size_out) {
+    *tree_size_out = cursor;
+  }
+
+  is_patched = 1;
+  exit:;
   scratch_end(scratch);
-  return cursor;
+  return is_patched;
 }
 
 // $$FileChksms

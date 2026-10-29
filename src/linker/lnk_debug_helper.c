@@ -38,7 +38,9 @@ lnk_make_debug_s(Arena *arena, String8List symbols)
   if (symbols.total_size > 0) {
     U64     symbols_offset = sizeof(CV_Signature) + sizeof(CV_C13SubSectionHeader);
     String8 raw_symbols    = str8_substr(debug_s_data, r1u64s(symbols_offset, symbols.total_size));
-    cv_patch_symbol_tree_offsets(raw_symbols, sizeof(CV_Signature), CV_SymbolAlign);
+    if ( ! cv_patch_symbol_tree_offsets(raw_symbols, sizeof(CV_Signature), CV_SymbolAlign, 0)) {
+      lnk_error(LNK_Error_IllData, "failed to patch CodeView tree offsets");
+    }
   }
 
   scratch_end(scratch);

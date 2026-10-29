@@ -484,7 +484,7 @@ internal B32             cv_debug_t_is_type_server_ref(CV_DebugT *debug_t);
 internal void            cv_symbol_list_push_node(CV_SymbolList *list, CV_SymbolNode *node);
 internal CV_SymbolNode * cv_symbol_list_push(Arena *arena, CV_SymbolList *list, CV_Symbol v);
 
-internal U64 cv_patch_symbol_tree_offsets(String8 raw_symbols, U64 base_offset, U64 align);
+internal B32 cv_patch_symbol_tree_offsets(String8 raw_symbols, U64 base_offset, U64 align, U64 *tree_size_out);
 
 // $$FileChksms
 #define CV_MAP_STRING_TO_OFFSET_FUNC(name) U64 name(void *ud, String8 string)

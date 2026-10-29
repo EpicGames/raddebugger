@@ -2825,7 +2825,9 @@ THREAD_POOL_TASK_FUNC(lnk_build_pdb_strings_modules_and_globals)
 
         if (mod->sym_data_size) {
           String8 symbols = str8_substr(module, r1u64(sizeof(CV_Signature), mod->sym_data_size));
-          cv_patch_symbol_tree_offsets(symbols, sizeof(CV_Signature), PDB_SYMBOL_ALIGN);
+          if ( ! cv_patch_symbol_tree_offsets(symbols, sizeof(CV_Signature), PDB_SYMBOL_ALIGN, 0)) {
+            lnk_error_obj(LNK_Error_IllData, task->cv->obj_arr[obj_idx], "failed to patch CodeView symbol tree offsets; unexpected symbol tree layout");
+          }
         }
       }
       barrier_wait(tp->barrier);
