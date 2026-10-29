@@ -2407,6 +2407,45 @@ struct CV_LeafVFuncOff
   U32       off;
 };
 
+//- (LeafKind: FRIENDFCN)
+
+typedef struct CV_LeafFriendFcn CV_LeafFriendFcn;
+struct CV_LeafFriendFcn
+{
+  U16       pad;
+  CV_TypeId itype;
+  // U8[] name (null terminated)
+};
+
+//- (LeafKind: FRIENDCLS)
+
+typedef struct CV_LeafFriendCls CV_LeafFriendCls;
+struct CV_LeafFriendCls
+{
+  U16       pad;
+  CV_TypeId itype;
+};
+
+//- (LeafKind: MEMBERMODIFY)
+
+typedef struct CV_LeafMemberModify CV_LeafMemberModify;
+struct CV_LeafMemberModify
+{
+  CV_FieldAttribs attribs;
+  CV_TypeId       itype;
+  // U8[] name (null terminated)
+};
+
+//- (LeafKind: BINTERFACE)
+
+typedef struct CV_LeafBInterface CV_LeafBInterface;
+struct CV_LeafBInterface
+{
+  CV_FieldAttribs attribs;
+  CV_TypeId       itype;
+  // CV_Numeric offset
+};
+
 //- (LeafKind: VFTABLE)
 
 typedef struct CV_LeafVFTable CV_LeafVFTable;
