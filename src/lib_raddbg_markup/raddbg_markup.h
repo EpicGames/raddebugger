@@ -284,7 +284,7 @@ raddbg_thread_name__impl(int id, char *fmt, ...)
   }
   
   // rjf: set thread name, windows 10 style
-  if(SetThreadDescription_function && id == GetCurrentThreadId())
+  if(SetThreadDescription_function && (DWORD)id == GetCurrentThreadId())
   {
     WCHAR buffer16[1024] = {0};
     int name_length = 0;
@@ -345,7 +345,7 @@ raddbg_thread_color__impl(int id, unsigned int hexcode)
     };
 #pragma pack(pop)
     RADDBG_ThreadColorInfo info;
-    info.dwThreadID = id;
+    info.dwThreadID = (DWORD)id;
     info.rgba = hexcode;
 #pragma warning(push)
 #pragma warning(disable: 6320 6322)
