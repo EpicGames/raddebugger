@@ -1267,23 +1267,22 @@ lnk_debug_s_from_obj(Arena *arena, LNK_Obj *obj)
 {
   Temp scratch = scratch_begin(&arena, 1);
 
+  // collect candidate .debug$S sections
   String8List raw_debug_s = {0};
-  {
-    for LNK_EachCoffSection(it, obj) {
-      LNK_ObjSection section      = it.v;
-      String8        section_name = lnk_obj_section_name_from_section_number(obj, section.section_number);
-      if (str8_match(section_name, str8_lit(".debug$S"), 0)) {
-        String8 debug_s = lnk_obj_section_data_from_number(obj, section.section_number);
-        str8_list_push(scratch.arena, &raw_debug_s, debug_s);
-      }
+  for LNK_EachCoffSection(it, obj) {
+    LNK_ObjSection section      = it.v;
+    String8        section_name = lnk_obj_section_name_from_section_number(obj, section.section_number);
+    if (str8_match(section_name, str8_lit(".debug$S"), 0)) {
+      String8 debug_s = lnk_obj_section_data_from_number(obj, section.section_number);
+      str8_list_push(scratch.arena, &raw_debug_s, debug_s);
     }
   }
 
+  // parse & merge sub sections
   CV_DebugS debug_s = {0};
-  {
-    for EachNode(node, String8Node, raw_debug_s.first) {
-      // parse & merge sub sections
-      CV_DebugS       ds    = cv_debug_s_from_data(arena, node->string);
+  for EachNode(node, String8Node, raw_debug_s.first) {
+    CV_DebugS ds;
+    if (cv_debug_s_from_data_checked(arena, node->string, &ds)) {
       CV_DebugS_Stats stats = cv_debug_s_stats(&ds);
       cv_debug_s_concat_in_place(&debug_s, &ds);
     }

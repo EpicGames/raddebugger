@@ -434,6 +434,7 @@ internal CV_ObjInfo cv_obj_info_from_symbol(CV_Symbol symbol);
 
 internal CV_Signature cv_signature_from_debug_s(String8 raw_debug_s);
 internal CV_DebugS    cv_debug_s_from_data_c13(Arena *arena, String8 raw_debug_s);
+internal B32          cv_debug_s_from_data_checked(Arena *arena, String8 raw_debug_s, CV_DebugS *debug_s_out);
 internal CV_DebugS    cv_debug_s_from_data(Arena *arena, String8 raw_debug_s);
 internal void         cv_debug_s_concat_in_place(CV_DebugS *dst, CV_DebugS *src);
 internal U64          cv_size_from_debug_s(CV_DebugS *debug_s, U64 align);

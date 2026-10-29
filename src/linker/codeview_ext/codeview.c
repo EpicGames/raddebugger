@@ -804,29 +804,25 @@ cv_debug_s_from_data_c13(Arena *arena, String8 raw_debug_s)
   return debug_s;
 }
 
-internal CV_DebugS 
-cv_debug_s_from_data(Arena *arena, String8 raw_debug_s)
+internal B32 
+cv_debug_s_from_data_checked(Arena *arena, String8 raw_debug_s, CV_DebugS *debug_s_out)
 {
-  CV_DebugS result; MemoryZeroStruct(&result);
   if (raw_debug_s.size >= sizeof(CV_Signature)) {
     CV_Signature sig = cv_signature_from_debug_s(raw_debug_s);
-    switch (sig) {
-    case CV_Signature_C13: {
+    if (sig == CV_Signature_C13) {
       String8 raw_debug_s_past_sig = str8_substr(raw_debug_s, r1u64(sizeof(sig), raw_debug_s.size));
-      result = cv_debug_s_from_data_c13(arena, raw_debug_s_past_sig);
-    } break;
-    case CV_Signature_C6: {
-      Assert(!"TODO: handle C6");
-    } break;
-    case CV_Signature_C7: {
-      Assert(!"TODO: handle C7");
-    } break;
-    case CV_Signature_C11: {
-      Assert(!"TODO: handle C11");
-    } break;
-    default: Assert(!"invalid signature"); break;
+      *debug_s_out = cv_debug_s_from_data_c13(arena, raw_debug_s_past_sig);
+      return 1;
     }
   }
+  return 0;
+}
+
+internal CV_DebugS
+cv_debug_s_from_data(Arena *arena, String8 raw_debug_s)
+{
+  CV_DebugS result = {0};
+  AssertAlways(cv_debug_s_from_data_checked(arena, raw_debug_s, &result));
   return result;
 }
 
@@ -1434,16 +1430,22 @@ cv_debug_t_from_data(Arena *arena, String8 data, U64 align)
   return result;
 }
 
+internal B32
+cv_debug_t_get_leaf_checked(CV_DebugT *debug_t, U64 leaf_idx, CV_Leaf *leaf_out)
+{
+  if (debug_t->count > 0 && leaf_idx < debug_t->count) {
+    cv_read_leaf(debug_t->data, debug_t->offsets[leaf_idx], 1, leaf_out);
+    return cv_header_struct_size_from_leaf_kind(leaf_out->kind) <= leaf_out->data.size;
+  }
+  return 0;
+}
+
 internal CV_Leaf
 cv_debug_t_get_leaf(CV_DebugT *debug_t, U64 leaf_idx)
 {
-  CV_Leaf leaf = {0};
-  if (debug_t->count > 0) {
-    Assert(leaf_idx < debug_t->count);
-    cv_read_leaf(debug_t->data, debug_t->offsets[leaf_idx], 1, &leaf);
-    Assert(cv_header_struct_size_from_leaf_kind(leaf.kind) <= leaf.data.size);
-  }
-  return leaf;
+  CV_Leaf result;
+  AssertAlways(cv_debug_t_get_leaf_checked(debug_t, leaf_idx, &result));
+  return result;
 }
 
 internal CV_TypeIndexSource
@@ -1541,7 +1543,12 @@ cv_debug_t_is_pch(CV_DebugT *debug_t)
 internal B32
 cv_debug_t_is_type_server_ref(CV_DebugT *debug_t)
 {
-  return cv_is_leaf_type_server(cv_debug_t_get_leaf(debug_t, 0).kind);
+  B32 is_type_server = 0;
+  CV_Leaf leaf;
+  if (cv_debug_t_get_leaf_checked(debug_t, 0, &leaf)) {
+    is_type_server = cv_is_leaf_type_server(leaf.kind);
+  }
+  return is_type_server;
 }
 
 // $$Symbols
@@ -2082,7 +2089,7 @@ cv_c13_make_inlinee_lines_accel(Arena *arena, CV_C13InlineeLinesParsedList inlin
   // alloc hash table
   CV_InlineeLinesAccel *accel = push_array(arena, CV_InlineeLinesAccel, 1);
   accel->bucket_count = 0;
-  accel->bucket_max   = (U64)((F64)inlinee_lines.count * 2.5);
+  accel->bucket_max   = Max((U64)((F64)inlinee_lines.count * 2.5), 1);
   accel->buckets      = push_array(arena, CV_C13InlineeLinesParsed *, accel->bucket_max);
 
   // push parsed inlinees
