@@ -468,6 +468,7 @@ internal CV_TypeIndexSource cv_type_index_source_from_debug_t(CV_DebugT *debug_t
 internal B32             cv_debug_t_from_data_checked (Arena *arena, String8 data, U64 align, U32 *offsets, U64 *source_counts, CV_DebugT *out);
 internal U64             cv_leaf_idx_from_ti          (CV_DebugT *debug_t, CV_TypeIndexSource source, CV_TypeIndex ti);
 internal CV_TypeIndex    cv_ti_from_leaf_idx          (CV_DebugT *debug_t, CV_TypeIndexSource source, U64 leaf_idx);
+internal B32             cv_debug_t_get_leaf_checked  (CV_DebugT *debug_t, U64 leaf_idx, CV_Leaf *leaf_out);
 internal CV_Leaf         cv_debug_t_get_leaf          (CV_DebugT *debug_t, U64 leaf_idx);
 internal CV_Leaf         cv_debug_t_get_leaf_from_ti  (CV_DebugT *debug_t, CV_TypeIndexSource source, CV_TypeIndex ti);
 internal String8         cv_debug_t_get_raw_leaf      (CV_DebugT *debug_t, U64 leaf_idx);

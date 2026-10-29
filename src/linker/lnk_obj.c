@@ -1463,7 +1463,11 @@ lnk_line_map_from_obj(Arena *arena, LNK_Obj *obj)
       }
 
       for EachIndex(leaf_idx, debug_t.count) {
-        CV_Leaf leaf = cv_debug_t_get_leaf(&debug_t, leaf_idx);
+        CV_Leaf leaf;
+        if ( ! cv_debug_t_get_leaf_checked(&debug_t, leaf_idx, &leaf)) {
+          lnk_error_obj(LNK_Warning_IllData, obj, "found a corrupted leaf (No. 0x%llx) in .debug$T; no inline site annotations", leaf_idx);
+          goto done;
+        }
 
         String8 name = str8_zero();
         if (leaf.kind == CV_LeafKind_FUNC_ID) {

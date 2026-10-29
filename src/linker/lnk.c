@@ -2814,7 +2814,7 @@ lnk_link_image(TP_Context *tp, TP_Arena *arena, LNK_Config *config, LNK_Inputer 
                 // is reference inline site?
                 LNK_InlineSite *inline_site = lnk_inline_site_from_section_offset(line_map, section_number, reloc->apply_off, symbol);
                 if (inline_site && inline_site->name.size) {
-                  CV_Line *line_inline = lnk_line_from_inline_site(inline_site, reloc->apply_off);
+                  CV_Line *line_inline = lnk_line_from_inline_site(inline_site, Compose64Bit(section_number, reloc->apply_off));
                   if (line_inline) {
                     ref_name    = inline_site->name;
                     source_line = line_inline;

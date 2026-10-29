@@ -1500,14 +1500,22 @@ THREAD_POOL_TASK_FUNC(lnk_hash_debug_t_task)
   CV_DebugT      *debug_t      = &task->input->debug_t_arr[obj_idx];
 
   for EachIndex(leaf_idx, debug_t->count) {
-    Temp                 temp    = temp_begin(scratch.arena);
-    CV_Leaf              leaf    = cv_debug_t_get_leaf(debug_t, leaf_idx);
+    Temp temp = temp_begin(scratch.arena);
+
+    CV_Leaf leaf;
+    if ( ! cv_debug_t_get_leaf_checked(debug_t, leaf_idx, &leaf)) {
+      lnk_error_obj(LNK_Error_IllData, task->input->obj_arr[obj_idx], "invalid CodeView Leaf 0x%llx", leaf_idx);
+      InvalidPath;
+    }
+
     CV_TypeIndexInfoList ti_list;
     if ( ! cv_get_leaf_type_index_offsets(temp.arena, leaf.kind, leaf.data, &ti_list)) {
-      lnk_error_obj(LNK_Error_IllData, task->input->obj_arr[obj_idx], "invalid CodeView Leaf 0x%x", leaf_idx);
-      continue;
+      lnk_error_obj(LNK_Error_IllData, task->input->obj_arr[obj_idx], "failed to extract type index list from CodeView leaf 0x%llx", leaf_idx);
+      InvalidPath;
     }
+
     lnk_hash_cv_leaf(task->input, lnk_leaf_ref_make(obj_idx, leaf_idx), ti_list, 1);
+
     temp_end(temp);
   }
   scratch_end(scratch);
