@@ -2654,9 +2654,13 @@ THREAD_POOL_TASK_FUNC(lnk_build_pdb_strings_modules_and_globals)
             mod->sym_data_size = sizeof(CV_Signature);
           }
 
-          for (U64 cursor = 0; cursor + sizeof(CV_SymbolHeader) <= it.data.size;) {
+          for (U64 cursor = 0, bytes_read = 0; cursor + sizeof(CV_SymbolHeader) <= it.data.size; cursor += bytes_read) {
             CV_Symbol symbol = {0};
-            TryReadBreak(cv_read_symbol(it.data, cursor, CV_SymbolAlign, &symbol), cursor);
+            if ( ! cv_read_symbol_checked(it.data, cursor, CV_SymbolAlign, &symbol, &bytes_read)) {
+              lnk_error_obj(LNK_Error_IllData, task->cv->obj_arr[obj_idx], "encountered corrupt symbol at offset 0x%llx", cursor);
+              break;
+            }
+
             LNK_PdbSymbolDestination destination = lnk_pdb_symbol_destination(&symbol, &scope_depth);
             if (destination == LNK_PdbSymbolDestination_Module) {
               mod->sym_data_size += cv_size_from_symbol(&symbol, PDB_SYMBOL_ALIGN);
