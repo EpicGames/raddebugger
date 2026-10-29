@@ -1477,12 +1477,15 @@ lnk_line_map_from_obj(Arena *arena, LNK_Obj *obj)
   //
   // estimate required inline site capacity
   //
-  U64         inline_site_cap = 0;
-  CV_DebugS_Iter symbols = cv_debug_s_iter_init(&debug_s);
+  U64            inline_site_cap = 0;
+  CV_DebugS_Iter symbols         = cv_debug_s_iter_init(&debug_s);
   while (cv_debug_s_iter_next_kind(&symbols, CV_C13SubSectionKind_Symbols)) {
-    for (U64 cursor = 0; cursor < symbols.data.size;) {
-      CV_Symbol symbol = {0};
-      TryReadBreak(cv_read_symbol(symbols.data, cursor, CV_SymbolAlign, &symbol), cursor);
+    for (U64 cursor = 0, bytes_read; cursor < symbols.data.size; cursor += bytes_read) {
+      CV_Symbol symbol     = {0};
+      if ( ! cv_read_symbol_checked(symbols.data, cursor, CV_SymbolAlign, &symbol, &bytes_read)) {
+        lnk_error_obj(LNK_Warning_IllData, obj, ".debug$S contains an invalid symbol at offset 0x%llx; skipping inline source locations", cursor);
+        goto done;
+      }
       inline_site_cap += symbol.kind == CV_SymKind_INLINESITE || symbol.kind == CV_SymKind_INLINESITE2;
     }
   }
@@ -1634,6 +1637,7 @@ lnk_line_map_from_obj(Arena *arena, LNK_Obj *obj)
     }
   }
 
+  done:;
 #undef DebugRelocValueFromFileOff
   scratch_end(scratch);
   return map;

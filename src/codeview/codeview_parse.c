@@ -905,8 +905,7 @@ cv_get_leaf_type_index_offsets(Arena *arena, CV_LeafKind leaf_kind, String8 data
         
         // error check read
         if (read_size != sizeof(method)) {
-          Assert(!"malformed LF_METHODLIST");
-          break;
+          return 0;
         }
         
         // push type index offset

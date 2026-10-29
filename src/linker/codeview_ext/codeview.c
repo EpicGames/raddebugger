@@ -250,23 +250,48 @@ cv_data_from_symbol(Arena *arena, CV_Symbol *symbol, U64 align)
   return result;
 }
 
-internal U64
-cv_read_symbol(String8 raw_data, U64 off, U64 align, CV_Symbol *symbol_out)
+internal B32
+cv_read_symbol_checked(String8 raw_data, U64 off, U64 align, CV_Symbol *symbol_out, U64 *bytes_read_out)
 {
-  Assert(raw_data.size >= sizeof(CV_SymbolHeader));
+  // is there enough bytes to read header?
+  if (raw_data.size < sizeof(CV_SymbolHeader)) {
+    return 0;
+  }
 
   U8 *symbol_ptr = raw_data.str + off;
   CV_SymbolHeader header = { .v = memory_read32(symbol_ptr) };
 
-  Assert(header.size >= sizeof(CV_SymKind));
-  Assert(sizeof(CV_SymSize) + header.size <= raw_data.size);
+  // symbol header must contain at least kind
+  if (header.size < sizeof(CV_SymKind)) {
+    return 0;
+  }
+  // verify header size
+  if (sizeof(CV_SymSize) + header.size > raw_data.size) {
+    return 0;
+  }
 
   symbol_out->kind = header.kind;
   symbol_out->data = str8(symbol_ptr + sizeof(CV_SymbolHeader), header.size - sizeof(CV_SymKind));
 
   U64 symbol_size = AlignPow2(sizeof(CV_SymSize) + header.size, align);
-  Assert(symbol_size <= raw_data.size);
-  return symbol_size;
+
+  // check for align overflow
+  if (symbol_size > raw_data.size) {
+    return 0;
+  }
+
+  *bytes_read_out = symbol_size;
+
+  return 1;
+}
+
+internal U64
+cv_read_symbol(String8 raw_data, U64 off, U64 align, CV_Symbol *symbol_out)
+{
+  U64 bytes_read = 0;
+  B32 is_ok = cv_read_symbol_checked(raw_data, off, align, symbol_out, &bytes_read);
+  Assert(is_ok);
+  return bytes_read;
 }
 
 internal U8 *

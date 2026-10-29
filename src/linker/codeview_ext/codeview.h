@@ -402,6 +402,7 @@ internal U64     cv_size_from_symbol(CV_Symbol *symbol, U64 align);
 internal U64     cv_write_symbol(U8 *buffer, U64 buffer_cursor, U64 buffer_size, CV_Symbol *symbol, U64 align);
 internal String8 cv_data_from_symbol(Arena *arena, CV_Symbol *symbol, U64 align);
 
+internal B32          cv_read_symbol_checked(String8 raw_data, U64 off, U64 align, CV_Symbol *symbol_out, U64 *bytes_read_out);
 internal U64          cv_read_symbol(String8 raw_data, U64 off, U64 align, CV_Symbol *symbol_out);
 internal U8 *         cv_ptr_from_symbol(CV_Symbol symbol);
 internal CV_SymKind * cv_kind_ptr_from_symbol(CV_Symbol symbol);
