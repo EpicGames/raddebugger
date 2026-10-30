@@ -553,7 +553,11 @@ internal void *
 shared_memory_view_open(SharedMemory handle, Rng1U64 range)
 {
   return MapViewOfFile((HANDLE)(handle.u64[0]),
+#ifdef RADLINK_UBA_COW_WORKAROUND
+                       FILE_MAP_WRITE,
+#else
                        FILE_MAP_ALL_ACCESS,
+#endif
                        (U32)((range.min & 0xffffffff00000000) >> 32),
                        (U32)((range.min & 0x00000000ffffffff)),
                        dim_1u64(range));
