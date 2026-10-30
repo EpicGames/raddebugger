@@ -1209,8 +1209,8 @@ lnk_leaf_ref_leaf_idx(LNK_LeafRef ref)
   return (U32)ref;
 }
 
-internal LNK_LeafRef
-lnk_leaf_ref_from_ti(LNK_CodeViewInput *input, U32 obj_idx, CV_TypeIndexSource source, CV_TypeIndex ti)
+internal B32
+lnk_leaf_ref_from_ti_checked(LNK_CodeViewInput *input, U32 obj_idx, CV_TypeIndexSource source, CV_TypeIndex ti, LNK_LeafRef *ref_out)
 {
   // ti range: external type server
   U64 ts_idx = input->obj_to_ts[obj_idx];
@@ -1229,30 +1229,46 @@ lnk_leaf_ref_from_ti(LNK_CodeViewInput *input, U32 obj_idx, CV_TypeIndexSource s
         obj     = input->obj_arr[obj_idx];
       }
 
-      Assert(contains_1u64(obj->ti_range, ti));
+      if ( ! contains_1u64(obj->ti_range, ti)) { return 0; }
 
       // translate type index to original leaf index
       U64 leaf_idx_og  = (ti - obj->ti_range.min);
       leaf_idx_og     -= dim_1u64(obj->pch_ti_range);
 
-      // map original leaf index to RRT type index
       CV_TypeIndex final_ti = obj->ti_map[leaf_idx_og];
-      return lnk_leaf_ref_make(ts_debug_t_idx, cv_leaf_idx_from_ti(ts_debug_t, source, final_ti));
+      if ( ! contains_1u64(ts_debug_t->ti_ranges[source], final_ti)) { return 0; }
+
+      // map original leaf index to RRT type index
+      *ref_out = lnk_leaf_ref_make(ts_debug_t_idx, cv_leaf_idx_from_ti(ts_debug_t, source, final_ti));
+      return 1;
     } 
     
-    return lnk_leaf_ref_make(ts_debug_t_idx, cv_leaf_idx_from_ti(ts_debug_t, source, ti));
+    if ( ! contains_1u64(ts_debug_t->ti_ranges[source], ti)) { return 0; }
+    *ref_out = lnk_leaf_ref_make(ts_debug_t_idx, cv_leaf_idx_from_ti(ts_debug_t, source, ti));
+    return 1;
   }
 
   CV_DebugT *debug_t = input->debug_t_arr + obj_idx;
 
   // ti_range: PCH
   if (contains_1u64(debug_t->pch_ti_range[source], ti)) {
-    return lnk_leaf_ref_make(debug_t->pch_obj_idx,
-                             cv_leaf_idx_from_ti(&input->debug_t_arr[debug_t->pch_obj_idx], source, ti));
+    *ref_out = lnk_leaf_ref_make(debug_t->pch_obj_idx, cv_leaf_idx_from_ti(&input->debug_t_arr[debug_t->pch_obj_idx], source, ti));
+    return 1;
   }
 
   // ti range: internal type server
-  return lnk_leaf_ref_make(obj_idx, cv_leaf_idx_from_ti(debug_t, source, ti));
+  if ( ! contains_1u64(debug_t->ti_ranges[source], ti)) { return 0; }
+  *ref_out = lnk_leaf_ref_make(obj_idx, cv_leaf_idx_from_ti(debug_t, source, ti));
+  return 1;
+}
+
+internal LNK_LeafRef
+lnk_leaf_ref_from_ti(LNK_CodeViewInput *input, U32 obj_idx, CV_TypeIndexSource source, CV_TypeIndex ti)
+{
+  LNK_LeafRef result = {0};
+  B32 is_ok = lnk_leaf_ref_from_ti_checked(input, obj_idx, source, ti, &result);
+  AssertAlways(is_ok);
+  return result;
 }
 
 internal U64
@@ -1858,28 +1874,35 @@ lnk_patch_symbol_copy(LNK_MergedTypes *types, U32 obj_idx, CV_Symbol symbol)
 
       CV_TypeIndex id = memory_read32(&proc32->itype);
       if (id >= types->input->min_type_indices[CV_TypeIndexSource_IPI]) {
-        // FUNC_ID and MFUNC_ID carry a TPI function type in their second field.
-        LNK_LeafRef id_ref     = lnk_leaf_ref_from_ti(types->input, obj_idx, CV_TypeIndexSource_IPI, id);
-        U32         id_obj_idx = lnk_leaf_ref_obj_idx(id_ref);
-        CV_Leaf     id_leaf    = cv_debug_t_get_leaf(&types->input->debug_t_arr[id_obj_idx], lnk_leaf_ref_leaf_idx(id_ref));
+        // in case we fail to inline the reference ID leave procedure without a type
+        CV_TypeIndex ti = CV_LeafKind_NOTYPE;
 
-        if (id_leaf.kind != CV_LeafKind_FUNC_ID && id_leaf.kind != CV_LeafKind_MFUNC_ID) {
-          lnk_error_obj(LNK_Error_InvalidTypeIndex, types->input->obj_arr[obj_idx], "procedure ID does not reference a function ID");
-          goto exit;
-        }
-        if (id_leaf.data.size < 2 * sizeof(CV_TypeIndex)) {
-          lnk_error_obj(LNK_Error_CvIllSymbolData, types->input->obj_arr[obj_idx], "truncated procedure ID id_leaf");
-          goto exit;
-        }
+        LNK_LeafRef id_ref;
+        if (lnk_leaf_ref_from_ti_checked(types->input, obj_idx, CV_TypeIndexSource_IPI, id, &id_ref)) {
+          // FUNC_ID and MFUNC_ID carry a TPI function type in their second field.
+          U32         id_obj_idx = lnk_leaf_ref_obj_idx(id_ref);
+          CV_Leaf     id_leaf    = cv_debug_t_get_leaf(&types->input->debug_t_arr[id_obj_idx], lnk_leaf_ref_leaf_idx(id_ref));
 
-        // extract procedure type ID type
-        CV_TypeIndex ti = memory_read32(id_leaf.data.str + sizeof(CV_TypeIndex));
+          if (id_leaf.kind != CV_LeafKind_FUNC_ID && id_leaf.kind != CV_LeafKind_MFUNC_ID) {
+            lnk_error_obj(LNK_Error_InvalidTypeIndex, types->input->obj_arr[obj_idx], "procedure ID does not reference a function ID");
+            goto exit;
+          }
+          if (id_leaf.data.size < 2 * sizeof(CV_TypeIndex)) {
+            lnk_error_obj(LNK_Error_CvIllSymbolData, types->input->obj_arr[obj_idx], "truncated procedure ID id_leaf");
+            goto exit;
+          }
 
-        // basic/no-type values are copied unchanged; only complex types need lookup
-        if (ti >= types->input->min_type_indices[CV_TypeIndexSource_TPI]) {
-          LNK_AssignedTiHash *tpi_ht   = &types->assigned_ti_arr[CV_TypeIndexSource_TPI];
-          LNK_LeafRef         type_ref = lnk_leaf_ref_from_ti(types->input, id_obj_idx, CV_TypeIndexSource_TPI, ti);
-          ti = lnk_assigned_ti_hash_search(tpi_ht, types->input, type_ref);
+          // extract procedure type ID type
+          ti = memory_read32(id_leaf.data.str + sizeof(CV_TypeIndex));
+
+          // basic/no-type values are copied unchanged; only complex types need lookup
+          if (ti >= types->input->min_type_indices[CV_TypeIndexSource_TPI]) {
+            LNK_AssignedTiHash *tpi_ht   = &types->assigned_ti_arr[CV_TypeIndexSource_TPI];
+            LNK_LeafRef         type_ref = lnk_leaf_ref_from_ti(types->input, id_obj_idx, CV_TypeIndexSource_TPI, ti);
+            ti = lnk_assigned_ti_hash_search(tpi_ht, types->input, type_ref);
+          }
+        } else {
+          lnk_error_obj(LNK_Warning_IllData, types->input->obj_arr[obj_idx], "procedure symbol references ID (0x%x) that is out of bounds; leaving procedure without a type", id);
         }
 
         memory_write32(&proc32->itype, ti);
