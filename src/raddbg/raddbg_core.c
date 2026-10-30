@@ -12288,6 +12288,7 @@ rd_frame(void)
     }
     for(WM_Event *event = events.first, *next = 0; event != 0; event = next)
     {
+      next = event->next;
       if(event->kind == WM_EventKind_Press &&
          event->key != WM_Key_Esc &&
          event->key != WM_Key_Return &&
@@ -12314,7 +12315,7 @@ rd_frame(void)
         if(event->modifiers & WM_Modifier_Ctrl)  { cfg_node_new(rd_state->cfg, binding, str8_lit("ctrl")); }
         if(event->modifiers & WM_Modifier_Shift) { cfg_node_new(rd_state->cfg, binding, str8_lit("shift")); }
         if(event->modifiers & WM_Modifier_Alt)   { cfg_node_new(rd_state->cfg, binding, str8_lit("alt")); }
-        U32 codepoint = wm_codepoint_from_modifiers_and_key(event->modifiers, event->key);
+        U32 codepoint = wm_codepoint_from_modifiers_and_key(event->modifiers & WM_Modifier_Shift, event->key);
         wm_text(&events, event->window, codepoint);
         wm_eat_event(&events, event);
         rd_request_frame();
