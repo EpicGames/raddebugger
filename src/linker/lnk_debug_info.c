@@ -1210,7 +1210,7 @@ lnk_leaf_ref_leaf_idx(LNK_LeafRef ref)
 }
 
 internal B32
-lnk_leaf_ref_from_ti_checked(LNK_CodeViewInput *input, U32 obj_idx, CV_TypeIndexSource source, CV_TypeIndex ti, LNK_LeafRef *ref_out)
+lnk_leaf_ref_from_ti(LNK_CodeViewInput *input, U32 obj_idx, CV_TypeIndexSource source, CV_TypeIndex ti, LNK_LeafRef *ref_out)
 {
   // ti range: external type server
   U64 ts_idx = input->obj_to_ts[obj_idx];
@@ -1260,15 +1260,6 @@ lnk_leaf_ref_from_ti_checked(LNK_CodeViewInput *input, U32 obj_idx, CV_TypeIndex
   if ( ! contains_1u64(debug_t->ti_ranges[source], ti)) { return 0; }
   *ref_out = lnk_leaf_ref_make(obj_idx, cv_leaf_idx_from_ti(debug_t, source, ti));
   return 1;
-}
-
-internal LNK_LeafRef
-lnk_leaf_ref_from_ti(LNK_CodeViewInput *input, U32 obj_idx, CV_TypeIndexSource source, CV_TypeIndex ti)
-{
-  LNK_LeafRef result = {0};
-  B32 is_ok = lnk_leaf_ref_from_ti_checked(input, obj_idx, source, ti, &result);
-  AssertAlways(is_ok);
-  return result;
 }
 
 internal U64
@@ -1332,24 +1323,6 @@ lnk_hash_cv_leaf(LNK_CodeViewInput *input, LNK_LeafRef leaf_ref, CV_TypeIndexInf
       continue;
     }
 
-    if (sub_ti >= debug_t->ti_ranges[sub_ti_n->source].max) {
-      // discard type
-      U32 leaf_idx = curr_ti - debug_t->ti_ranges[curr_ti_source].min;
-      bit_array_set_bit32(input->is_leaf_discarded[obj_idx], leaf_idx, 1);
-
-      // reset hasher
-      lnk_hasher_init(&hasher, input->config->debug_types_hash);
-
-      // log error
-      Temp    scratch       = scratch_begin(0,0);
-      String8 leaf_kind_str = cv_string_from_leaf_kind(leaf.kind);
-      String8 error_msg     = push_str8f(scratch.arena, "LF_%S(type_index: 0x%x) out of bounds type index 0x%x (leaf struct offset: 0x%llx)", leaf_kind_str, curr_ti, sub_ti, sub_ti_n->offset);
-      lnk_error_obj(LNK_Error_InvalidTypeIndex, input->obj_arr[obj_idx], "%S", error_msg);
-      scratch_end(scratch);
-
-      break;
-    }
-
     // discard type with a cyclic-ref
     B32 is_type_graph_cyclic = discard_cycles && sub_ti > 0 && sub_ti > curr_ti;
     if (is_type_graph_cyclic) {
@@ -1370,11 +1343,28 @@ lnk_hash_cv_leaf(LNK_CodeViewInput *input, LNK_LeafRef leaf_ref, CV_TypeIndexInf
       break;
     }
 
-    // type index -> hash
-    LNK_LeafRef sub_ref  = lnk_leaf_ref_from_ti(input, obj_idx, sub_ti_n->source, sub_ti);
-    U64         sub_hash = input->debug_h_arr[lnk_leaf_ref_obj_idx(sub_ref)].v[lnk_leaf_ref_leaf_idx(sub_ref)];
+    // type index -> leaf ref
+    LNK_LeafRef sub_ref;
+    if ( ! lnk_leaf_ref_from_ti(input, obj_idx, sub_ti_n->source, sub_ti, &sub_ref)) {
+      // discard type
+      U32 leaf_idx = curr_ti - debug_t->ti_ranges[curr_ti_source].min;
+      bit_array_set_bit32(input->is_leaf_discarded[obj_idx], leaf_idx, 1);
+
+      // reset hasher
+      lnk_hasher_init(&hasher, input->config->debug_types_hash);
+
+      // log error
+      Temp    scratch       = scratch_begin(0,0);
+      String8 leaf_kind_str = cv_string_from_leaf_kind(leaf.kind);
+      String8 error_msg     = push_str8f(scratch.arena, "LF_%S(type_index: 0x%x) out of bounds type index 0x%x (leaf struct offset: 0x%llx)", leaf_kind_str, curr_ti, sub_ti, sub_ti_n->offset);
+      lnk_error_obj(LNK_Error_InvalidTypeIndex, input->obj_arr[obj_idx], "%S", error_msg);
+      scratch_end(scratch);
+
+      break;
+    }
 
     // mix-in sub-type hash
+    U64 sub_hash = input->debug_h_arr[lnk_leaf_ref_obj_idx(sub_ref)].v[lnk_leaf_ref_leaf_idx(sub_ref)];
     lnk_hasher_update_struct(&hasher, &sub_hash);
   }
 
@@ -1438,29 +1428,36 @@ lnk_hash_cv_leaf_deep(Arena               *arena,
       if ( ! contains_1u64(input->debug_t_arr[root_obj_idx].ti_ranges[ti_info->source], ti)) { continue; }
 
       // skip hashed types
-      LNK_LeafRef leaf_ref = lnk_leaf_ref_from_ti(input, root_obj_idx, ti_info->source, ti);
-      U32         obj_idx  = lnk_leaf_ref_obj_idx(leaf_ref);
-      U32         leaf_idx = lnk_leaf_ref_leaf_idx(leaf_ref);
-      if (input->debug_h_arr[obj_idx].v[leaf_idx] != 0) { continue; }
+      LNK_LeafRef leaf_ref;
+      if (lnk_leaf_ref_from_ti(input, root_obj_idx, ti_info->source, ti, &leaf_ref)) {
+        U32         obj_idx  = lnk_leaf_ref_obj_idx(leaf_ref);
+        U32         leaf_idx = lnk_leaf_ref_leaf_idx(leaf_ref);
+        if (input->debug_h_arr[obj_idx].v[leaf_idx] != 0) { continue; }
 
-      CV_Leaf leaf = cv_debug_t_get_leaf(&input->debug_t_arr[obj_idx], leaf_idx);
-      CV_TypeIndexInfoList ti_info_list = {0};
-      if ( ! cv_get_leaf_type_index_offsets(temp.arena, leaf.kind, leaf.data, &ti_info_list)) {
-        lnk_error_obj(LNK_Error_IllData, input->obj_arr[obj_idx], "invalid CodeView Leaf 0x%x", leaf_idx);
+        CV_Leaf              leaf         = cv_debug_t_get_leaf(&input->debug_t_arr[obj_idx], leaf_idx);
+        CV_TypeIndexInfoList ti_info_list = {0};
+        if ( ! cv_get_leaf_type_index_offsets(temp.arena, leaf.kind, leaf.data, &ti_info_list)) {
+          lnk_error_obj(LNK_Error_IllData, input->obj_arr[obj_idx], "invalid CodeView Leaf 0x%x", leaf_idx);
+          continue;
+        }
+
+        input->debug_h_arr[obj_idx].v[leaf_idx] = 1;
+        // recurse down to sub types
+        HashStack *frame = push_array(temp.arena, HashStack, 1);
+        frame->leaf_ref     = leaf_ref;
+        frame->leaf         = leaf;
+        frame->ti_info_list = ti_info_list;
+        frame->ti_info      = frame->ti_info_list.first;
+        frame->ti           = ti;
+        frame->ti_source    = ti_info->source;
+        SLLStackPush(stack, frame);
+        break;
+      } else {
+        U32 obj_idx  = lnk_leaf_ref_obj_idx(stack->leaf_ref);
+        U32 leaf_idx = lnk_leaf_ref_leaf_idx(stack->leaf_ref);
+        lnk_error_obj(LNK_Error_InvalidTypeIndex, input->obj_arr[obj_idx], "leaf 0x%x contains invalid CodeView type index 0x%x", leaf_idx, ti);
         continue;
       }
-
-      input->debug_h_arr[obj_idx].v[leaf_idx] = 1;
-      // recurse down to sub types
-      HashStack *frame = push_array(temp.arena, HashStack, 1);
-      frame->leaf_ref     = leaf_ref;
-      frame->leaf         = leaf;
-      frame->ti_info_list = ti_info_list;
-      frame->ti_info      = frame->ti_info_list.first;
-      frame->ti           = ti;
-      frame->ti_source    = ti_info->source;
-      SLLStackPush(stack, frame);
-      break;
     }
 
     // no more type indices, pop frame
@@ -1824,16 +1821,11 @@ lnk_fixup_cv_type_indices(LNK_MergedTypes *ctx, U32 obj_idx, String8 data, CV_Ty
     if (ti < ctx->input->min_type_indices[n->source]) { continue; }
 
     CV_TypeIndex final_ti = 0;
-    {
-      CV_DebugT *debug_t = ctx->input->debug_t_arr + obj_idx;
-      if (ti >= debug_t->ti_ranges[n->source].max) {
-        Temp scratch = scratch_begin(0,0);
-        lnk_error_obj(LNK_Error_InvalidTypeIndex, ctx->input->obj_arr[obj_idx], "%S", push_str8f(scratch.arena, "out of bounds type index 0x%x", ti));
-        scratch_end(scratch);
-      } else {
-        LNK_LeafRef leaf_ref = lnk_leaf_ref_from_ti(ctx->input, obj_idx, n->source, ti);
-        final_ti = lnk_assigned_ti_hash_search(&ctx->assigned_ti_arr[n->source], ctx->input, leaf_ref);
-      }
+    LNK_LeafRef  leaf_ref;
+    if (lnk_leaf_ref_from_ti(ctx->input, obj_idx, n->source, ti, &leaf_ref)) {
+      final_ti = lnk_assigned_ti_hash_search(&ctx->assigned_ti_arr[n->source], ctx->input, leaf_ref);
+    } else {
+      lnk_error_obj(LNK_Error_InvalidTypeIndex, ctx->input->obj_arr[obj_idx], "out of bounds type index 0x%x", ti);
     }
 
     memory_write32(ti_ptr, final_ti);
@@ -1886,7 +1878,7 @@ lnk_patch_symbol_copy(LNK_MergedTypes *types, U32 obj_idx, CV_Symbol symbol)
         CV_TypeIndex ti = CV_LeafKind_NOTYPE;
 
         LNK_LeafRef id_ref;
-        if (lnk_leaf_ref_from_ti_checked(types->input, obj_idx, CV_TypeIndexSource_IPI, id, &id_ref)) {
+        if (lnk_leaf_ref_from_ti(types->input, obj_idx, CV_TypeIndexSource_IPI, id, &id_ref)) {
           // FUNC_ID and MFUNC_ID carry a TPI function type in their second field.
           U32         id_obj_idx = lnk_leaf_ref_obj_idx(id_ref);
           CV_Leaf     id_leaf    = cv_debug_t_get_leaf(&types->input->debug_t_arr[id_obj_idx], lnk_leaf_ref_leaf_idx(id_ref));
@@ -1906,11 +1898,18 @@ lnk_patch_symbol_copy(LNK_MergedTypes *types, U32 obj_idx, CV_Symbol symbol)
           // basic/no-type values are copied unchanged; only complex types need lookup
           if (ti >= types->input->min_type_indices[CV_TypeIndexSource_TPI]) {
             LNK_AssignedTiHash *tpi_ht   = &types->assigned_ti_arr[CV_TypeIndexSource_TPI];
-            LNK_LeafRef         type_ref = lnk_leaf_ref_from_ti(types->input, id_obj_idx, CV_TypeIndexSource_TPI, ti);
-            ti = lnk_assigned_ti_hash_search(tpi_ht, types->input, type_ref);
+            LNK_LeafRef         type_ref;
+            if (lnk_leaf_ref_from_ti(types->input, id_obj_idx, CV_TypeIndexSource_TPI, ti, &type_ref)) {
+              ti = lnk_assigned_ti_hash_search(tpi_ht, types->input, type_ref);
+            } else {
+              lnk_error_obj(LNK_Error_InvalidTypeIndex, types->input->obj_arr[obj_idx], "procedure symbol ID mapped to an invalid type index 0x%x", ti);
+
+              // discard invalid type index from the output
+              ti = CV_LeafKind_NOTYPE;
+            }
           }
         } else {
-          lnk_error_obj(LNK_Warning_IllData, types->input->obj_arr[obj_idx], "procedure symbol references ID (0x%x) that is out of bounds; leaving procedure without a type", id);
+          lnk_error_obj(LNK_Error_InvalidTypeIndex, types->input->obj_arr[obj_idx], "procedure symbol references ID (0x%x) that is out of bounds; leaving procedure without a type", id);
         }
 
         memory_write32(&proc32->itype, ti);
