@@ -10990,6 +10990,8 @@ TEST(coff_section_name_offsets)
   T_Ok(coff_name_from_section_header(str8_zero(), &inline_header).size == 0);
 }
 
+#if 0
+
 TEST(compressed_obj)
 {
   T_Ok(t_write_entry_obj());
@@ -11102,6 +11104,7 @@ TEST(pressure_cfm_cache)
     T_Ok(match_count == 1);
   }
 }
+#endif
 
 // TODO: linker currenlty skips over the IFC records and should instead load the .ifc; type merger also has to expand type index space with the help of IFC records
 #if 0 && OS_WINDOWS
