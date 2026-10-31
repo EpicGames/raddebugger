@@ -2900,9 +2900,7 @@ lnk_make_default_cmd_line(Arena *arena, LNK_CmdLine user_cmd_line, LNK_Tool tool
     "/RAD_OODLE2:oo2core_9_win64.dll",
     (char*)str8f(scratch.arena, "/RAD_OBJ_SEGMENT_SIZE:%llu", KB(512)).str,
 
-#if OS_WINDOWS && !PROFILE_TELEMETRY
-    (char*)str8f(scratch.arena, "/RAD_FAST_EXIT:%s", IsDebuggerPresent() ? "NO" : "YES").str,
-#endif
+    "/RAD_FAST_EXIT:NO",
   };
 
   char *push_opts[] = {
@@ -2941,7 +2939,7 @@ lnk_make_default_cmd_line(Arena *arena, LNK_CmdLine user_cmd_line, LNK_Tool tool
   LNK_CmdLine parsed_cmd_line = lnk_cmd_line_from_stringf_windows_rules(arena, __VA_ARGS__);     \
   for EachNode(cmd, LNK_CmdOption, parsed_cmd_line.first_option) {                               \
     if (!lnk_cmd_line_has_switch(user_cmd_line, lnk_cmd_switch_type_from_string(cmd->string))) { \
-      lnk_cmd_line_push_option_string(arena, &cmd_line, cmd->string, cmd->value);                 \
+      lnk_cmd_line_push_option_string(arena, &cmd_line, cmd->string, cmd->value);                \
     }                                                                                            \
   }                                                                                              \
 } while (0)
