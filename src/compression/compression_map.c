@@ -484,7 +484,7 @@ cfm_map_from_address(CFM_Context *ctx, void *address)
   return map;
 }
 
-force_inline int
+internal force_inline int
 cfm_map_address_is_before(void *a, void *b)
 {
   CFM_Map *map_a = *(CFM_Map **)a, *map_b = *(CFM_Map **)b;

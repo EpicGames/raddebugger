@@ -9,7 +9,12 @@
 
 #define CMP_OODLE2_COMPRESSOR OodleLZ_Compressor_Kraken
 
+#include <oodle2base.h>
+#pragma push_macro("OOINLINEFUNC")
+#undef OOINLINEFUNC
+#define OOINLINEFUNC force_inline
 #include <oodle2.h>
+#pragma pop_macro("OOINLINEFUNC")
 
 #if !OODLE_STATIC
 typedef OO_BOOL  (OOFUNC2 CMP_Oodle2_CheckVersion)(OO_U32, OO_U32 *);
