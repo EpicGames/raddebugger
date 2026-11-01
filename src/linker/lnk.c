@@ -7759,7 +7759,7 @@ entry_point(CmdLine *cmdline)
   lnk_log_begin();
 
   // init config from the command line
-  LNK_Config *config = lnk_config_init(cmdline->argc, cmdline->argv);
+  LNK_Config *config = lnk_config_init(cmdline->exe_name, cmdline->argc, cmdline->argv);
 
   // pick entry point
   switch (config->tool) {

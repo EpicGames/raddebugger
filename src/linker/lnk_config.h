@@ -4,19 +4,28 @@
 #pragma once
 
 // entry points
-#define LNK_Tool_XList \
-  X(Linker)     \
-  X(TypeServer) \
-  X(Lib)        \
-  X(Compress)   \
-  X(Decompress) \
+#define LNK_Tool_XList             \
+  X(Linker,     "radlink")         \
+  X(TypeServer, "rad-type-server") \
+  X(Lib,        "lib")             \
+  X(Compress,   "rad-compress")    \
+  X(Decompress, "rad-decompress")  \
   /* end */
 
 typedef enum
 {
-#define X(n,...) LNK_Tool_##n,
+#define X(n, ...) LNK_ToolIdx_##n,
   LNK_Tool_XList
 #undef X
+} LNK_ToolIdx;
+
+typedef enum
+{
+  LNK_Tool_Null,
+#define X(n, ...) LNK_Tool_##n = (1 << LNK_ToolIdx_##n),
+  LNK_Tool_XList
+#undef X
+  LNK_Tool_All = ~0
 } LNK_Tool;
 
 #if OS_WINDOWS
@@ -181,12 +190,13 @@ typedef enum LNK_CmdValueKind
 
 typedef struct LNK_CmdSwitch
 {
-  LNK_CmdSwitchType type;
-  B32               is_legal_directive;
-  LNK_CmdValueKind  value_kind;
-  char             *name;
-  char             *args;
-  char             *desc;
+  LNK_Tool             tool;
+  LNK_CmdSwitchType    type;
+  B32                  is_legal_directive;
+  LNK_CmdValueKind     value_kind;
+  char                *name;
+  char                *args;
+  char                *desc;
 } LNK_CmdSwitch;
 
 typedef enum 
@@ -584,6 +594,7 @@ typedef enum
 
 // --- Enum <-> String ---------------------------------------------------------
 
+internal LNK_Tool             lnk_tool_from_string(String8 string);
 internal String8              lnk_string_cmd_switch_type(LNK_CmdSwitchType type);
 internal LNK_CmdSwitchType    lnk_cmd_switch_type_from_string(String8 string);
 internal LNK_CmdSwitch *      lnk_cmd_switch_from_string(String8 string);
@@ -649,6 +660,6 @@ internal void lnk_whole_archive(LNK_Config *config, String8 lib_name);
 // --- Config ------------------------------------------------------------------
 
 internal void lnk_apply_cmd_option_to_config(LNK_Config *config, String8 name, String8 value, struct LNK_Obj *obj);
-internal LNK_Config * lnk_config_init(U64 argc, char **argv);
+internal LNK_Config * lnk_config_init(String8 exe_name, U64 argc, char **argv);
 internal void lnk_config_apply_cmd_line(LNK_Config *config, LNK_CmdLine input_cmd_line);
 

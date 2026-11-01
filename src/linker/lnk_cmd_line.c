@@ -168,12 +168,21 @@ lnk_cmd_line_parse_windows_rules(Arena *arena, String8List arg_list)
 }
 
 internal LNK_CmdLine
+lnk_cmd_line_from_string_windows_rules(Arena *arena, String8 string)
+{
+  Temp scratch = scratch_begin(&arena, 1);
+  String8List arg_list = lnk_arg_list_parse_windows_rules(scratch.arena, string);
+  LNK_CmdLine result = lnk_cmd_line_parse_windows_rules(arena, arg_list);
+  scratch_end(scratch);
+  return result;
+}
+
+internal LNK_CmdLine
 lnk_cmd_line_from_stringfv_windows_rules(Arena *arena, char *fmt, va_list args)
 {
   Temp scratch = scratch_begin(&arena, 1);
   String8 string = push_str8fv(scratch.arena, fmt, args);
-  String8List arg_list = lnk_arg_list_parse_windows_rules(scratch.arena, string);
-  LNK_CmdLine result = lnk_cmd_line_parse_windows_rules(arena, arg_list);
+  LNK_CmdLine result = lnk_cmd_line_from_string_windows_rules(arena, string);
   scratch_end(scratch);
   return result;
 }
