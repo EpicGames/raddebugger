@@ -2,9 +2,21 @@
 // Licensed under the MIT license (https://opensource.org/license/mit/)
 
 ////////////////////////////////
+//~ rjf: remote TODO notes
+//
+// [ ] ui -> ui?
+// [ ] ui (w/ debug info) -> ui (w/out debug info)?
+// [ ] ctrl -> slim server?
+
+////////////////////////////////
 //~ rjf: linux TODO notes
 //
 // post initial alpha:
+// [ ] 0x1b (SIGPROF) - need to ignore by default
+// [ ] line stepping over function epilogue seems to end up just resuming in some cases
+// [ ] function breakpoint resolution racing
+// [ ] conditional breakpoint evaluation bug
+//
 // [ ] windowing
 //  [ ] wayland
 // [ ] support
@@ -403,6 +415,7 @@
 #include "base/base_inc.h"
 #include "x64/x64_inc.h"
 #include "win32/win32_inc.h"
+#include "linux/linux_inc.h"
 #include "linker/base_ext/base_bit_array.h"
 #include "artifact_cache/artifact_cache.h"
 #include "rdi/rdi_local.h"
@@ -450,6 +463,7 @@
 #include "disasm/disasm_inc.h"
 #include "stap/stap_parse.h"
 #include "demon/demon_inc.h"
+#include "dbg_server/dbg_server.h"
 #include "eval/eval_inc.h"
 #include "eval2/eval2.h"
 #include "dbg_engine/dbg_engine_inc.h"
@@ -465,6 +479,7 @@
 #include "base/base_inc.c"
 #include "x64/x64.c"
 #include "win32/win32_inc.c"
+#include "linux/linux_inc.c"
 #include "linker/base_ext/base_bit_array.c"
 #include "artifact_cache/artifact_cache.c"
 #include "rdi/rdi_local.c"
@@ -512,6 +527,7 @@
 #include "disasm/disasm_inc.c"
 #include "stap/stap_parse.c"
 #include "demon/demon_inc.c"
+#include "dbg_server/dbg_server.c"
 #include "eval/eval_inc.c"
 #include "eval2/eval2.c"
 #include "dbg_engine/dbg_engine_inc.c"
@@ -621,6 +637,7 @@ entry_point(CmdLine *cmd_line)
   make_directory(g_logs_folder);
   
   //- rjf: dispatch to top-level codepath based on execution mode
+  U32 ipc_packet_magic_start = 0x72726300;
   switch(exec_mode)
   {
     //- rjf: normal execution
@@ -675,23 +692,41 @@ entry_point(CmdLine *cmd_line)
         d_set_wakeup_hook(wakeup_hook_ctrl);
       }
       
-      //- rjf: set up socket session for ICP
-      SOCK_Session icp_sock_session = sock_session_open((U16)ipc_port, wakeup_hook_ctrl);
+      //- rjf: set up socket session for IPC
+      SOCK_Session ipc_sock_session = sock_session_open((U16)ipc_port, wakeup_hook_ctrl);
       
       //- rjf: main application loop
       {
         for(B32 quit = 0; !quit;)
         {
-          //- rjf: receive socket data, run as IPC messages
+          //- rjf: receive packets, run as IPC messages
           B32 ipc_command_frame = 0;
           SOCK_Protocol ipc_protocol = SOCK_Protocol_TCP;
           SOCK_Endpoint ipc_endpoint = {0};
           {
             Temp scratch = scratch_begin(0, 0);
-            String8 msg = {0};
-            if(sock_recv(scratch.arena, icp_sock_session, &ipc_protocol, &ipc_endpoint, &msg, 0))
+            String8 packet = {0};
+            if(sock_recv(scratch.arena, ipc_sock_session, &ipc_protocol, &ipc_endpoint, &packet, 0))
             {
+              // rjf: use header to determine message portion
+              String8 msg = {0};
+              {
+                U64 msg_size = 0;
+                U64 header_size = sizeof(ipc_packet_magic_start) + sizeof(U64);
+                if(str8_match(packet, str8_struct(&ipc_packet_magic_start), StringMatchFlag_RightSideSloppy) &&
+                   packet.size >= header_size)
+                {
+                  U64 msg_size_cap = packet.size - header_size;
+                  msg_size = *(U64 *)(packet.str + sizeof(ipc_packet_magic_start));
+                  msg_size = Min(msg_size, msg_size_cap);
+                  msg = str8_substr(packet, r1u64(header_size, header_size+msg_size));
+                }
+              }
+              
+              // rjf: split command by ;s
               String8List cmd_parts_of_msg = str8_split(scratch.arena, msg, (U8 *)";", 1, 0);
+              
+              // rjf: pick target window
               RD_WindowState *dst_ws = rd_state->first_window_state;
               for(RD_WindowState *ws = dst_ws; ws != &rd_nil_window_state; ws = ws->order_next)
               {
@@ -701,6 +736,8 @@ entry_point(CmdLine *cmd_line)
                   break;
                 }
               }
+              
+              // rjf: got a window -> send command
               if(dst_ws != &rd_nil_window_state)
               {
                 dst_ws->window_temporarily_focused_ipc = 1;
@@ -726,6 +763,7 @@ entry_point(CmdLine *cmd_line)
                   }
                   rd_request_frame();
                   ipc_command_frame = 1;
+                  rd_state->ipc_sock_endpoint = ipc_endpoint;
                 }
               }
             }
@@ -759,13 +797,11 @@ entry_point(CmdLine *cmd_line)
           //- rjf: gather command outputs & send them back back to sender
           if(ipc_command_frame)
           {
-            StringJoin join = {s(""), s("\0"), s("")};
-            String8 msg = str8_list_join(scratch.arena, &rd_state->cmd_outputs, &join);
-            if(msg.size == 0)
-            {
-              msg = s("done");
-            }
-            sock_send(icp_sock_session, ipc_protocol, ipc_endpoint, msg, now_time_us()+5000000);
+            U64 packet_size = rd_state->cmd_outputs.total_size;
+            str8_list_push_front(scratch.arena, &rd_state->cmd_outputs, str8_struct(&packet_size));
+            str8_list_push_front(scratch.arena, &rd_state->cmd_outputs, str8_struct(&ipc_packet_magic_start));
+            String8 msg = str8_list_join(scratch.arena, &rd_state->cmd_outputs, 0);
+            sock_send(ipc_sock_session, ipc_protocol, ipc_endpoint, msg, now_time_us()+5000000);
           }
         }
       }
@@ -796,13 +832,23 @@ entry_point(CmdLine *cmd_line)
       //- rjf: form message from command line inputs
       String8List parts = {0};
       {
+        String8List text_parts = {0};
         for EachIndex(idx, cmd_line->argc-1)
         {
-          str8_list_push(scratch.arena, &parts, str8_cstring(cmd_line->argv[idx+1]));
+          String8 arg = str8_cstring(cmd_line->argv[idx+1]);
+          if(!str8_match(arg, s("--ipc"), 0) && !str8_match(arg, s("-ipc"), 0))
+          {
+            str8_list_push(scratch.arena, &text_parts, arg);
+          }
         }
+        StringJoin join = {.sep = s(" ")};
+        String8 text = str8_list_join(scratch.arena, &text_parts, &join);
+        U64 msg_size = text.size;
+        str8_list_push(scratch.arena, &parts, str8_struct(&ipc_packet_magic_start));
+        str8_list_push(scratch.arena, &parts, str8_struct(&msg_size));
+        str8_list_push(scratch.arena, &parts, text);
       }
-      StringJoin join = {str8_lit(""), str8_lit(" "), str8_lit("")};
-      String8 msg = str8_list_join(scratch.arena, &parts, &join);
+      String8 msg = str8_list_join(scratch.arena, &parts, 0);
       
       //- rjf: send to server, get outputs
       String8List outputs = {0};
@@ -810,15 +856,24 @@ entry_point(CmdLine *cmd_line)
       {
         SOCK_Protocol outputs_protocol = SOCK_Protocol_TCP;
         SOCK_Endpoint outputs_endpoint = {0};
-        String8 output_data = {0};
-        if(sock_recv(scratch.arena, ipc_sock_session, &outputs_protocol, &outputs_endpoint, &output_data, now_time_us()+10000000))
+        String8 packet = {0};
+        if(sock_recv(scratch.arena, ipc_sock_session, &outputs_protocol, &outputs_endpoint, &packet, now_time_us()+10000000) &&
+           str8_match(packet, str8_struct(&ipc_packet_magic_start), StringMatchFlag_RightSideSloppy) &&
+           packet.size >= sizeof(ipc_packet_magic_start) + sizeof(U64))
         {
+          U64 msg_size = *(U64 *)(packet.str + sizeof(ipc_packet_magic_start));
+          String8 msg = str8_skip(packet, sizeof(ipc_packet_magic_start) + sizeof(U64));
+          msg.size = Min(msg.size, msg_size);
           U8 split_char = 0;
-          outputs = str8_split(scratch.arena, output_data, &split_char, 1, 0);
+          outputs = str8_split(scratch.arena, msg, &split_char, 1, 0);
         }
       }
       
       //- rjf: write outputs to stdout
+      if(outputs.node_count == 0)
+      {
+        fprintf(stdout, "(response received, no output)\n");
+      }
       for(String8Node *n = outputs.first; n != 0; n = n->next)
       {
         fwrite(n->string.str, 1, n->string.size, stdout);
@@ -839,25 +894,25 @@ entry_point(CmdLine *cmd_line)
     case ExecMode_Help:
     {
       sh_message(0,
-                 str8_lit("The RAD Debugger - Help"),
-                 str8_lit("The following options may be used when starting the RAD Debugger from the command line:\n\n"
-                          "--user:<path>\n"
-                          "Use to specify the location of a user file which should be used. User files are used to store settings for users, including window and panel setups, path mapping, and visual settings. If this file does not exist, it will be created as necessary. This file will be autosaved as user-related changes are made.\n\n"
-                          "--project:<path>\n"
-                          "Use to specify the location of a project file which should be used. Project files are used to store settings for users and projects. If this file does not exist, it will be created as necessary. This file will be autosaved as project-related changes are made.\n\n"
-                          "--auto_step\n"
-                          "This will step into all active targets after the debugger initially starts.\n\n"
-                          "--auto_run\n"
-                          "This will run all active targets after the debugger initially starts.\n\n"
-                          "--quit_after_success (or -q)\n"
-                          "This will close the debugger automatically after all processes exit, if they all exited successfully (with code 0), and ran with no interruptions.\n\n"
-                          "--ipc <command>\n"
-                          "This will launch the debugger in the non-graphical IPC mode, which is used to communicate with another running instance of the debugger. The debugger instance will launch, send the specified command, then immediately terminate. This may be used by editors or other programs to control the debugger.\n\n"
-                          "--gen_crash_dump\n"
-                          "Generate mini dump on crash.\n\n"
-                          "--logs:<path>\n"
-                          "Overrides default path to the folder with logs.\n"
-                          ));
+                 s("The RAD Debugger - Help"),
+                 s("The following options may be used when starting the RAD Debugger from the command line:\n\n"
+                   "--user:<path>\n"
+                   "Use to specify the location of a user file which should be used. User files are used to store settings for users, including window and panel setups, path mapping, and visual settings. If this file does not exist, it will be created as necessary. This file will be autosaved as user-related changes are made.\n\n"
+                   "--project:<path>\n"
+                   "Use to specify the location of a project file which should be used. Project files are used to store settings for users and projects. If this file does not exist, it will be created as necessary. This file will be autosaved as project-related changes are made.\n\n"
+                   "--auto_step\n"
+                   "This will step into all active targets after the debugger initially starts.\n\n"
+                   "--auto_run\n"
+                   "This will run all active targets after the debugger initially starts.\n\n"
+                   "--quit_after_success (or -q)\n"
+                   "This will close the debugger automatically after all processes exit, if they all exited successfully (with code 0), and ran with no interruptions.\n\n"
+                   "--ipc <command>\n"
+                   "This will launch the debugger in the non-graphical IPC mode, which is used to communicate with another running instance of the debugger. The debugger instance will launch, send the specified command, then immediately terminate. This may be used by editors or other programs to control the debugger.\n\n"
+                   "--gen_crash_dump\n"
+                   "Generate mini dump on crash.\n\n"
+                   "--logs:<path>\n"
+                   "Overrides default path to the folder with logs.\n"
+                   ));
     }break;
   }
   

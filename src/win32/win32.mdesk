@@ -1,0 +1,154 @@
+// Copyright (c) Epic Games Tools
+// Licensed under the MIT license (https://opensource.org/license/mit/)
+
+////////////////////////////////
+//~ rjf: Exception Codes
+
+@table(name lower_name code default display_string)
+W32_ExceptionCodeKindTable:
+{
+  {CtrlC                          ctrl_c                                0x40010005  1  "Control-C"                                              }
+  {CtrlBreak                      ctrl_break                            0x40010008  1  "Control-Break"                                          }
+  {WinRTOriginateError            win_rt_originate_error                0x40080201  0  "WinRT Originate Error"                                  }
+  {WinRTTransformError            win_rt_transform_error                0x40080202  0  "WinRT Transform Error"                                  }
+  {RPCCallCancelled               rpc_call_cancelled                    0x0000071a  0  "RPC Call Cancelled"                                     }
+  {DatatypeMisalignment           datatype_misalignment                 0x80000002  0  "Data Type Misalignment"                                 }
+  {AccessViolation                access_violation                      0xc0000005  1  "Access Violation"                                       }
+  {InPageError                    in_page_error                         0xc0000006  0  "In Page Error"                                          }
+  {InvalidHandle                  invalid_handle                        0xc0000008  1  "Invalid Handle Specified"                               }
+  {NotEnoughQuota                 not_enough_quota                      0xc0000017  0  "Not Enough Quota"                                       }
+  {IllegalInstruction             illegal_instruction                   0xc000001d  0  "Illegal Instruction"                                    }
+  {CannotContinueException        cannot_continue_exception             0xc0000025  0  "Cannot Continue From Exception"                         }
+  {InvalidExceptionDisposition    invalid_exception_disposition         0xc0000026  0  "Invalid Exception Disposition Returned By Handler"      }
+  {ArrayBoundsExceeded            array_bounds_exceeded                 0xc000008c  0  "Array Bounds Exceeded"                                  }
+  {FloatingPointDenormalOperand   floating_point_denormal_operand       0xc000008d  0  "Floating-Point Denormal Operand"                        }
+  {FloatingPointDivisionByZero    floating_point_division_by_zero       0xc000008e  0  "Floating-Point Division By Zero"                        }
+  {FloatingPointInexactResult     floating_point_inexact_result         0xc000008f  0  "Floating-Point Inexact Result"                          }
+  {FloatingPointInvalidOperation  floating_point_invalid_operation      0xc0000090  0  "Floating-Point Invalid Operation"                       }
+  {FloatingPointOverflow          floating_point_overflow               0xc0000091  0  "Floating-Point Overflow"                                }
+  {FloatingPointStackCheck        floating_point_stack_check            0xc0000092  0  "Floating-Point Stack Check"                             }
+  {FloatingPointUnderflow         floating_point_underflow              0xc0000093  0  "Floating-Point Underflow"                               }
+  {IntegerDivisionByZero          integer_division_by_zero              0xc0000094  0  "Integer Division By Zero"                               }
+  {IntegerOverflow                integer_overflow                      0xc0000095  0  "Integer Overflow"                                       }
+  {PrivilegedInstruction          privileged_instruction                0xc0000096  0  "Privileged Instruction"                                 }
+  {StackOverflow                  stack_overflow                        0xc00000fd  0  "Stack Overflow"                                         }
+  {UnableToLocateDLL              unable_to_locate_dll                  0xc0000135  0  "Unable To Locate DLL"                                   }
+  {OrdinalNotFound                ordinal_not_found                     0xc0000138  0  "Ordinal Not Found"                                      }
+  {EntryPointNotFound             entry_point_not_found                 0xc0000139  0  "Entry Point Not Found"                                  }
+  {DLLInitializationFailed        dll_initialization_failed             0xc0000142  0  "DLL Initialization Failed"                              }
+  {FloatingPointSSEMultipleFaults floating_point_sse_multiple_faults    0xc00002b4  0  "Floating Point SSE Multiple Faults"                     }
+  {FloatingPointSSEMultipleTraps  floating_point_sse_multiple_traps     0xc00002b5  0  "Floating Point SSE Multiple Traps"                      }
+  {AssertionFailed                assertion_failed                      0xc0000420  1  "Assertion Failed"                                       }
+  {ModuleNotFound                 module_not_found                      0xc06d007e  0  "Module Not Found"                                       }
+  {ProcedureNotFound              procedure_not_found                   0xc06d007f  0  "Procedure Not Found"                                    }
+  {SanitizerErrorDetected         sanitizer_error_detected              0xe073616e  1  "Sanitizer Error Detected"                               }
+  {SanitizerRawAccessViolation    sanitizer_raw_access_violation        0xe0736171  0  "Sanitizer Raw Access Violation"                         }
+  {DirectXDebugLayer              directx_debug_layer                   0x0000087a  1  "DirectX Debug Layer"                                    }
+}
+
+@enum W32_ExceptionCodeKind:
+{
+  Null,
+  @expand(W32_ExceptionCodeKindTable a) `$(a.name)`,
+  COUNT,
+}
+
+@data(U32) w32_exception_code_kind_code_table:
+{
+  `0`;
+  @expand(W32_ExceptionCodeKindTable a) `$(a.code)`;
+}
+
+@data(String8) w32_exception_code_kind_display_string_table:
+{
+  `{0}`;
+  @expand(W32_ExceptionCodeKindTable a) `str8_lit_comp("$(a.display_string)")`;
+}
+
+@data(String8) w32_exception_code_kind_lowercase_code_string_table:
+{
+  `{0}`;
+  @expand(W32_ExceptionCodeKindTable a) `str8_lit_comp("$(a.lower_name)")`;
+}
+
+@data(B8) w32_exception_code_kind_default_enable_table:
+{
+  `0`;
+  @expand(W32_ExceptionCodeKindTable a) `$(a.default)`;
+}
+
+////////////////////////////////
+//~ rjf: Exception Sub-Codes
+
+@table(name, value)
+W32_ExceptionSubCodeKindTable:
+{
+  { W32_FAST_FAIL_LEGACY_GS_VIOLATION               0 }
+  { W32_FAST_FAIL_VTGUARD_CHECK_FAILURE             1 }
+  { W32_FAST_FAIL_STACK_COOKIE_CHECK_FAILURE        2 }
+  { W32_FAST_FAIL_CORRUPT_LIST_ENTRY                3 }
+  { W32_FAST_FAIL_INCORRECT_STACK                   4 }
+  { W32_FAST_FAIL_INVALID_ARG                       5 }
+  { W32_FAST_FAIL_GS_COOKIE_INIT                    6 }
+  { W32_FAST_FAIL_FATAL_APP_EXIT                    7 }
+  { W32_FAST_FAIL_RANGE_CHECK_FAILURE               8 }
+  { W32_FAST_FAIL_UNSAFE_REGISTRY_ACCESS            9 }
+  { W32_FAST_FAIL_GUARD_ICALL_CHECK_FAILURE         10 }
+  { W32_FAST_FAIL_GUARD_WRITE_CHECK_FAILURE         11 }
+  { W32_FAST_FAIL_INVALID_FIBER_SWITCH              12 }
+  { W32_FAST_FAIL_INVALID_SET_OF_CONTEXT            13 }
+  { W32_FAST_FAIL_INVALID_REFERENCE_COUNT           14 }
+  { W32_FAST_FAIL_INVALID_JUMP_BUFFER               18 }
+  { W32_FAST_FAIL_MRDATA_MODIFIED                   19 }
+  { W32_FAST_FAIL_CERTIFICATION_FAILURE             20 }
+  { W32_FAST_FAIL_INVALID_EXCEPTION_CHAIN           21 }
+  { W32_FAST_FAIL_CRYPTO_LIBRARY                    22 }
+  { W32_FAST_FAIL_INVALID_CALL_IN_DLL_CALLOUT       23 }
+  { W32_FAST_FAIL_INVALID_IMAGE_BASE                24 }
+  { W32_FAST_FAIL_DLOAD_PROTECTION_FAILURE          25 }
+  { W32_FAST_FAIL_UNSAFE_EXTENSION_CALL             26 }
+  { W32_FAST_FAIL_DEPRECATED_SERVICE_INVOKED        27 }
+  { W32_FAST_FAIL_INVALID_BUFFER_ACCESS             28 }
+  { W32_FAST_FAIL_INVALID_BALANCED_TREE             29 }
+  { W32_FAST_FAIL_INVALID_NEXT_THREAD               30 }
+  { W32_FAST_FAIL_GUARD_ICALL_CHECK_SUPPRESSED      31 }
+  { W32_FAST_FAIL_APCS_DISABLED                     32 }
+  { W32_FAST_FAIL_INVALID_IDLE_STATE                33 }
+  { W32_FAST_FAIL_MRDATA_PROTECTION_FAILURE         34 }
+  { W32_FAST_FAIL_UNEXPECTED_HEAP_EXCEPTION         35 }
+  { W32_FAST_FAIL_INVALID_LOCK_STATE                36 }
+  { W32_FAST_FAIL_GUARD_JUMPTABLE                   37 }
+  { W32_FAST_FAIL_INVALID_LONGJUMP_TARGET           38 }
+  { W32_FAST_FAIL_INVALID_DISPATCH_CONTEXT          39 }
+  { W32_FAST_FAIL_INVALID_THREAD                    40 }
+  { W32_FAST_FAIL_INVALID_SYSCALL_NUMBER            41 }
+  { W32_FAST_FAIL_INVALID_FILE_OPERATION            42 }
+  { W32_FAST_FAIL_LPAC_ACCESS_DENIED                43 }
+  { W32_FAST_FAIL_GUARD_SS_FAILURE                  44 }
+  { W32_FAST_FAIL_LOADER_CONTINUITY_FAILURE         45 }
+  { W32_FAST_FAIL_GUARD_EXPORT_SUPPRESSION_FAILURE  46 }
+  { W32_FAST_FAIL_INVALID_CONTROL_STACK             47 }
+  { W32_FAST_FAIL_SET_CONTEXT_DENIED                48 }
+  { W32_FAST_FAIL_INVALID_IAT                       49 }
+  { W32_FAST_FAIL_HEAP_METADATA_CORRUPTION          50 }
+  { W32_FAST_FAIL_PAYLOAD_RESTRICTION_VIOLATION     51 }
+  { W32_FAST_FAIL_LOW_LABEL_ACCESS_DENIED           52 }
+  { W32_FAST_FAIL_ENCLAVE_CALL_FAILURE              53 }
+  { W32_FAST_FAIL_UNHANDLED_LSS_EXCEPTON            54 }
+  { W32_FAST_FAIL_ADMINLESS_ACCESS_DENIED           55 }
+  { W32_FAST_FAIL_UNEXPECTED_CALL                   56 }
+  { W32_FAST_FAIL_CONTROL_INVALID_RETURN_ADDRESS    57 }
+  { W32_FAST_FAIL_UNEXPECTED_HOST_BEHAVIOR          58 }
+  { W32_FAST_FAIL_FLAGS_CORRUPTION                  59 }
+  { W32_FAST_FAIL_VEH_CORRUPTION                    60 }
+  { W32_FAST_FAIL_ETW_CORRUPTION                    61 }
+  { W32_FAST_FAIL_RIO_ABORT                         62 }
+  { W32_FAST_FAIL_INVALID_PFN                       63 }
+  { W32_FAST_FAIL_GUARD_ICALL_CHECK_FAILURE_XFG     64 }
+  { W32_FAST_FAIL_CAST_GUARD                        65 }
+  { W32_FAST_FAIL_HOST_VISIBILITY_CHANGE            66 }
+  { W32_FAST_FAIL_KERNEL_CET_SHADOW_STACK_ASSIST    67 }
+  { W32_FAST_FAIL_PATCH_CALLBACK_FAILED             68 }
+  { W32_FAST_FAIL_NTDLL_PATCH_FAILED                69 }
+  { W32_FAST_FAIL_INVALID_FLS_DATA                  70 }
+}

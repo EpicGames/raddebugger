@@ -184,19 +184,19 @@ cfg_node_from_id(CFG_ID id)
   }
   else
   {
-    U64 hash = u64_hash_from_str8(str8_struct(&id));
+    U64 hash = id;
     U64 slot_idx = hash%cfg_ctx->id_slots_count;
     for(CFG_NodePtrNode *n = cfg_ctx->id_slots[slot_idx].first; n != 0; n = n->next)
     {
       if(n->v->id == id)
       {
         result = n->v;
+        cfg_ctx->last_accessed_id = id;
+        cfg_ctx->last_accessed = result;
         break;
       }
     }
   }
-  cfg_ctx->last_accessed_id = id;
-  cfg_ctx->last_accessed = result;
   return result;
 }
 
@@ -619,7 +619,7 @@ cfg_node_alloc(CFG_State *state)
     {
       cfg_id_node = push_array(state->arena, CFG_NodePtrNode, 1);
     }
-    U64 hash = u64_hash_from_str8(str8_struct(&result->id));
+    U64 hash = result->id;
     U64 slot_idx = hash%state->ctx.id_slots_count;
     DLLPushBack(state->ctx.id_slots[slot_idx].first, state->ctx.id_slots[slot_idx].last, cfg_id_node);
     cfg_id_node->v = result;
@@ -632,7 +632,6 @@ internal void
 cfg_node_release(CFG_State *state, CFG_Node *node)
 {
   state->ctx.change_gen += 1;
-  
   Temp scratch = scratch_begin(0, 0);
   
   // rjf: unhook from context
@@ -648,22 +647,36 @@ cfg_node_release(CFG_State *state, CFG_Node *node)
   // rjf: release all nodes
   for(CFG_NodePtrNode *n = nodes.first; n != 0; n = n->next)
   {
+    // rjf: unpack node
     CFG_Node *c = n->v;
-    U64 hash = u64_hash_from_str8(str8_struct(&c->id));
+    U64 hash = c->id;
     U64 slot_idx = hash%state->ctx.id_slots_count;
+    
+    // rjf: release string, recycle node
     cfg_string_release(state, c->string);
     SLLStackPush(state->free, c);
+    
+    // rjf: zero node's contents
     c->first = c->last = c->prev = c->parent = 0;
     c->id = 0;
     c->string = str8_zero();
-    for(CFG_NodePtrNode *n = state->ctx.id_slots[slot_idx].first; n != 0; n = n->next)
+    
+    // rjf: remove from id -> node map
+    for(CFG_NodePtrNode *id_n = state->ctx.id_slots[slot_idx].first; id_n != 0; id_n = id_n->next)
     {
-      if(n->v == c)
+      if(id_n->v == c)
       {
-        DLLRemove(state->ctx.id_slots[slot_idx].first, state->ctx.id_slots[slot_idx].last, n);
-        SLLStackPush(state->free_id_node, n);
+        DLLRemove(state->ctx.id_slots[slot_idx].first, state->ctx.id_slots[slot_idx].last, id_n);
+        SLLStackPush(state->free_id_node, id_n);
         break;
       }
+    }
+    
+    // rjf: if this was the last accessed node, clear that slot
+    if(c == state->ctx.last_accessed)
+    {
+      state->ctx.last_accessed = &cfg_nil_node;
+      state->ctx.last_accessed_id = 0;
     }
   }
   

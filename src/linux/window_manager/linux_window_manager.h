@@ -12,6 +12,7 @@
 #include <X11/cursorfont.h>
 #include <X11/extensions/sync.h>
 #include <X11/extensions/Xfixes.h>
+#include <X11/extensions/Xrandr.h>
 #include <X11/keysym.h>
 #include <X11/keysymdef.h>
 #include <poll.h>
@@ -95,6 +96,8 @@ struct LNX_WM_State
   LNX_WM_WindowClientArea *free_client_area;
   long *icon_image_data;
   U64 icon_image_data_count;
+  WM_Modifiers modifier_state;
+  U64 key_down_state[(WM_Key_COUNT+63)/64];
 };
 
 ////////////////////////////////

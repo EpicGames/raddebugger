@@ -4,6 +4,7 @@
 #ifndef WIN32_INC_H
 #define WIN32_INC_H
 
+#include "win32/win32.h"
 #if defined(X64_H)
 # include "win32/x64/win32_x64.h"
 #endif

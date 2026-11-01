@@ -1792,6 +1792,7 @@ dmn_ctrl_run(Arena *arena, DMN_CtrlCtx *ctx, DMN_RunCtrls *ctrls)
       // wifexited -> normal process exit via _exit or exit()
       // wifsignaled -> exit because child did not handle a signal
       //
+      B32 is_exception = 0;
       if(!signal_handled && (wifexited || wifsignaled))
       {
         thread_done = 1;
@@ -2291,9 +2292,17 @@ dmn_ctrl_run(Arena *arena, DMN_CtrlCtx *ctx, DMN_RunCtrls *ctrls)
         //
         else
         {
+          is_exception = 1;
+          
+          // rjf: unpack ip
+          U64 exception_ip = lnx_dmn_ip_from_thread(thread);
+          
+          // rjf: pass this signal back
           thread->pass_through_signal = 1;
           thread->pass_through_signo = wstopsig;
-          local_persist B8 is_repeatable[] =
+          
+          // rjf: determine if this is a repeat
+          local_persist B8 signo_is_repeatable_table[] =
           {
             0, // null
             1, // SIGHUP           1
@@ -2328,14 +2337,27 @@ dmn_ctrl_run(Arena *arena, DMN_CtrlCtx *ctx, DMN_RunCtrls *ctrls)
             1, // SIGPWR          30
             1, // SIGSYS/SIGUNUSED31
           };
+          B32 is_repeatable = (wstopsig < ArrayCount(signo_is_repeatable_table)) ? signo_is_repeatable_table[wstopsig] : 0;
+          B32 is_second_chance = (is_repeatable &&
+                                  thread->last_exception_ip == exception_ip &&
+                                  thread->last_exception_signo == wstopsig);
+          
+          // rjf: store this last exception info
+          if(is_repeatable)
+          {
+            thread->last_exception_ip = exception_ip;
+            thread->last_exception_signo = wstopsig;
+          }
+          
+          // rjf: report as exception
           DMN_Event *e = dmn_event_list_push(arena, &events);
           e->kind                = DMN_EventKind_Exception;
           e->process             = lnx_dmn_handle_from_process(thread->process);
           e->thread              = lnx_dmn_handle_from_thread(thread);
-          e->instruction_pointer = lnx_dmn_ip_from_thread(thread);
-          e->address             = e->instruction_pointer;
+          e->instruction_pointer = exception_ip;
+          e->address             = exception_ip;
           e->code                = wstopsig;
-          e->exception_repeated  = wstopsig < ArrayCount(is_repeatable) ? is_repeatable[wstopsig] : 0;
+          e->exception_repeated  = is_second_chance;
           if(wstopsig == SIGSEGV)
           {
             siginfo_t si = {0};
@@ -2343,6 +2365,15 @@ dmn_ctrl_run(Arena *arena, DMN_CtrlCtx *ctx, DMN_RunCtrls *ctrls)
             e->address = (U64)si.si_addr;
           }
         }
+      }
+      
+      //////////////////////////
+      //- rjf: not exception? -> clear this thread's last exception info
+      //
+      if(!is_exception && thread != 0)
+      {
+        thread->last_exception_ip = 0;
+        thread->last_exception_signo = 0;
       }
       
       //////////////////////////

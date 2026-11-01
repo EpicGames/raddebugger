@@ -69,6 +69,13 @@ if "%pgo%"=="1" (
   )
 )
 
+:: --- Mix Git Commit ID ------------------------------------------------------
+call git rev-parse --is-inside-work-tree >nul 2>&1 && set in_git_tree=1
+if "%in_git_tree%"=="1" (
+  for /f %%i in ('call git describe --always --dirty')   do set auto_compile_flags=!auto_compile_flags! -DBUILD_GIT_HASH=\"%%i\"
+  for /f %%i in ('call git rev-parse HEAD')              do set auto_compile_flags=!auto_compile_flags! -DBUILD_GIT_HASH_FULL=\"%%i\"
+)
+
 :: --- Compile/Link Line Definitions ------------------------------------------
 set cl_common=     /I..\src\ /I..\local\ /nologo /FC /Z7 /Zc:preprocessor
 set cl_debug=      call cl /Od /Ob1 /DBUILD_DEBUG=1 %cl_common% %auto_compile_flags% 
@@ -127,12 +134,9 @@ pushd build
 %rc% /nologo /fo logo.res ..\data\logo.rc || exit /b 1
 popd
 
-:: --- Get Current Git Commit Id ----------------------------------------------
-for /f %%i in ('call git describe --always --dirty')   do set compile=%compile% -DBUILD_GIT_HASH=\"%%i\"
-for /f %%i in ('call git rev-parse HEAD')              do set compile=%compile% -DBUILD_GIT_HASH_FULL=\"%%i\"
-
 :: --- Build & Run Metaprogram ------------------------------------------------
 pushd build
+if not exist metagen.exe set meta=1
 if "%meta%"=="1" (
   echo [building metagen]
   %compile_debug% ..\src\metagen\metagen_main.c %compile_link% %out%metagen.exe || exit /b 1
@@ -192,6 +196,7 @@ pushd build
 if "%raddbg%"=="1"                     set didbuild=1 && %compile% ..\src\raddbg\raddbg_main.c                               %compile_link% %link_icon% %out%raddbg.exe || exit /b 1
 if "%raddbg_non_graphical%"=="1"       set didbuild=1 && %compile% -DWM_STUB=1 -DR_BACKEND=R_BACKEND_STUB ..\src\raddbg\raddbg_main.c %compile_link% %link_icon% %out%raddbg_non_graphical.exe || exit /b 1
 if "%com_shim%"=="1"                   set didbuild=1 && %compile% ..\src\com_shim\com_shim_main.c                           %compile_link% %out%com_shim.exe || exit /b 1
+if "%raddbg_server%"=="1"              set didbuild=1 && %compile% ..\src\raddbg_server\raddbg_server_main.c                 %compile_link% %out%raddbg_server.exe || exit /b 1
 if "%radlink%"=="1"                    set didbuild=1 && %compile% ..\src\linker\lnk.c                                       %compile_link% %linker% /NOIMPLIB %linker% /NATVIS:"%~dp0\src\linker\linker.natvis" %out%radlink.exe || exit /b 1
 if "%radbin%"=="1"                     set didbuild=1 && %compile% ..\src\radbin\radbin_main.c                               %compile_link% %out%radbin.exe || exit /b 1
 if "%raddump%"=="1"                    set didbuild=1 && %compile% ..\src\raddump\raddump_main.c                             %compile_link% %out%raddump.exe || exit /b 1

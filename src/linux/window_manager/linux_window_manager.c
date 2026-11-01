@@ -374,10 +374,44 @@ wm_init(void)
   //- rjf: open im
   lnx_wm_state->xim = XOpenIM(lnx_wm_state->display, 0, 0, 0);
   
-  //- rjf: fill out gfx info
+  //- rjf: fill out default gfx info
   lnx_wm_state->gfx_info.double_click_time = 0.5f;
   lnx_wm_state->gfx_info.caret_blink_time = 0.5f;
   lnx_wm_state->gfx_info.default_refresh_rate = 60.f;
+  
+  //- rjf: determine default refresh rate
+  {
+    XRRScreenResources *res = XRRGetScreenResourcesCurrent(lnx_wm_state->display, DefaultRootWindow(lnx_wm_state->display));
+    for EachIndex(idx, res->noutput)
+    {
+      XRROutputInfo *out_info = XRRGetOutputInfo(lnx_wm_state->display, res, res->outputs[idx]);
+      if(out_info && out_info->connection == RR_Connected && out_info->crtc != None)
+      {
+        XRRCrtcInfo *crtc_info = XRRGetCrtcInfo(lnx_wm_state->display, res, out_info->crtc);
+        if(crtc_info)
+        {
+          for EachIndex(mode_idx, res->nmode)
+          {
+            if(res->modes[mode_idx].id == crtc_info->mode)
+            {
+              XRRModeInfo *mode_info = &res->modes[mode_idx];
+              if(mode_info->vTotal != 0 && mode_info->hTotal != 0)
+              {
+                lnx_wm_state->gfx_info.default_refresh_rate = (F32)mode_info->dotClock / ((F32)mode_info->hTotal * (F32)mode_info->vTotal);
+              }
+            }
+          }
+          XRRFreeCrtcInfo(crtc_info);
+        }
+        XRRFreeOutputInfo(out_info);
+      }
+    }
+    XRRFreeScreenResources(res);
+    if(lnx_wm_state->gfx_info.default_refresh_rate == 0)
+    {
+      lnx_wm_state->gfx_info.default_refresh_rate = 60.f;
+    }
+  }
   
   //- rjf: fill out cursors
   {
@@ -976,18 +1010,20 @@ wm_window_push_custom_title_bar_client_area(WM_Window handle, Rng2F32 rect)
 internal Rng2F32
 wm_rect_from_window(WM_Window handle)
 {
-  if(wm_window_match(handle, wm_window_zero())) {return r2f32p(0, 0, 0, 0);}
   LNX_WM_Window *w = (LNX_WM_Window *)handle.u64[0];
   Rng2F32 result = {0};
-  if(w->resize_draw)
+  if(w != 0)
   {
-    result = w->last_synced_rect;
-  }
-  else
-  {
-    XWindowAttributes atts = {0};
-    Status s = XGetWindowAttributes(lnx_wm_state->display, w->window, &atts);
-    result = r2f32p((F32)atts.x, (F32)atts.y, (F32)atts.x + (F32)atts.width, (F32)atts.y + (F32)atts.height);
+    if(w->resize_draw)
+    {
+      result = w->last_synced_rect;
+    }
+    else
+    {
+      XWindowAttributes atts = {0};
+      Status s = XGetWindowAttributes(lnx_wm_state->display, w->window, &atts);
+      result = r2f32p((F32)atts.x, (F32)atts.y, (F32)atts.x + (F32)atts.width, (F32)atts.y + (F32)atts.height);
+    }
   }
   return result;
 }
@@ -997,16 +1033,19 @@ wm_client_rect_from_window(WM_Window handle)
 {
   LNX_WM_Window *w = (LNX_WM_Window *)handle.u64[0];
   Rng2F32 result = {0};
-  if(w->resize_draw)
+  if(w != 0)
   {
-    Vec2F32 dim = dim_2f32(w->last_synced_rect);
-    result = r2f32p(0, 0, dim.x, dim.y);
-  }
-  else
-  {
-    XWindowAttributes atts = {0};
-    Status s = XGetWindowAttributes(lnx_wm_state->display, w->window, &atts);
-    result = r2f32p(0, 0, (F32)atts.width, (F32)atts.height);
+    if(w->resize_draw)
+    {
+      Vec2F32 dim = dim_2f32(w->last_synced_rect);
+      result = r2f32p(0, 0, dim.x, dim.y);
+    }
+    else
+    {
+      XWindowAttributes atts = {0};
+      Status s = XGetWindowAttributes(lnx_wm_state->display, w->window, &atts);
+      result = r2f32p(0, 0, (F32)atts.width, (F32)atts.height);
+    }
   }
   return result;
 }
@@ -1106,12 +1145,12 @@ wm_get_events(Arena *arena, B32 wait)
         { .fd = ConnectionNumber(lnx_wm_state->display), .events = POLLIN },
         { .fd = lnx_wm_state->wakeup_fd,                 .events = POLLIN },
       };
-      int timeout = wait && evts.count == 0 ? -1 : 0;
+      int timeout = (wait && evts.count == 0 ? -1 : 0);
       int poll_status = poll(poll_fds, ArrayCount(poll_fds), timeout);
       if(poll_fds[1].revents & POLLIN)
       {
         U64 dummy = 0;
-        read(lnx_wm_state->wakeup_fd, &dummy, sizeof(dummy));
+        LNX_RETRY_ON_EINTR(read(lnx_wm_state->wakeup_fd, &dummy, sizeof(dummy)));
         wait = 0;
       }
     }
@@ -1230,6 +1269,18 @@ wm_get_events(Arena *arena, B32 wait)
           // rjf: map keysym -> WM_Key
           B32 is_right_sided = 0;
           WM_Key key = lnx_wm_key_from_keysym(keysym, &is_right_sided);
+          
+          // rjf: update modifier / key down state
+          if(evt.type == KeyPress)
+          {
+            lnx_wm_state->modifier_state |= modifiers;
+            lnx_wm_state->key_down_state[key/64] |= (1ull<<(key%64));
+          }
+          else
+          {
+            lnx_wm_state->modifier_state &= ~modifiers;
+            lnx_wm_state->key_down_state[key/64] &= ~(1ull<<(key%64));
+          }
           
           // rjf: push text event
           if(evt.type == KeyPress && text_size != 0)
@@ -1465,25 +1516,14 @@ wm_get_events(Arena *arena, B32 wait)
 internal WM_Modifiers
 wm_get_modifiers(void)
 {
-  WM_Modifiers mods = 0;
-  if(wm_key_is_down(WM_Key_Shift)) { mods |= WM_Modifier_Shift; }
-  if(wm_key_is_down(WM_Key_Alt))   { mods |= WM_Modifier_Alt; }
-  if(wm_key_is_down(WM_Key_Ctrl))  { mods |= WM_Modifier_Ctrl; }
+  WM_Modifiers mods = lnx_wm_state->modifier_state;
   return mods;
 }
 
 internal B32
 wm_key_is_down(WM_Key key)
 {
-  B32 result = 0;
-  {
-    char keys[32];
-    XQueryKeymap(lnx_wm_state->display, keys);
-    KeySym sym = lnx_wm_keysym_from_key(key);
-    KeyCode code = XKeysymToKeycode(lnx_wm_state->display, sym);
-    B32 is_down = !!(keys[code/8] & (1u<<(code%8)));
-    result = is_down;
-  }
+  B32 result = !!(lnx_wm_state->key_down_state[key/64] & (1ull<<(key%64)));
   return result;
 }
 

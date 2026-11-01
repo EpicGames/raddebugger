@@ -108,7 +108,11 @@ r_ogl_scissor(Rng2F32 clip, Vec2F32 viewport_dim)
   {
     glScissor(x0, (S32)viewport_dim.y - y1, width, height);
   }
-  return width > 0 && height > 0;
+  else
+  {
+    glScissor(0, 0, 0, 0);
+  }
+  return width > 0 || height > 0;
 }
 
 ////////////////////////////////
@@ -251,8 +255,11 @@ r_hook void
 r_window_unequip(WM_Window window, R_Handle window_equip)
 {
   R_OGL_Window *w = (R_OGL_Window *)window_equip.u64[0];
-  r_ogl_os_window_unequip(window, w->os);
-  SLLStackPush(r_ogl_state->free_window, w);
+  if(w != 0)
+  {
+    r_ogl_os_window_unequip(window, w->os);
+    SLLStackPush(r_ogl_state->free_window, w);
+  }
 }
 
 //- rjf: textures

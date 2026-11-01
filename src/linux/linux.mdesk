@@ -1,0 +1,37 @@
+// Copyright (c) Epic Games Tools
+// Licensed under the MIT license (https://opensource.org/license/mit/)
+
+@table(name  name_lower  code  repeatable  break_default  desc) LNX_SignalCodeTable:
+{
+  { SIGHUP      sighup            1 1    1  "Hangup detected on controlling terminal or death of controlling process" }
+  { SIGINT      sigint            2 1    1  "Interrupt from keyboard"}
+  { SIGQUIT     sigquit           3 1    1  "Quit from keyboard"}
+  { SIGILL      sigill            4 1    1  "Illegal Instruction"}
+  { SIGTRAP     sigtrap           5 1    1  "Trace/breakpoint trap"}
+  { SIGABRT     sigabrt           6 1    1  "Abort signal"}
+  { SIGBUS      sigbus            7 1    1  "Bus error (bad address)"}
+  { SIGFPE      sigfpe            8 1    1  "Erroneous arithmetic operation"}
+  { SIGKILL     sigkill           9 1    1  "Kill signal"}
+  { SIGUSR1     sigusr1           10 1   1  "User-defined signal 1"}
+  { SIGSEGV     sigsegv           11 1   1  "Invalid memory reference"}
+  { SIGUSR2     sigusr2           12 1   1  "User-defined signal 2"}
+  { SIGPIPE     sigpipe           13 1   1  "Broken pipe; write to pipe with no readers"}
+  { SIGALRM     sigalrm           14 1   1  "Timer signal"}
+  { SIGTERM     sigterm           15 1   1  "Termination signal"}
+  { SIGSTKFLT   sigstkflt         16 1   1  "Stack fault on coprocessor"}
+  { SIGCHLD     sigchld           17 0   1  "Child stopped, terminated, or continued"}
+  { SIGCONT     sigcont           18 0   0  "Continue if stopped"}
+  { SIGSTOP     sigstop           19 1   1  "Stop process"}
+  { SIGTSTP     sigtstp           20 1   1  "Stop typed at terminal"}
+  { SIGTTIN     sigttin           21 1   0  "Terminal input for background process"}
+  { SIGTTOU     sigttou           22 1   0  "Terminal output for background process"}
+  { SIGURG      sigurg            23 0   0  "Urgent condition on socket"}
+  { SIGXCPU     sigxcpu           24 1   1  "CPU time limit exceeded"}
+  { SIGXFSZ     sigxfsz           25 1   1  "File size limit exceeded"}
+  { SIGVTALRM   sigvtalrm         26 1   0  "Virtual alarm clock"}
+  { SIGPROF     sigprof           27 1   0  "Profiling timer expired"}
+  { SIGWINCH    sigwinch          28 0   0  "Window resize signal"}
+  { SIGIO       sigio             29 1   0  "I/O now possible"}
+  { SIGPWR      sigpwr            30 1   1  "Power failure"}
+  { SIGSYS      sigsys            31 1   1  "Bad system call"}
+}

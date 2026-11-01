@@ -3,22 +3,24 @@ set -eu
 cd "$(dirname "$0")"
 
 # --- Unpack Arguments --------------------------------------------------------
+auto_compile_flags=""
 for arg in "$@"; do declare $arg='1'; done
 if [[ "$#" == "0" ]]; then raddbg='1'; fi
-cc_sanitize=""
+if [[ "$#" == "1" && "${release:-0}" == "1" ]]; then raddbg='1'; fi
 if [[ "${asan:-0}" == "1" ]]; then
   echo "[asan enabled]"
-  cc_sanitize="-fsanitize=address"
+  auto_compile_flags="$auto_compile_flags -fsanitize=address"
 fi
 
-# --- Get Current Git Commit Id -----------------------------------------------
-git_hash=$(git describe --always --dirty)
-git_hash_full=$(git rev-parse HEAD)
+# --- Mix Git Commit ID -------------------------------------------------------
+if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  auto_compile_flags="$auto_compile_flags -DBUILD_GIT_HASH=\"$(git describe --always --dirty)\" -DBUILD_GIT_HASH_FULL=$(git rev-parse HEAD)"
+fi
 
 # --- Compile/Link Line Definitions -------------------------------------------
 cc_cflags_gcc=""
-cc_cflags_clang=${cc_sanitize}" -fdiagnostics-absolute-paths -Wno-for-loop-analysis  -Wno-incompatible-pointer-types-discards-qualifiers -Wno-initializer-overrides -Wno-compare-distinct-pointer-types -Wno-single-bit-bitfield-constant-conversion -Wno-deprecated-declarations -Wno-writable-strings -Wno-unknown-warning-option -Wno-deprecated-register -Wno-unused-local-typedef -msse2"
-cc_common="-mcx16 -I../src/ -I../local/ -D_GNU_SOURCE -g -DBUILD_GIT_HASH=\"$git_hash\" -DBUILD_GIT_HASH_FULL=\"$git_hash_full\" -Wall -Wno-missing-braces -Wno-unused-function -Wno-unused-variable -Wno-unused-but-set-variable -Wno-unused-value -D_USE_MATH_DEFINES -Dstrdup=_strdup -Dgnu_printf=printf"
+cc_cflags_clang=" -fdiagnostics-absolute-paths -Wno-for-loop-analysis  -Wno-incompatible-pointer-types-discards-qualifiers -Wno-initializer-overrides -Wno-compare-distinct-pointer-types -Wno-single-bit-bitfield-constant-conversion -Wno-deprecated-declarations -Wno-writable-strings -Wno-unknown-warning-option -Wno-deprecated-register -Wno-unused-local-typedef -msse2"
+cc_common=${auto_compile_flags}"-mcx16 -I../src/ -I../local/ -D_GNU_SOURCE -g -Wall -Wno-missing-braces -Wno-unused-function -Wno-unused-variable -Wno-unused-but-set-variable -Wno-unused-value -D_USE_MATH_DEFINES -Dstrdup=_strdup -Dgnu_printf=printf"
 cc_debug="-g -O0 -DBUILD_DEBUG=1 ${cc_common}"
 cc_release="-g -O2 -DBUILD_DEBUG=0 ${cc_common}"
 cc_link="-lpthread -lm -lrt -ldl"
@@ -27,14 +29,14 @@ cc_link="-lpthread -lm -lrt -ldl"
 cc_link_dll="-fPIC"
 
 # --- External Libraries ------------------------------------------------------
-# sudo apt install -y pkg-config libfreetype6-dev libx11-dev libxext-dev libxfixes-dev libgl-dev libegl-dev
+# sudo apt install -y pkg-config libfreetype6-dev libx11-dev libxext-dev libxfixes-dev libxrandr-dev libgl-dev libegl-dev
 if [[ -x "$(command -v pkg-config)" ]]; then
   cc_font_provider="$(pkg-config --cflags --libs freetype2)"  
-  cc_os_gfx="$(pkg-config --cflags --libs x11 xext xfixes)"
+  cc_os_gfx="$(pkg-config --cflags --libs x11 xext xfixes xrandr)"
   cc_render="$(pkg-config --cflags --libs gl egl)"
 else
   cc_font_provider="-I/usr/include/freetype2 -lfreetype"
-  cc_os_gfx="-lX11 -lXext -lXfixes"
+  cc_os_gfx="-lX11 -lXext -lXfixes -lXrandr"
   cc_render="-lGL -lEGL"
 fi
 
@@ -58,18 +60,19 @@ compile() {
 mkdir -p build local
 
 # --- Build & Run Metaprogram -------------------------------------------------
-if [[ "${no_meta:-0}" == "0" ]]
-then
+cd build
+if [[ ! -f metagen ]]; then meta='1'; fi
+if [[ "${meta:-0}" == "1" ]]; then
   echo "[building metagen]"
-  cd build
   $compiler $cc_debug ../src/metagen/metagen_main.c $cc_link -o metagen
-  ./metagen
-  cd ..
 fi
+if [[ ! -v no_meta ]]; then
+  ./metagen
+fi
+cd ..
 
 # --- Assemble BLAKE3 ---------------------------------------------------------
-if [[ ! -f "build/blake3.a" ]]
-then
+if [[ ! -f "build/blake3.a" ]]; then
   echo "[assembling blake3]"
   $compiler -c -g -o build/blake3_sse2_x86-64_unix.o   src/third_party/blake3/blake3_sse2_x86-64_unix.S
   $compiler -c -g -o build/blake3_sse41_x86-64_unix.o  src/third_party/blake3/blake3_sse41_x86-64_unix.S
@@ -125,13 +128,12 @@ if [[ "${torture:-0}"              == "1" ]]; then didbuild=1 && compile ../src/
 cd ..
 
 # --- Warn On No Builds -------------------------------------------------------
-if [[ "${didbuild:-0}" == "0" ]]
-then
+if [[ "${didbuild:-0}" == "0" ]]; then
   echo "[WARNING] no valid build target specified; must use build target names as arguments to this script, like \`./build.sh raddbg\` or \`./build.sh radlink\`."
   exit 1
 fi
 
 # --- Warn On Debug Builds (if debug not explicitly specified) ----------------
-if [[ ! -v debug && ! -v release ]] then
+if [[ ! -v debug && ! -v release ]]; then
   echo "[INFO] Debug build complete. For a faster build, call this script with the \`release\` argument (this will take significantly longer than a debug build)."
 fi
