@@ -88,9 +88,9 @@ typedef enum MSF_Error
 
 typedef struct MSF_WriteTask
 {
-  U8      *dst;
-  U8      *src;
-  Rng1U64 *ranges;
+  U8  *dst;
+  U8  *src;
+  U64  size;
 } MSF_WriteTask;
 
 internal MSF_Context *msf_alloc(MSF_UInt page_size, MSF_UInt active_fpm);

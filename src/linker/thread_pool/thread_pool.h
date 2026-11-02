@@ -27,6 +27,8 @@ typedef struct TP_Worker
   Thread             handle;
 } TP_Worker;
 
+internal Rng1U64 tp_work_range(U64 item_count, U32 range_count, U64 task_id);
+
 typedef struct TP_Context
 {
   B32          is_live;
@@ -59,5 +61,4 @@ internal TP_Temp      tp_temp_begin(TP_Arena *arena);
 internal void         tp_temp_end(TP_Temp temp);
 #define tp_for_parallel_prof(pool, arena, task_count, task_func, task_data, zone_name) ProfBegin(zone_name); tp_for_parallel(pool, arena, task_count, task_func, task_data); ProfEnd();
 internal void         tp_for_parallel(TP_Context *pool, TP_Arena *arena, U64 task_count, TP_TaskFunc *task_func, void *task_data);
-internal Rng1U64 *    tp_divide_work(Arena *arena, U64 item_count, U32 worker_count);
 #define tp_broadcast(p) tp_broadcast_(tp, task_id, p, sizeof(*p))

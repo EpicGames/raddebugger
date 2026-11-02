@@ -175,7 +175,7 @@ typedef struct
   LNK_AssignedTiHash  assigned_ti_arr[CV_TypeIndexSource_COUNT];
   CV_TypeIndexSource  ti_source;
   U32Array            indices;
-  Rng1U64            *ranges;
+  U64                 range_item_count;
 
   // extract present buckets
   U64 *counts [CV_TypeIndexSource_COUNT];

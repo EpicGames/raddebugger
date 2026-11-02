@@ -169,7 +169,7 @@ THREAD_POOL_TASK_FUNC(lnk_blake3_hasher_task)
   ProfBeginFunction();
   
   LNK_Blake3Hasher *task     = raw_task;
-  Rng1U64           range    = task->ranges[task_id];
+  Rng1U64           range    = tp_work_range(task->data.size, task->chunk_count, task_id);
   String8           sub_data = str8_substr(task->data, range);
   
   blake3_hasher hasher; blake3_hasher_init(&hasher);
@@ -188,7 +188,7 @@ lnk_blake3_hash_parallel(TP_Context *tp, U64 chunk_count, String8 data)
   ProfBegin("Hash Chunks");
   LNK_Blake3Hasher task = {0};
   task.data             = data;
-  task.ranges           = tp_divide_work(scratch.arena, data.size, chunk_count);
+  task.chunk_count      = safe_cast_u32(chunk_count);
   task.hashes           = push_array(scratch.arena, U128, chunk_count);
   tp_for_parallel(tp, 0, chunk_count, lnk_blake3_hasher_task, &task);
   ProfEnd();
@@ -3651,7 +3651,6 @@ THREAD_POOL_TASK_FUNC(lnk_opt_icf_task)
     U64      *contrib_offsets;
     U64     **color_map;
     Contrib  *contribs;
-    Rng1U64  *contrib_ranges;
     U64      *split_counts;
     U64      *split_offsets;
     U32      *is_part_stable;
@@ -3677,7 +3676,6 @@ THREAD_POOL_TASK_FUNC(lnk_opt_icf_task)
 
     shared.contrib_offsets = offsets_from_counts_array_u64(scratch.arena, contrib_counts, task->objs_count);
     shared.contribs        = push_array(scratch.arena, Contrib, shared.contrib_count);
-    shared.contrib_ranges  = tp_divide_work(scratch.arena, shared.contrib_count, tp->worker_count);
     shared.split_counts    = push_array(scratch.arena, U64, tp->worker_count);
     shared.split_offsets   = push_array(scratch.arena, U64, tp->worker_count + 1);
     shared.is_part_stable  = push_array(scratch.arena, U32, 1);
@@ -3875,7 +3873,8 @@ THREAD_POOL_TASK_FUNC(lnk_opt_icf_task)
     U64 ready_state            = (table_generation_value << 2) | 2;
 
     ProfBegin("Compute colored hashes");
-    for EachInRange(contrib_idx, shared.contrib_ranges[task_id]) {
+    Rng1U64 contrib_range = tp_work_range(shared.contrib_count, tp->worker_count, task_id);
+    for EachInRange(contrib_idx, contrib_range) {
       Contrib *contrib = &shared.contribs[contrib_idx];
       contrib->key.old_color = shared.color_map[contrib->obj_idx][contrib->section_number];
 
@@ -3932,7 +3931,6 @@ THREAD_POOL_TASK_FUNC(lnk_opt_icf_task)
 
     // publish one old-color record per color group
     ProfBegin("Index color groups");
-    Rng1U64 contrib_range = shared.contrib_ranges[task_id];
     for EachInRange(contrib_idx, contrib_range) {
       Contrib       *contrib = &shared.contribs[contrib_idx];
       ColorHashSlot *slot    = &color_table.slots[contrib->color_slot_idx];
@@ -4062,6 +4060,8 @@ THREAD_POOL_TASK_FUNC(lnk_opt_icf_task)
   }
   tp_broadcast(&fold_stats);
 
+  Rng1U64 contrib_range = tp_work_range(shared.contrib_count, tp->worker_count, task_id);
+
   // Collect associated-child mappings before any worker changes flags or symlinks.
   // The collector filters LnkRemove, and the scope query follows COMDAT symlinks;
   // querying either during Flag Folds makes the positional child pairing depend
@@ -4077,7 +4077,7 @@ THREAD_POOL_TASK_FUNC(lnk_opt_icf_task)
   AssocFold *assoc_first = 0;
   AssocFold *assoc_last  = 0;
   ProfBegin("Plan Associated Folds");
-  for EachInRange(contrib_idx, shared.contrib_ranges[task_id]) {
+  for EachInRange(contrib_idx, contrib_range) {
     Contrib       *contrib    = &shared.contribs[contrib_idx];
     ColorHashSlot *color_slot = &color_table.slots[contrib->color_slot_idx];
     Contrib       *leader     = &shared.contribs[ins_atomic_u64_eval(&color_slot->first_contrib_idx)];
@@ -4111,7 +4111,7 @@ THREAD_POOL_TASK_FUNC(lnk_opt_icf_task)
   barrier_wait(tp->barrier);
 
   ProfBegin("Flag Folds");
-  for EachInRange(contrib_idx, shared.contrib_ranges[task_id]) {
+  for EachInRange(contrib_idx, contrib_range) {
     Contrib       *contrib    = &shared.contribs[contrib_idx];
     ColorHashSlot *color_slot = &color_table.slots[contrib->color_slot_idx];
     Contrib       *leader     = &shared.contribs[ins_atomic_u64_eval(&color_slot->first_contrib_idx)];
@@ -4330,7 +4330,7 @@ THREAD_POOL_TASK_FUNC(lnk_gather_sections_task)
   Temp scratch = scratch_begin(&arena, 1);
 
   LNK_BuildImageTask *task         = raw_task;
-  Rng1U64             range        = task->u.gather_sects.ranges[task_id];
+  Rng1U64             range        = tp_work_range(task->objs_count, tp->worker_count, task_id);
   HashTable          *sect_defn_ht = hash_table_init(arena, 128);
   task->u.gather_sects.defns[task_id] = sect_defn_ht;
 
@@ -4623,20 +4623,21 @@ lnk_section_contrib_ptr_is_before(void *raw_a, void *raw_b)
 
 typedef struct LNK_SortContribsRadixTask
 {
-  Rng1U64 *ranges;
-  U64     *keys_src;
-  U32     *indices_src;
-  U64     *keys_dst;
-  U32     *indices_dst;
-  U32     *hist;
-  U64      shift;
+  U64  count;
+  U64 *keys_src;
+  U32 *indices_src;
+  U64 *keys_dst;
+  U32 *indices_dst;
+  U32 *hist;
+  U64  shift;
 } LNK_SortContribsRadixTask;
 
 THREAD_POOL_TASK_FUNC(lnk_sort_contribs_radix_hist_task)
 {
   LNK_SortContribsRadixTask *task = raw_task;
-  U32 *hist = task->hist + (U64)task_id * LNK_SORT_CONTRIBS_RADIX_SIZE;
-  for EachInRange(i, task->ranges[task_id]) {
+  U32     *hist  = task->hist + (U64)task_id * LNK_SORT_CONTRIBS_RADIX_SIZE;
+  Rng1U64  range = tp_work_range(task->count, tp->worker_count, task_id);
+  for EachInRange(i, range) {
     hist[(task->keys_src[i] >> task->shift) & (LNK_SORT_CONTRIBS_RADIX_SIZE - 1)] += 1;
   }
 }
@@ -4644,8 +4645,9 @@ THREAD_POOL_TASK_FUNC(lnk_sort_contribs_radix_hist_task)
 THREAD_POOL_TASK_FUNC(lnk_sort_contribs_radix_scatter_task)
 {
   LNK_SortContribsRadixTask *task = raw_task;
-  U32 *hist = task->hist + (U64)task_id * LNK_SORT_CONTRIBS_RADIX_SIZE;
-  for EachInRange(i, task->ranges[task_id]) {
+  U32     *hist  = task->hist + (U64)task_id * LNK_SORT_CONTRIBS_RADIX_SIZE;
+  Rng1U64  range = tp_work_range(task->count, tp->worker_count, task_id);
+  for EachInRange(i, range) {
     U64 digit   = (task->keys_src[i] >> task->shift) & (LNK_SORT_CONTRIBS_RADIX_SIZE - 1);
     U32 dst_idx = hist[digit]++;
     task->keys_dst[dst_idx]    = task->keys_src[i];
@@ -4673,16 +4675,15 @@ lnk_sort_contribs_chunk_radix(TP_Context *tp, Arena *arena, LNK_SectionContribCh
     max_key = Max(max_key, key);
   }
 
-  U64      significant_pass_count = (64 - clz64(max_key) + LNK_SORT_CONTRIBS_RADIX_BITS - 1) / LNK_SORT_CONTRIBS_RADIX_BITS;
-  U64      pass_count             = significant_pass_count + (significant_pass_count & 1);
-  U64     *keys_buffer            = push_array_no_zero(scratch.arena, U64, count);
-  U32     *indices_buffer         = push_array_no_zero(scratch.arena, U32, count);
-  U32     *hist                   = push_array_no_zero(scratch.arena, U32, worker_count * LNK_SORT_CONTRIBS_RADIX_SIZE);
-  Rng1U64 *ranges                 = tp_divide_work(scratch.arena, count, worker_count);
+  U64  significant_pass_count = (64 - clz64(max_key) + LNK_SORT_CONTRIBS_RADIX_BITS - 1) / LNK_SORT_CONTRIBS_RADIX_BITS;
+  U64  pass_count             = significant_pass_count + (significant_pass_count & 1);
+  U64 *keys_buffer            = push_array_no_zero(scratch.arena, U64, count);
+  U32 *indices_buffer         = push_array_no_zero(scratch.arena, U32, count);
+  U32 *hist                   = push_array_no_zero(scratch.arena, U32, worker_count * LNK_SORT_CONTRIBS_RADIX_SIZE);
 
   U64 *keys_src = keys, *keys_dst = keys_buffer;
   U32 *indices_src = indices, *indices_dst = indices_buffer;
-  LNK_SortContribsRadixTask task = { .ranges = ranges, .hist = hist };
+  LNK_SortContribsRadixTask task = { .count = count, .hist = hist };
   for EachIndex(pass, pass_count) {
     task.keys_src    = keys_src;
     task.indices_src = indices_src;
@@ -4751,7 +4752,7 @@ THREAD_POOL_TASK_FUNC(lnk_patch_common_block_leaders_task)
   ProfBeginFunction();
 
   LNK_BuildImageTask *task          = raw_task;
-  Rng1U64             contrib_range = task->u.patch_symtabs.common_block_ranges[task_id];
+  Rng1U64             contrib_range = tp_work_range(task->u.patch_symtabs.common_block_count, tp->worker_count, task_id);
 
   for (U64 contrib_idx = contrib_range.min; contrib_idx < contrib_range.max; contrib_idx += 1) {
     LNK_CommonBlockContrib *contrib        = &task->u.patch_symtabs.common_block_contribs[contrib_idx];
@@ -5544,7 +5545,6 @@ THREAD_POOL_TASK_FUNC(lnk_gather_base_reloc_pages_task)
       default: { InvalidPath; } break;
       }
     }
-
   }
   ProfEnd();
 }
@@ -5556,8 +5556,9 @@ THREAD_POOL_TASK_FUNC(lnk_filter_out_duplicate_base_reloc_entries_task)
 
   LNK_BaseRelocsTask *task = raw_task;
 
-  HashTable *voff_ht = hash_table_init(scratch.arena, task->page_size);
-  for EachInRange(page_idx, task->serialize.ranges[task_id]) {
+  HashTable *voff_ht    = hash_table_init(scratch.arena, task->page_size);
+  Rng1U64    page_range = tp_work_range(task->serialize.pages.count, tp->worker_count, task_id);
+  for EachInRange(page_idx, page_range) {
     LNK_BaseRelocPage *page = &task->serialize.pages.v[page_idx];
 
     U64List unique_entries32 = {0};
@@ -5597,7 +5598,8 @@ THREAD_POOL_TASK_FUNC(lnk_serialize_base_reloc_pages_task)
 
   LNK_BaseRelocsTask *task = raw_task;
 
-  for EachInRange(page_idx, task->serialize.ranges[task_id]) {
+  Rng1U64 page_range = tp_work_range(task->serialize.pages.count, tp->worker_count, task_id);
+  for EachInRange(page_idx, page_range) {
     LNK_BaseRelocPage *page = &task->serialize.pages.v[page_idx];
 
     // find block bytes in the buffer
@@ -5712,8 +5714,7 @@ lnk_build_base_relocs(TP_Context *tp, TP_Arena *tp_arena, LNK_Config *config, U6
   
   String8 base_relocs = {0};
   {
-    task.serialize.pages       = pages;
-    task.serialize.ranges      = tp_divide_work(scratch.arena, pages.count, tp->worker_count);
+    task.serialize.pages = pages;
     tp_for_parallel(tp, 0, tp->worker_count, lnk_filter_out_duplicate_base_reloc_entries_task, &task);
 
     ProfBegin("Compute Buffer Size");
@@ -6030,7 +6031,6 @@ lnk_build_image(TP_Arena *arena, TP_Context *tp, LNK_Config *config, LNK_SymbolT
     {
       TP_Temp temp = tp_temp_begin(arena);
       task.u.gather_sects.arena  = arena->v[0];
-      task.u.gather_sects.ranges = tp_divide_work(arena->v[0], objs_count, tp->worker_count);
       task.u.gather_sects.defns  = push_array(arena->v[0], HashTable *, tp->worker_count);
       tp_for_parallel_prof(tp, arena, tp->worker_count, lnk_gather_sections_task, &task, "Gather Sections");
       tp_temp_end(temp);
@@ -6195,7 +6195,7 @@ lnk_build_image(TP_Arena *arena, TP_Context *tp, LNK_Config *config, LNK_SymbolT
 
       // set up context for patch tasks
       task.u.patch_symtabs.common_block_sect     = common_block_sect;
-      task.u.patch_symtabs.common_block_ranges   = tp_divide_work(temp.arena, common_block_contribs_count, tp->worker_count);
+      task.u.patch_symtabs.common_block_count    = common_block_contribs_count;
       task.u.patch_symtabs.common_block_contribs = common_block_contribs;
       task.u.patch_symtabs.was_symbol_patched    = push_array(temp.arena, B8 *, objs_count);
       for EachIndex(obj_idx, objs_count) { task.u.patch_symtabs.was_symbol_patched[obj_idx] = push_array(temp.arena, B8, objs[obj_idx]->coff.header.symbol_count); }
@@ -7086,23 +7086,18 @@ THREAD_POOL_TASK_FUNC(lnk_serialize_rrt_type_data_task)
 
   // set up per task size array
   U64     **source_sizes = 0;
-  Rng1U64  *ranges[CV_TypeIndexSource_COUNT];
   if (task_id == 0) {
     source_sizes = push_array(scratch.arena, U64 *, CV_TypeIndexSource_COUNT);
     for EachIndex(i, CV_TypeIndexSource_COUNT) {
       source_sizes[i] = push_array(scratch.arena, U64, tp->worker_count);
     }
-
-    for EachIndex(ti_source, CV_TypeIndexSource_COUNT) {
-      ranges[ti_source] = tp_divide_work(scratch.arena, cv_types->count[ti_source], tp->worker_count);
-    }
   }
   tp_broadcast(&source_sizes);
-  tp_broadcast(&ranges);
 
   // compute size of each source per task
   for EachIndex(ti_source, CV_TypeIndexSource_COUNT) {
-    for EachInRange(i, ranges[ti_source][task_id]) {
+    Rng1U64 leaf_range = tp_work_range(cv_types->count[ti_source], tp->worker_count, task_id);
+    for EachInRange(i, leaf_range) {
       CV_LeafHeader *leaf      = (CV_LeafHeader *)lnk_raw_type_from_index(cv_types, ti_source, i).str;
       String8        leaf_data = str8((U8 *)(leaf + 1), leaf->size - sizeof(leaf->kind));
       U64            leaf_size = cv_size_from_leaf(leaf_data, PDB_LEAF_ALIGN);
@@ -7152,12 +7147,13 @@ THREAD_POOL_TASK_FUNC(lnk_serialize_rrt_type_data_task)
   tp_broadcast(&source_task_offsets);
 
   // serialize types
-  U64 chunk_cursor = 0;
+  U64 chunk_cursor  = 0;
   U8 *type_data_ptr = task->type_data_out->str;
   U64 type_data_max = task->type_data_out->size;
   for EachIndex(ti_source, CV_TypeIndexSource_COUNT) {
-    U64 cursor = source_task_offsets[ti_source*tp->worker_count + task_id];
-    for EachInRange(i, ranges[ti_source][task_id]) {
+    U64     cursor     = source_task_offsets[ti_source*tp->worker_count + task_id];
+    Rng1U64 leaf_range = tp_work_range(cv_types->count[ti_source], tp->worker_count, task_id);
+    for EachInRange(i, leaf_range) {
       CV_LeafHeader *leaf       = (CV_LeafHeader *)lnk_raw_type_from_index(cv_types, ti_source, i).str;
       String8        leaf_data  = str8((U8 *)(leaf + 1), leaf->size - sizeof(leaf->kind));
       U64            write_size = cv_write_leaf(type_data_ptr, cursor, type_data_max, leaf->kind, leaf_data, PDB_LEAF_ALIGN);

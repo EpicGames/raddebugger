@@ -243,20 +243,13 @@ tp_for_parallel(TP_Context *pool, TP_Arena *task_arena, U64 task_count, TP_TaskF
   }
 }
 
-internal Rng1U64 *
-tp_divide_work(Arena *arena, U64 item_count, U32 worker_count)
+internal Rng1U64
+tp_work_range(U64 item_count, U32 range_count, U64 task_id)
 {
-  U64      per_count = CeilIntegerDiv(item_count, worker_count);
-  Rng1U64 *range_arr = push_array_no_zero(arena, Rng1U64, worker_count + 1);
-  for (U64 i = 0; i < worker_count; i += 1) {
-    range_arr[i] = rng_1u64(Min(item_count, i * per_count), 
-                            Min(item_count, i * per_count + per_count));
-  }
-
-  // thread_pool_dummy_range:
-  range_arr[worker_count] = rng_1u64(item_count, item_count);
-
-  return range_arr;
+  AssertAlways(item_count <= ~0ull / range_count);
+  U64 min = task_id * item_count / range_count;
+  U64 max = (task_id + 1) * item_count / range_count;
+  return r1u64(min, max);
 }
 
 internal void

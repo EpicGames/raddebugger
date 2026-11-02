@@ -295,7 +295,6 @@ typedef struct
       U64                     buffer_size;
       U8                     *buffer;
       LNK_BaseRelocPageArray  pages;
-      Rng1U64                *ranges;
     } serialize;
   };
 } LNK_BaseRelocsTask;
@@ -326,7 +325,6 @@ typedef struct
   union {
     struct {
       Arena     *arena;
-      Rng1U64   *ranges;
       HashTable **defns;
     } gather_sects;
     struct {
@@ -340,7 +338,7 @@ typedef struct
     struct {
       B8                        **was_symbol_patched;
       LNK_Section                *common_block_sect;
-      Rng1U64                    *common_block_ranges;
+       U64                        common_block_count;
       LNK_CommonBlockContrib     *common_block_contribs;
       COFF_SymbolValueInterpType  fixup_type;
     } patch_symtabs;
@@ -354,7 +352,7 @@ typedef struct
 typedef struct
 {
   String8  data;
-  Rng1U64 *ranges;
+  U32      chunk_count;
   U128    *hashes;
 } LNK_Blake3Hasher;
 

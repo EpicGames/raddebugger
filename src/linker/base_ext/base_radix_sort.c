@@ -7,7 +7,7 @@
 
 typedef struct U64RadixTask
 {
-  Rng1U64 *ranges;
+  U64      count;
   U64     *src;
   U64     *dst;
   U64     *offsets;
@@ -19,7 +19,8 @@ THREAD_POOL_TASK_FUNC(u64_radix_hist_task)
   U64RadixTask *task   = raw_task;
   U64          *counts = task->offsets + task_id * U64_RADIX_SIZE;
   MemoryZeroTyped(counts, U64_RADIX_SIZE);
-  for EachInRange(i, task->ranges[task_id]) {
+  Rng1U64 range = tp_work_range(task->count, tp->worker_count, task_id);
+  for EachInRange(i, range) {
     U64 digit = (task->src[i] >> task->shift) & (U64_RADIX_SIZE - 1);
     counts[digit] += 1;
   }
@@ -29,7 +30,8 @@ THREAD_POOL_TASK_FUNC(u64_radix_scatter_task)
 {
   U64RadixTask *task    = raw_task;
   U64          *offsets = task->offsets + task_id * U64_RADIX_SIZE;
-  for EachInRange(i, task->ranges[task_id]) {
+  Rng1U64       range   = tp_work_range(task->count, tp->worker_count, task_id);
+  for EachInRange(i, range) {
     U64 value = task->src[i];
     U64 digit = (value >> task->shift) & (U64_RADIX_SIZE - 1);
     task->dst[offsets[digit]++] = value;
@@ -53,7 +55,7 @@ u64_array_sort_radix_parallel(TP_Context *tp, U64 count, U64 *v)
   U64         *buffer     = push_array_no_zero(scratch.arena, U64, count);
   U64         *offsets    = push_array_no_zero(scratch.arena, U64, task_count * U64_RADIX_SIZE);
   U64RadixTask task       = {
-    .ranges  = tp_divide_work(scratch.arena, count, task_count),
+    .count   = count,
     .src     = v,
     .dst     = buffer,
     .offsets = offsets,

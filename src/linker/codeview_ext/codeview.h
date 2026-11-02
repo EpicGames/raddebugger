@@ -374,7 +374,7 @@ typedef struct
 typedef struct
 {
   U8               *buffer;
-  Rng1U64          *ranges;
+  U64               bucket_cap;
   CV_StringBucket **buckets;
 } CV_PackStringHashTableTask;
 

@@ -1248,7 +1248,7 @@ THREAD_POOL_TASK_FUNC(cv_pack_string_hash_table_task)
 {
   ProfBeginFunction();
   CV_PackStringHashTableTask *task  = raw_task;
-  Rng1U64                     range = task->ranges[task_id];
+  Rng1U64                     range = tp_work_range(task->bucket_cap, tp->worker_count, task_id);
   for (U64 bucket_idx = range.min; bucket_idx < range.max; ++bucket_idx) {
     CV_StringBucket *bucket = task->buckets[bucket_idx];
     if (bucket) {
@@ -1263,7 +1263,6 @@ internal String8
 cv_pack_string_hash_table(Arena *arena, TP_Context *tp, CV_StringHashTable string_ht)
 {
   ProfBeginFunction();
-  Temp scratch = scratch_begin(&arena, 1);
 
   U64  buffer_size = string_ht.total_string_size + /* nulls: */ string_ht.total_insert_count;
   U8  *buffer      = push_array_no_zero(arena, U8, buffer_size);
@@ -1271,11 +1270,10 @@ cv_pack_string_hash_table(Arena *arena, TP_Context *tp, CV_StringHashTable strin
   CV_PackStringHashTableTask task = {0};
   task.buckets                    = string_ht.buckets;
   task.buffer                     = buffer;
-  task.ranges                     = tp_divide_work(scratch.arena, string_ht.bucket_cap, tp->worker_count);
+  task.bucket_cap                 = string_ht.bucket_cap;
   tp_for_parallel(tp, 0, tp->worker_count, cv_pack_string_hash_table_task, &task);
 
   String8 result = str8(buffer, buffer_size);
-  scratch_end(scratch);
   ProfEnd();
   return result;
 }

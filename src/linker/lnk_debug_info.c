@@ -1658,13 +1658,13 @@ typedef struct
   LNK_CodeViewInput *input;
   LNK_LeafHashTable *src;
   LNK_LeafHashTable *dst;
-  Rng1U64           *ranges;
 } LNK_RehashLeaves;
 
 THREAD_POOL_TASK_FUNC(lnk_rehash_leaves_task)
 {
   LNK_RehashLeaves *task = raw_task;
-  for EachInRange(i, task->ranges[task_id]) {
+  Rng1U64 leaf_range = tp_work_range(task->src->cap, tp->worker_count, task_id);
+  for EachInRange(i, leaf_range) {
     LNK_LeafRef ref = task->src->bucket_arr[i];
     if (ref == LNK_LEAF_REF_NULL) { continue; }
     U64            hash   = lnk_hash_from_leaf_ref(task->input, ref);
@@ -1676,15 +1676,12 @@ THREAD_POOL_TASK_FUNC(lnk_rehash_leaves_task)
 internal void
 lnk_grow_leaf_hash_table(TP_Context *tp, LNK_CodeViewInput *input, LNK_LeafHashTable *ht)
 {
-  Temp scratch = scratch_begin(0,0);
-  
   LNK_LeafHashTable grown = lnk_leaf_hash_table_alloc(lnk_leaf_hash_table_double_cap(ht->cap));
   
   LNK_RehashLeaves rehash = {
     input,
     ht,
-    &grown,
-    tp_divide_work(scratch.arena, ht->cap, tp->worker_count)
+    &grown
   };
   tp_for_parallel(tp, 0, tp->worker_count, lnk_rehash_leaves_task, &rehash);
   
@@ -1695,8 +1692,6 @@ lnk_grow_leaf_hash_table(TP_Context *tp, LNK_CodeViewInput *input, LNK_LeafHashT
   arena_release(ht->arena);
   
   *ht = grown;
-  
-  scratch_end(scratch);
 }
 
 internal void
@@ -1738,10 +1733,11 @@ THREAD_POOL_TASK_FUNC(lnk_count_present_buckets_task)
 {
   ProfBeginFunction();
 
-  LNK_MergeTypes *task = raw_task;
+  LNK_MergeTypes    *task = raw_task;
   LNK_LeafHashTable *ht   = &task->leaf_ht_arr[task->ti_source];
-
-  for EachInRange(bucket_idx, task->ranges[task_id]) {
+  
+  Rng1U64 range = tp_work_range(task->range_item_count, tp->worker_count, task_id);
+  for EachInRange(bucket_idx, range) {
     if (ht->bucket_arr[bucket_idx] != LNK_LEAF_REF_NULL) {
       task->counts[task->ti_source][task_id] += 1;
     }
@@ -1760,7 +1756,8 @@ THREAD_POOL_TASK_FUNC(lnk_get_present_buckets_task)
   LNK_LeafHashTable *ht               = &task->leaf_ht_arr[task->ti_source];
   LNK_LeafRefArray   unique_leaf_refs = task->unique_leaf_refs_arr[task->ti_source];
 
-  for EachInRange(bucket_idx, task->ranges[task_id]) {
+  Rng1U64 range = tp_work_range(task->range_item_count, tp->worker_count, task_id);
+  for EachInRange(bucket_idx, range) {
     if (ht->bucket_arr[bucket_idx] != LNK_LEAF_REF_NULL) {
       unique_leaf_refs.v[cursor++] = ht->bucket_arr[bucket_idx];
     }
@@ -1779,7 +1776,8 @@ THREAD_POOL_TASK_FUNC(lnk_assign_type_indices_task)
   LNK_AssignedTiHash *assigned          = &task->assigned_ti_arr[ti_source];
   CV_DebugH          *debug_h_arr       = task->input->debug_h_arr;
 
-  for EachInRange(i, task->ranges[task_id]) {
+  Rng1U64 range = tp_work_range(task->range_item_count, tp->worker_count, task_id);
+  for EachInRange(i, range) {
     LNK_LeafRef   leaf_ref   = unique_leaf_refs.v[i];
     CV_TypeIndex  type_index = min_type_index + i;
 
@@ -1931,7 +1929,7 @@ lnk_patch_symbol_copy(LNK_MergedTypes *types, U32 obj_idx, CV_Symbol symbol)
 THREAD_POOL_TASK_FUNC(lnk_unbucket_hashes_task)
 {
   LNK_MergeTypes *task = raw_task;
-  Rng1U64 range = task->ranges[task_id];
+  Rng1U64 range = tp_work_range(task->range_item_count, tp->worker_count, task_id);
   for EachInRange(i, range) {
     LNK_LeafRef  leaf_ref = task->unique_leaf_refs_arr[task->ti_source].v[i];
     U32          obj_idx  = lnk_leaf_ref_obj_idx(leaf_ref);
@@ -2073,10 +2071,10 @@ lnk_merge_types(TP_Context *tp, Arena *arena, LNK_CodeViewInput *input, LNK_Merg
 
     if (largest_ts) {
       U32                obj_idx = safe_cast_u32(input->ts_obj_range.min + largest_ts->ts_idx);
-      Rng1U64           *ranges  = tp_divide_work(scratch.arena, input->debug_t_arr[obj_idx].count, tp->worker_count);
       LNK_LeafDedupWork *work    = push_array(scratch.arena, LNK_LeafDedupWork, tp->worker_count);
       for EachIndex(i, tp->worker_count) {
-        work[i] = (LNK_LeafDedupWork){ obj_idx, ranges[i].min, ranges[i].max };
+        Rng1U64 range = tp_work_range(input->debug_t_arr[obj_idx].count, tp->worker_count, i);
+        work[i] = (LNK_LeafDedupWork){ obj_idx, range.min, range.max };
       }
       lnk_dedup_leaf_work(tp, &task, tp->worker_count, work, 1);
 
@@ -2100,7 +2098,7 @@ lnk_merge_types(TP_Context *tp, Arena *arena, LNK_CodeViewInput *input, LNK_Merg
   for EachIndex(ti_source, CV_TypeIndexSource_COUNT) {
     task.ti_source          = ti_source;
     task.counts[ti_source]  = push_array(scratch.arena, U64, tp->worker_count);
-    task.ranges             = tp_divide_work(scratch.arena, task.leaf_ht_arr[ti_source].cap, tp->worker_count);
+    task.range_item_count   = task.leaf_ht_arr[ti_source].cap;
     tp_for_parallel_prof(tp, 0, tp->worker_count, lnk_count_present_buckets_task, &task, "Count present buckets");
 
     task.unique_leaf_refs_arr[ti_source].count = sum_array_u64(tp->worker_count, task.counts[ti_source]);
@@ -2141,7 +2139,7 @@ lnk_merge_types(TP_Context *tp, Arena *arena, LNK_CodeViewInput *input, LNK_Merg
       task.assigned_ti_arr[ti_source].leaf_refs = task.unique_leaf_refs_arr[ti_source].v;
 
       task.min_type_indices[ti_source] = CV_MinComplexTypeIndex;
-      task.ranges = tp_divide_work(scratch.arena, task.unique_leaf_refs_arr[ti_source].count, tp->worker_count);
+      task.range_item_count = task.unique_leaf_refs_arr[ti_source].count;
       tp_for_parallel_prof(tp, 0, tp->worker_count, lnk_assign_type_indices_task, &task, "Assign Type Indices");
     }
     ProfEnd();
@@ -2173,7 +2171,7 @@ lnk_merge_types(TP_Context *tp, Arena *arena, LNK_CodeViewInput *input, LNK_Merg
 
     if (merge_flags & LNK_MergeTypeFlag_ExportHashes) {
       task.ti_source = ti_source;
-      task.ranges = tp_divide_work(scratch.arena, unique_leaf_refs.count, tp->worker_count);
+      task.range_item_count = unique_leaf_refs.count;
       task.result.hashes[ti_source] = push_array_no_zero(arena, U64, unique_leaf_refs.count);
       tp_for_parallel_prof(tp, 0, tp->worker_count, lnk_unbucket_hashes_task, &task, "Export Hashes");
     }
@@ -2952,7 +2950,6 @@ THREAD_POOL_TASK_FUNC(lnk_build_pdb_strings_modules_and_globals)
 
     U64       symbol_count  = 0;
     void    **symbol_arr    = 0; // [symbol_count]
-    Rng1U64  *symbol_ranges = 0; // [worker_count]
     U32      *symbol_hashes = 0; // [symbol_count]
     if (task_id == 0) {
       ProfBeginV("Compact Buckets [bucket_cap %llu]", bucket_cap);
@@ -2963,16 +2960,14 @@ THREAD_POOL_TASK_FUNC(lnk_build_pdb_strings_modules_and_globals)
       ProfEnd();
 
       symbol_arr    = buckets;
-      symbol_ranges = tp_divide_work(scratch.arena, symbol_count, tp->worker_count);
       symbol_hashes = push_array_no_zero(scratch.arena, U32, symbol_count);
     }
     tp_broadcast(&symbol_count);
     tp_broadcast(&symbol_arr);
-    tp_broadcast(&symbol_ranges);
     tp_broadcast(&symbol_hashes);
 
     // hash symbols
-    Rng1U64 symbol_range = symbol_ranges[task_id];
+    Rng1U64 symbol_range = tp_work_range(symbol_count, tp->worker_count, task_id);
     for EachInRange(i, symbol_range) {
       CV_Symbol symbol = cv_symbol_from_ptr(symbol_arr[i]);
       String8   name   = cv_name_from_symbol(symbol.kind, symbol.data);
@@ -3260,7 +3255,7 @@ THREAD_POOL_TASK_FUNC(lnk_build_pdb_strings_modules_and_globals)
         PDB_PsiAddrMapSortTask *sort = 0;
         if (task_id == 0) {
           sort                 = push_array(scratch2.arena, PDB_PsiAddrMapSortTask, 1);
-          sort->ranges         = tp_divide_work(scratch2.arena, count, tp->worker_count);
+          sort->count          = count;
           sort->gsi_record_arr = records;
           sort->src            = push_array_no_zero(scratch2.arena, PDB_PsiAddrMapSortRecord, count);
           sort->dst            = push_array_no_zero(scratch2.arena, PDB_PsiAddrMapSortRecord, count);
@@ -3336,7 +3331,8 @@ THREAD_POOL_TASK_FUNC(lnk_build_pdb_strings_modules_and_globals)
         }
         barrier_wait(tp->barrier);
 
-        for EachInRange(i, sort->ranges[task_id]) {
+        Rng1U64 addr_map_range = tp_work_range(sort->count, tp->worker_count, task_id);
+        for EachInRange(i, addr_map_range) {
           addr_map[i] = safe_cast_u32(sort->src[i].record->offset);
         }
       }

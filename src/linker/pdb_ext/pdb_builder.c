@@ -955,7 +955,7 @@ THREAD_POOL_TASK_FUNC(pdb_write_types_task)
   PDB_WriteTypesTask *task = raw_task;
 
   String8Node *node   = task->lf_arr[task_id];
-  Rng1U64      range  = task->lf_range_arr[task_id];
+  Rng1U64      range  = tp_work_range(task->ti_hi - task->ti_lo, tp->worker_count, task_id);
   U64          cursor = task->lf_cursor_arr[task_id];
 
   for (U64 lf_idx = range.min; lf_idx < range.max; node = node->next, lf_idx += 1) {
@@ -987,16 +987,19 @@ pdb_type_server_build(TP_Context *tp, PDB_TypeServer *ts, PDB_StringTable *strta
   PDB_TpiOffHint *hint_arr      = push_array_no_zero(scratch.arena, PDB_TpiOffHint, hint_count);
   String8Node   **lf_arr        = push_array(scratch.arena, String8Node *, tp->worker_count);
   U64            *lf_cursor_arr = push_array(scratch.arena, U64, tp->worker_count);
-  Rng1U64        *lf_range_arr  = tp_divide_work(scratch.arena, ts->leaf_list.node_count, tp->worker_count);
 
   U64 lf_buf_size = 0;
   U64 lf_node_idx = 0;
   U64 lf_arr_idx  = 0;
+  U64 next_lf_min = tp_work_range(ts->leaf_list.node_count, tp->worker_count, lf_arr_idx).min;
   for EachNode(lf, String8Node, ts->leaf_list.first) {
-    if (lf_node_idx == lf_range_arr[lf_arr_idx].min) { // :thread_pool_dummy_range
+    while (lf_arr_idx < tp->worker_count && lf_node_idx == next_lf_min) {
       lf_cursor_arr[lf_arr_idx] = lf_buf_size;
       lf_arr[lf_arr_idx]        = lf;
       lf_arr_idx += 1;
+      if (lf_arr_idx < tp->worker_count) {
+        next_lf_min = tp_work_range(ts->leaf_list.node_count, tp->worker_count, lf_arr_idx).min;
+      }
     }
     lf_buf_size += lf->string.size;
     lf_node_idx += 1;
@@ -1012,7 +1015,6 @@ pdb_type_server_build(TP_Context *tp, PDB_TypeServer *ts, PDB_StringTable *strta
   write_types_task.hint_count    = hint_count;
   write_types_task.hint_arr      = hint_arr;
   write_types_task.lf_arr        = lf_arr;
-  write_types_task.lf_range_arr  = lf_range_arr;
   write_types_task.lf_cursor_arr = lf_cursor_arr;
   AssertAlways(msf_stream_resize(msf, sn, safe_cast_u32(sizeof(PDB_TpiHeader) + lf_buf_size)));
   write_types_task.lf_buf        = msf_stream_data(msf, sn).str + sizeof(PDB_TpiHeader);
@@ -1190,7 +1192,9 @@ pdb_type_server_push(PDB_TypeServer *ts, String8 raw_leaf)
 THREAD_POOL_TASK_FUNC(pdb_count_udt_task)
 {
   PDB_PushLeafTask *task  = raw_task;
-  for EachInRange(leaf_idx, task->ranges[task_id]) {
+  
+  Rng1U64 range = tp_work_range(task->leaf_count, tp->worker_count, task_id);
+  for EachInRange(leaf_idx, range) {
     CV_Leaf leaf;
     cv_read_leaf(str8(task->leaf_arr[leaf_idx], max_U64), 0, 1, &leaf);
 
@@ -1214,7 +1218,8 @@ THREAD_POOL_TASK_FUNC(pdb_push_udt_leaf_task)
   PDB_TypeBucket **type_ht_buckets = type_server->buckets;
   U64              base_type_index = task->base_type_index;
 
-  for EachInRange(leaf_idx, task->ranges[task_id]) {
+  Rng1U64 leaf_range = tp_work_range(task->leaf_count, tp->worker_count, task_id);
+  for EachInRange(leaf_idx, leaf_range) {
     CV_Leaf leaf;
     cv_read_leaf(str8(task->leaf_arr[leaf_idx], max_U64), 0, 1, &leaf);
 
@@ -1237,7 +1242,7 @@ THREAD_POOL_TASK_FUNC(pdb_push_udt_leaf_task)
 
 typedef struct
 {
-  Rng1U64      *ranges;
+  U64           leaf_count;
   U8          **leaf_arr;
   String8List  *lists;
   String8Node  *nodes;
@@ -1246,7 +1251,9 @@ typedef struct
 THREAD_POOL_TASK_FUNC(pdb_str8_list_from_leaf_array_task)
 {
   PDB_String8ListFromLeafArray *task = raw_task;
-  for EachInRange(leaf_idx, task->ranges[task_id]) {
+  
+  Rng1U64 leaf_range = tp_work_range(task->leaf_count, tp->worker_count, task_id);
+  for EachInRange(leaf_idx, leaf_range) {
     String8Node *node = &task->nodes[leaf_idx];
     node->string = cv_raw_leaf_from_ptr(task->leaf_arr[leaf_idx]);
     str8_list_push_node(&task->lists[task_id], node);
@@ -1263,7 +1270,6 @@ pdb_type_server_index_leaves(TP_Context *tp, PDB_TypeServer *type_server, U64 ba
   task.leaf_count       = leaf_count;
   task.leaf_arr         = leaf_arr;
   task.type_server      = type_server;
-  task.ranges           = tp_divide_work(scratch.arena, leaf_count, tp->worker_count);
   task.base_type_index  = base_type_index;
 
   ProfBegin("Count UDT");
@@ -1291,20 +1297,18 @@ pdb_type_server_push_parallel(TP_Context *tp, PDB_TypeServer *type_server, U64 l
   Temp scratch = scratch_begin(0, 0);
   pdb_type_server_index_leaves(tp, type_server, type_server->ti_lo + type_server->leaf_list.node_count, leaf_count, leaf_arr);
 
-  ProfBegin("Append New Leaves");
-  {
+  ProfScope("Append New Leaves") {
     PDB_String8ListFromLeafArray task = {0};
-    task.leaf_arr = leaf_arr;
-    task.ranges   = tp_divide_work(scratch.arena, leaf_count, tp->worker_count);
-    task.lists    = push_array(scratch.arena, String8List, tp->worker_count);
-    task.nodes    = push_array_no_zero(type_server->arena, String8Node, leaf_count);
+    task.leaf_arr   = leaf_arr;
+    task.leaf_count = leaf_count;
+    task.lists      = push_array(scratch.arena, String8List, tp->worker_count);
+    task.nodes      = push_array_no_zero(type_server->arena, String8Node, leaf_count);
     tp_for_parallel(tp, 0, tp->worker_count, pdb_str8_list_from_leaf_array_task, &task);
 
     // concat output lists
     String8List list = {0};
     for EachIndex(task_id, tp->worker_count) { str8_list_concat_in_place(&type_server->leaf_list, &task.lists[task_id]); }
   }
-  ProfEnd();
 
   scratch_end(scratch);
 }
@@ -1711,13 +1715,13 @@ typedef struct PDB_PsiAddrMapSortRecord
 
 typedef struct PDB_PsiAddrMapSortTask
 {
-  Rng1U64                 *ranges;
-  PDB_GsiSortRecord       *gsi_record_arr;
+  U64                       count;
+  PDB_GsiSortRecord        *gsi_record_arr;
   PDB_PsiAddrMapSortRecord *src;
   PDB_PsiAddrMapSortRecord *dst;
-  U64                     *counts;
-  U32                      digit_shift;
-  U32                      digit_count;
+  U64                      *counts;
+  U32                       digit_shift;
+  U32                       digit_count;
 } PDB_PsiAddrMapSortTask;
 
 typedef struct PDB_PsiAddrMapNameSortTask
@@ -1748,7 +1752,7 @@ THREAD_POOL_TASK_FUNC(psi_addr_map_radix_init_task)
   ProfBeginFunction();
 
   PDB_PsiAddrMapSortTask *task  = raw_task;
-  Rng1U64                 range = task->ranges[task_id];
+  Rng1U64                 range = tp_work_range(task->count, tp->worker_count, task_id);
   for EachInRange(i, range) {
     PDB_GsiSortRecord *record = &task->gsi_record_arr[i];
     task->src[i].key          = psi_addr_map_sort_key(record);
@@ -1763,7 +1767,7 @@ THREAD_POOL_TASK_FUNC(psi_addr_map_radix_histogram_task)
   ProfBeginFunction();
 
   PDB_PsiAddrMapSortTask *task   = raw_task;
-  Rng1U64                 range  = task->ranges[task_id];
+  Rng1U64                 range  = tp_work_range(task->count, tp->worker_count, task_id);
   U64                    *counts = task->counts + task_id * PDB_PSI_ADDR_MAP_RADIX_COUNT;
   U32                     mask   = task->digit_count - 1;
 
@@ -1781,7 +1785,7 @@ THREAD_POOL_TASK_FUNC(psi_addr_map_radix_sort_task)
   ProfBeginFunction();
 
   PDB_PsiAddrMapSortTask *task   = raw_task;
-  Rng1U64                 range  = task->ranges[task_id];
+  Rng1U64                 range  = tp_work_range(task->count, tp->worker_count, task_id);
   U64                    *offsets = task->counts + task_id * PDB_PSI_ADDR_MAP_RADIX_COUNT;
   U32                     mask    = task->digit_count - 1;
 
@@ -1827,7 +1831,7 @@ psi_addr_map_from_gsi_records(TP_Context *tp, Arena *arena, PDB_GsiSortRecord *g
   ProfBegin("Sort");
   if (count >= PDB_PSI_ADDR_MAP_RADIX_MIN_COUNT) {
     PDB_PsiAddrMapSortTask task = {0};
-    task.ranges         = tp_divide_work(scratch.arena, count, tp->worker_count);
+    task.count          = count;
     task.gsi_record_arr = gsi_record_arr;
     task.src            = push_array_no_zero(scratch.arena, PDB_PsiAddrMapSortRecord, count);
     task.dst            = push_array_no_zero(scratch.arena, PDB_PsiAddrMapSortRecord, count);
@@ -2273,7 +2277,7 @@ THREAD_POOL_TASK_FUNC(gsi_symbol_hasher_task)
 {
   ProfBeginFunction();
   GSI_SymbolHasherTask *task  = raw_task;
-  Rng1U64               range = task->ranges[task_id];
+  Rng1U64               range = tp_work_range(task->symbol_count, tp->worker_count, task_id);
   for (U64 symbol_idx = range.min; symbol_idx < range.max; ++symbol_idx) {
     CV_SymbolNode *symbol = task->symbols[symbol_idx];
     String8        name   = cv_name_from_symbol(symbol->data.kind, symbol->data.data);
@@ -2291,7 +2295,7 @@ gsi_push_many_arr(TP_Context *tp, PDB_GsiContext *gsi, U64 count, CV_SymbolNode 
   ProfBegin("Hash UDT Names");
   GSI_SymbolHasherTask task = {0};
   task.gsi                  = gsi;
-  task.ranges               = tp_divide_work(scratch.arena, count, tp->worker_count);
+  task.symbol_count         = count;
   task.symbols              = symbols;
   task.hashes               = push_array_no_zero(scratch.arena, U32, count);
   tp_for_parallel(tp, 0, tp->worker_count, gsi_symbol_hasher_task, &task);
@@ -2578,7 +2582,7 @@ dbi_build_file_info(Arena *arena, TP_Context *tp, PDB_DbiModuleList mod_list, CV
   tp_for_parallel(tp, 0, task.mod_count, dbi_build_file_info_assign_file_offsets_task, &task);
   CV_PackStringHashTableTask pack = {
     .buffer = task.string_buffer.str,
-    .ranges = tp_divide_work(scratch.arena, string_ht.bucket_cap, tp->worker_count),
+    .bucket_cap = string_ht.bucket_cap,
     .buckets = string_ht.buckets,
   };
   tp_for_parallel(tp, 0, tp->worker_count, cv_pack_string_hash_table_task, &pack);
@@ -2656,7 +2660,7 @@ typedef struct
 {
   PDB_DbiSC *src;
   PDB_DbiSC *dst;
-  Rng1U64   *range_arr;
+  U64        count;
   U32       *count_arr;
   U64        digit_count;
   U64        shift;
@@ -2676,13 +2680,13 @@ typedef struct
 {
   PDB_DbiSC *src;
   PDB_DbiSC *dst;
-  Rng1U64   *range_arr;
+  U64        count;
 } LNK_DbiScCopy;
 
 THREAD_POOL_TASK_FUNC(lnk_dbi_sc_copy_task)
 {
   LNK_DbiScCopy *copy = raw_task;
-  Rng1U64 range = copy->range_arr[task_id];
+  Rng1U64 range = tp_work_range(copy->count, tp->worker_count, task_id);
   MemoryCopy(copy->dst + range.min, copy->src + range.min, sizeof(copy->src[0]) * dim_1u64(range));
 }
 
@@ -2690,7 +2694,7 @@ THREAD_POOL_TASK_FUNC(lnk_dbi_sc_radix_histo_task)
 {
   LNK_DbiScRadixPass *pass = raw_task;
   U32     *count = pass->count_arr + task_id * pass->digit_count;
-  Rng1U64  range = pass->range_arr[task_id];
+  Rng1U64  range = tp_work_range(pass->count, tp->worker_count, task_id);
   for EachInRange(i, range) {
     count[lnk_dbi_sc_radix_digit(pass, &pass->src[i])] += 1;
   }
@@ -2700,7 +2704,7 @@ THREAD_POOL_TASK_FUNC(lnk_dbi_sc_radix_scatter_task)
 {
   LNK_DbiScRadixPass *pass = raw_task;
   U32     *count = pass->count_arr + task_id * pass->digit_count;
-  Rng1U64  range = pass->range_arr[task_id];
+  Rng1U64  range = tp_work_range(pass->count, tp->worker_count, task_id);
   for EachInRange(i, range) {
     PDB_DbiSC *sc = &pass->src[i];
     pass->dst[count[lnk_dbi_sc_radix_digit(pass, sc)]++] = *sc;
@@ -2708,14 +2712,14 @@ THREAD_POOL_TASK_FUNC(lnk_dbi_sc_radix_scatter_task)
 }
 
 internal void
-lnk_dbi_sc_radix_pass_parallel(TP_Context *tp, Arena *arena, U64 task_count, Rng1U64 *range_arr, PDB_DbiSC **src, PDB_DbiSC **dst, U64 digit_count, U64 shift, B32 is_sec_pass)
+lnk_dbi_sc_radix_pass_parallel(TP_Context *tp, Arena *arena, U64 task_count, U64 count, PDB_DbiSC **src, PDB_DbiSC **dst, U64 digit_count, U64 shift, B32 is_sec_pass)
 {
   Temp temp = temp_begin(arena);
 
   LNK_DbiScRadixPass pass = {
     .src         = *src,
     .dst         = *dst,
-    .range_arr   = range_arr,
+    .count       = count,
     .count_arr   = push_array(temp.arena, U32, task_count * digit_count),
     .digit_count = digit_count,
     .shift       = shift,
@@ -2751,15 +2755,14 @@ lnk_radix_sort_dbi_sc_array(TP_Context *tp, PDB_DbiSC *arr, U64 sc_count, U64 se
     PDB_DbiSC *src        = arr;
     PDB_DbiSC *dst        = push_array_no_zero(scratch.arena, PDB_DbiSC, sc_count);
     U64        task_count = tp->worker_count;
-    Rng1U64   *range_arr  = tp_divide_work(scratch.arena, sc_count, task_count);
 
-    lnk_dbi_sc_radix_pass_parallel(tp, scratch.arena, task_count, range_arr, &src, &dst, 256, 0, 0);
-    lnk_dbi_sc_radix_pass_parallel(tp, scratch.arena, task_count, range_arr, &src, &dst, 256, 8, 0);
-    lnk_dbi_sc_radix_pass_parallel(tp, scratch.arena, task_count, range_arr, &src, &dst, 256, 16, 0);
-    lnk_dbi_sc_radix_pass_parallel(tp, scratch.arena, task_count, range_arr, &src, &dst, 256, 24, 0);
-    lnk_dbi_sc_radix_pass_parallel(tp, scratch.arena, task_count, range_arr, &src, &dst, sect_count, 0, 1);
+    lnk_dbi_sc_radix_pass_parallel(tp, scratch.arena, task_count, sc_count, &src, &dst, 256, 0, 0);
+    lnk_dbi_sc_radix_pass_parallel(tp, scratch.arena, task_count, sc_count, &src, &dst, 256, 8, 0);
+    lnk_dbi_sc_radix_pass_parallel(tp, scratch.arena, task_count, sc_count, &src, &dst, 256, 16, 0);
+    lnk_dbi_sc_radix_pass_parallel(tp, scratch.arena, task_count, sc_count, &src, &dst, 256, 24, 0);
+    lnk_dbi_sc_radix_pass_parallel(tp, scratch.arena, task_count, sc_count, &src, &dst, sect_count, 0, 1);
 
-    LNK_DbiScCopy copy = { .src = src, .dst = arr, .range_arr = range_arr };
+    LNK_DbiScCopy copy = { .src = src, .dst = arr, .count = sc_count };
     tp_for_parallel(tp, 0, task_count, lnk_dbi_sc_copy_task, &copy);
 
     scratch_end(scratch);
@@ -3422,7 +3425,7 @@ THREAD_POOL_TASK_FUNC(pdb_build_gsi_psi_task)
       PDB_PsiAddrMapSortTask *sort = 0;
       if (task_id == 0) {
         sort = push_array(scratch.arena, PDB_PsiAddrMapSortTask, 1);
-        sort->ranges         = tp_divide_work(scratch.arena, count, tp->worker_count);
+        sort->count          = count;
         sort->gsi_record_arr = records;
         sort->src            = push_array_no_zero(scratch.arena, PDB_PsiAddrMapSortRecord, count);
         sort->dst            = push_array_no_zero(scratch.arena, PDB_PsiAddrMapSortRecord, count);
@@ -3494,7 +3497,10 @@ THREAD_POOL_TASK_FUNC(pdb_build_gsi_psi_task)
       }
       barrier_wait(tp->barrier);
 
-      for EachInRange(i, sort->ranges[task_id]) { addr_map[i] = safe_cast_u32(sort->src[i].record->offset); }
+      Rng1U64 record_range = tp_work_range(sort->count, tp->worker_count, task_id);
+      for EachInRange(i, record_range) {
+        addr_map[i] = safe_cast_u32(sort->src[i].record->offset);
+      }
     }
     barrier_wait(tp->barrier);
   }
