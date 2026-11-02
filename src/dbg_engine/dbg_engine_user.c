@@ -2037,17 +2037,17 @@ d_tick(Arena *arena, D_TargetArray *targets, D_BreakpointArray *breakpoints, D_P
           }
           else if(params->vaddr != 0)
           {
-            run_extra_bps.v[0].vaddr_expr = push_str8f(scratch.arena, "0x%I64x", params->vaddr);
+            run_extra_bps.v[0].vaddr_expr = str8f(scratch.arena, "0x%I64x", params->vaddr);
           }
           run_extra_bps.v[0].flags |= D_BreakpointFlag_BreakSelectedThreadOnly;
-          d_cmd(D_CmdKind_Run);
+          d_cmd(D_CmdKind_Run, .server = params->server, .process = params->process, .thread = params->thread);
         }break;
         case D_CmdKind_RunToName:
         {
           run_extra_bps.count = 1;
           run_extra_bps.v = push_array(scratch.arena, D_Breakpoint, 1);
           run_extra_bps.v[0].vaddr_expr = str8_copy(scratch.arena, params->string);
-          d_cmd(D_CmdKind_Run);
+          d_cmd(D_CmdKind_Run, .server = params->server, .process = params->process, .thread = params->thread);
         }break;
         case D_CmdKind_Run:
         {
