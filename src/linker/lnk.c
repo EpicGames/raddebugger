@@ -3175,9 +3175,7 @@ THREAD_POOL_TASK_FUNC(lnk_opt_ref_task)
       }
     }
   }
-  tp_broadcast(&is_live);
-  tp_broadcast(&global_batch_list);
-  tp_broadcast(&active_thread_count);
+  tp_broadcast_many(is_live, global_batch_list, active_thread_count);
 
   LNK_RelocRefsBatchList free_list = {0};
   for (;;) {
@@ -3843,9 +3841,7 @@ THREAD_POOL_TASK_FUNC(lnk_opt_icf_task)
     *table_generation           = 0;
     ProfEnd();
   }
-  tp_broadcast(&color_table);
-  tp_broadcast(&old_color_table);
-  tp_broadcast(&table_generation);
+  tp_broadcast_many(color_table, old_color_table, table_generation);
 
   //
   // step 2: refine equivalence classes
@@ -7143,8 +7139,7 @@ THREAD_POOL_TASK_FUNC(lnk_serialize_rrt_type_data_task)
       }
     }
   }
-  tp_broadcast(&chunk_sizes);
-  tp_broadcast(&source_task_offsets);
+  tp_broadcast_many(chunk_sizes, source_task_offsets);
 
   // serialize types
   U64 chunk_cursor  = 0;

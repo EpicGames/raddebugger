@@ -2945,8 +2945,8 @@ THREAD_POOL_TASK_FUNC(lnk_build_pdb_strings_modules_and_globals)
   }
 
   if ( ! task->cv->is_stripped) ProfScope("Finalize Global Symbols") {
-    U64 bucket_cap = task->global_bucket_cap;
-    void **buckets = task->global_buckets;
+    U64    bucket_cap = task->global_bucket_cap;
+    void **buckets    = task->global_buckets;
 
     U64       symbol_count  = 0;
     void    **symbol_arr    = 0; // [symbol_count]
@@ -2962,9 +2962,7 @@ THREAD_POOL_TASK_FUNC(lnk_build_pdb_strings_modules_and_globals)
       symbol_arr    = buckets;
       symbol_hashes = push_array_no_zero(scratch.arena, U32, symbol_count);
     }
-    tp_broadcast(&symbol_count);
-    tp_broadcast(&symbol_arr);
-    tp_broadcast(&symbol_hashes);
+    tp_broadcast_many(symbol_count, symbol_arr, symbol_hashes);
 
     // hash symbols
     Rng1U64 symbol_range = tp_work_range(symbol_count, tp->worker_count, task_id);
@@ -3019,9 +3017,7 @@ THREAD_POOL_TASK_FUNC(lnk_build_pdb_strings_modules_and_globals)
       proc_ref_indices = offsets_from_counts_array_u64(scratch.arena, proc_ref_counts, tp->worker_count);
       proc_ref_nodes   = push_array(scratch.arena, CV_SymbolNode, total_proc_ref_count);
     }
-    tp_broadcast(&proc_ref_hashes);
-    tp_broadcast(&proc_ref_indices);
-    tp_broadcast(&proc_ref_nodes);
+    tp_broadcast_many(proc_ref_hashes, proc_ref_indices, proc_ref_nodes);
 
     U64 proc_ref_idx = proc_ref_indices[task_id];
     for EachIndex(i, obj_indices.count) {
@@ -3062,8 +3058,7 @@ THREAD_POOL_TASK_FUNC(lnk_build_pdb_strings_modules_and_globals)
       public_symbols       = push_array(scratch.arena, CV_SymbolList, tp->worker_count);
       public_symbol_hashes = push_array(scratch.arena, U32 *,         tp->worker_count);
     }
-    tp_broadcast(&public_symbols);
-    tp_broadcast(&public_symbol_hashes);
+    tp_broadcast_many(public_symbols, public_symbol_hashes);
 
     CV_SymbolList *public_symbol_list = &public_symbols[task_id];
     for EachNode(chunk, LNK_SymbolHashTrieChunk, symbol_chunks.first) {
@@ -3129,8 +3124,7 @@ THREAD_POOL_TASK_FUNC(lnk_build_pdb_strings_modules_and_globals)
         serial[c].bucket_size_arr = push_array(scratch2.arena, U64, contexts[c]->bucket_count);
       }
     }
-    tp_broadcast(&serial);
-    tp_broadcast(&hashes);
+    tp_broadcast_many(serial, hashes);
 
     for EachElement(c, contexts) {
       for (U64 b = task_id; b < contexts[c]->bucket_count; b += tp->worker_count) {
@@ -3320,9 +3314,7 @@ THREAD_POOL_TASK_FUNC(lnk_build_pdb_strings_modules_and_globals)
           }
           next_run = push_array(scratch2.arena, U64, 1);
         }
-        tp_broadcast(&runs);
-        tp_broadcast(&run_count);
-        tp_broadcast(&next_run);
+        tp_broadcast_many(runs, run_count, next_run);
 
         for (;;) {
           U64 i = ins_atomic_u64_inc_eval(next_run) - 1;

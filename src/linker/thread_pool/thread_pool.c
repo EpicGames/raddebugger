@@ -253,32 +253,41 @@ tp_work_range(U64 item_count, U32 range_count, U64 task_id)
 }
 
 internal void
-tp_broadcast_(TP_Context *tp, U64 task_id, void *ptr, U64 ptr_size)
+tp_broadcast_many_(TP_Context *tp, U64 task_id, void **ptrs, U64 *sizes)
 {
   if (task_id == 0) {
-    tp->broadcast      = ptr;
-    tp->broadcast_size = ptr_size;
+    tp->broadcast      = ptrs[0];
+    tp->broadcast_many = ptrs;
   }
   barrier_wait(tp->barrier);
 
   if (task_id != 0) {
-    MemoryCopy(ptr, tp->broadcast, tp->broadcast_size);
+    for (U64 i = 0; ptrs[i] != 0; i += 1) {
+      MemoryCopy(ptrs[i], tp->broadcast_many[i], sizes[i]);
+    }
   }
   barrier_wait(tp->barrier);
+}
+
+internal void
+tp_broadcast_(TP_Context *tp, U64 task_id, void *ptr, U64 ptr_size)
+{
+  void *ptrs[] = { ptr, 0 };
+  U64 sizes[] = { ptr_size };
+  tp_broadcast_many_(tp, task_id, ptrs, sizes);
 }
 
 internal U64
 tp_sum_u64(TP_Context *tp, U64 task_id, U64 v)
 {
-  if (task_id == 0) {
-    tp->sum = 0;
-  }
+  U64  sum = 0;
+  U64 *sum_ptr = task_id == 0 ? &sum : 0;
+  tp_broadcast(&sum_ptr);
+
+  ins_atomic_u64_add_eval(sum_ptr, v);
   barrier_wait(tp->barrier);
 
-  ins_atomic_u64_add_eval(&tp->sum, v);
-  barrier_wait(tp->barrier);
-
-  U64 result = tp->sum;
+  U64 result = *sum_ptr;
   barrier_wait(tp->barrier);
   return result;
 }

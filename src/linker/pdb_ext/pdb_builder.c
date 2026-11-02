@@ -3306,8 +3306,7 @@ THREAD_POOL_TASK_FUNC(pdb_build_gsi_psi_task)
       serial[c].bucket_size_arr = push_array(scratch.arena, U64, contexts[c]->bucket_count);
     }
   }
-  tp_broadcast(&serial);
-  tp_broadcast(&hashes);
+  tp_broadcast_many(serial, hashes);
   
   for EachElement(c, contexts) {
     for (U64 b = task_id; b < contexts[c]->bucket_count; b += tp->worker_count) {
@@ -3466,29 +3465,35 @@ THREAD_POOL_TASK_FUNC(pdb_build_gsi_psi_task)
         barrier_wait(tp->barrier);
       }
 
-      Rng1U64 *runs = 0;
-      U64 run_count = 0;
-      U64 *next_run = 0;
+      Rng1U64 *runs      = 0;
+      U64      run_count = 0;
+      U64     *next_run  = 0;
       if (task_id == 0) {
         for (U64 first = 0; first < count;) {
           U64 opl = first + 1;
-          while (opl < count && sort->src[opl].key == sort->src[first].key) { ++opl; }
+          while (opl < count && sort->src[opl].key == sort->src[first].key) {
+            ++opl;
+          }
           run_count += opl - first > 1;
           first = opl;
         }
+
         runs = push_array_no_zero(scratch.arena, Rng1U64, run_count);
         U64 run_idx = 0;
         for (U64 first = 0; first < count;) {
           U64 opl = first + 1;
-          while (opl < count && sort->src[opl].key == sort->src[first].key) { ++opl; }
-          if (opl - first > 1) { runs[run_idx++] = r1u64(first, opl); }
+          while (opl < count && sort->src[opl].key == sort->src[first].key) {
+            ++opl;
+          }
+          if (opl - first > 1) {
+            runs[run_idx++] = r1u64(first, opl);
+          }
           first = opl;
         }
+
         next_run = push_array(scratch.arena, U64, 1);
       }
-      tp_broadcast(&runs);
-      tp_broadcast(&run_count);
-      tp_broadcast(&next_run);
+      tp_broadcast_many(runs, run_count, next_run);
 
       for (;;) {
         U64 i = ins_atomic_u64_inc_eval(next_run) - 1;
