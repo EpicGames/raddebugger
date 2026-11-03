@@ -600,9 +600,9 @@ entry_point(CmdLine *cmd_line)
         {
           String8 hash_path = str8f(scratch.arena, "%S/%I64x%I64x%S", rds_state->deploy_cache_path, msg.hash.u64[0], msg.hash.u64[1], program_ext_postfix_from_os(OperatingSystem_CURRENT, 1));
           FileProperties props = properties_from_file_path(hash_path);
-          if(props.modified != 0)
+          response.good = (props.modified != 0);
+          if(response.good)
           {
-            response.good = 1;
             deploy_path = msg.path;
             deploy_hash = msg.hash;
           }

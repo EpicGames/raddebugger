@@ -283,7 +283,7 @@ rd_target_from_cfg(Arena *arena, CFG_Node *cfg)
   if(is_remote)
   {
     target.remote_address = cfg_node_child_from_string(cfg, s("address"))->first->string;
-    target.deploy         = !!e_value_from_string(cfg_node_child_from_string(cfg, s("deploy"))->first->string).u64;\
+    target.deploy         = !!e_value_from_string(cfg_node_child_from_string(cfg, s("deploy"))->first->string).u64;
   }
   return target;
 }
