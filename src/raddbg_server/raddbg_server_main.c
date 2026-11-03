@@ -611,7 +611,7 @@ entry_point(CmdLine *cmd_line)
         {
           U128 hash = u128_hash_from_str8(msg.data);
           String8 hash_path = str8f(scratch.arena, "%S/%I64x%I64x%S", rds_state->deploy_cache_path, hash.u64[0], hash.u64[1], program_ext_postfix_from_os(OperatingSystem_CURRENT, 1));
-          write_data_to_file_path(hash_path, msg.data);
+          response.good = write_data_to_file_path(hash_path, msg.data);
           deploy_path = msg.path;
           deploy_hash = hash;
         }break;

@@ -4670,6 +4670,7 @@ internal void
 d_ctrl_thread__launch(DMN_CtrlCtx *ctrl_ctx, D_Msg *msg)
 {
   Temp scratch = scratch_begin(0, 0);
+  SOCK_Endpoint server_endpoint = sock_endpoint_from_string(msg->address);
   
   //////////////////////////////
   //- rjf: message -> launch parameters for debug servers
@@ -4687,13 +4688,42 @@ d_ctrl_thread__launch(DMN_CtrlCtx *ctrl_ctx, D_Msg *msg)
   };
   
   //////////////////////////////
+  //- rjf: remote & deploy? -> deploy
+  //
+  if(msg->address.size != 0 && msg->deploy)
+  {
+    // rjf: get executable path
+    String8 exe_path = str8_list_first(&launch_params.command_line);
+    
+    // rjf: executable path -> data
+    String8 exe_data = data_from_file_path(scratch.arena, exe_path);
+    
+    // rjf: data -> hash
+    U128 exe_hash = u128_hash_from_str8(exe_data);
+    
+    // rjf: determine if this hash exists remotely
+    B32 already_deployed = 0;
+    {
+      DS_Msg msg = {DS_MsgKind_DeployStatus, .path = exe_path, .hash = exe_hash};
+      DS_Response response = d_server_msg(scratch.arena, server_endpoint, &msg);
+      already_deployed = response.good;
+    }
+    
+    // rjf: if this hash does *not* exist remotely -> deploy
+    if(!already_deployed)
+    {
+      DS_Msg msg = {DS_MsgKind_Deploy, .path = exe_path, .hash = exe_hash, .data = exe_data};
+      DS_Response response = d_server_msg(scratch.arena, server_endpoint, &msg);
+    }
+  }
+  
+  //////////////////////////////
   //- rjf: remote? -> send message to launch, wait on new PID
   //
   U64 pid = 0;
   if(msg->address.size != 0)
   {
     Temp scratch = scratch_begin(0, 0);
-    SOCK_Endpoint server_endpoint = sock_endpoint_from_string(msg->address);
     DS_Msg server_msg = {DS_MsgKind_Launch, .launch_params = &launch_params};
     DS_Response response = d_server_msg(scratch.arena, server_endpoint, &server_msg);
     pid = response.pid;
