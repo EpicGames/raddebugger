@@ -24,6 +24,8 @@ DS_MsgKind_Kill,
 DS_MsgKind_Detach,
 DS_MsgKind_Run,
 DS_MsgKind_SingleStep,
+DS_MsgKind_DeployStatus,
+DS_MsgKind_Deploy,
 DS_MsgKind_Halt,
 DS_MsgKind_MemoryReserve,
 DS_MsgKind_MemoryCommit,
@@ -41,7 +43,7 @@ DS_MsgKind_COUNT,
 
 C_LINKAGE_BEGIN
 extern String8 ds_name_from_packet_kind_table[4];
-extern String8 ds_name_from_msg_kind_table[20];
+extern String8 ds_name_from_msg_kind_table[22];
 
 C_LINKAGE_END
 

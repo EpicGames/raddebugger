@@ -38,6 +38,10 @@ DS_MsgTable:
   {Run}
   {SingleStep}
   
+  //- rjf: file deployment
+  {DeployStatus}
+  {Deploy}
+  
   //- rjf: halting
   {Halt}
   

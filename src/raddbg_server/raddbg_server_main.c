@@ -70,6 +70,14 @@ struct RDS_ClientSlot
   RDS_Client *last;
 };
 
+typedef struct RDS_DeployNode RDS_DeployNode;
+struct RDS_DeployNode
+{
+  RDS_DeployNode *next;
+  String8 path;
+  U128 hash;
+};
+
 typedef struct RDS_State RDS_State;
 struct RDS_State
 {
@@ -79,6 +87,12 @@ struct RDS_State
   U64 log_counter;
   SOCK_Session sock_session;
   RWMutex sock_send_mutex;
+  
+  //- rjf: deploy state
+  String8 deploy_cache_path;
+  RWMutex deploy_mutex;
+  RDS_DeployNode **deploy_slots;
+  U64 deploy_slots_count;
   
   //- rjf: connected clients
   RDS_ClientSlot *client_slots;
@@ -184,6 +198,44 @@ dmn_thread__entry_point(void *p)
     {
       //- rjf: unpack message
       DS_Msg msg = ds_msg_from_data(scratch.arena, msg_n->data);
+      DS_LaunchParams launch_params = {0};
+      if(msg.launch_params != 0)
+      {
+        MemoryCopyStruct(&launch_params, msg.launch_params);
+        
+        // rjf: try mapping executable path -> deployed hash
+        if(msg.launch_params->command_line.first != 0)
+        {
+          String8 exe_path = str8_list_first(&msg.launch_params->command_line);
+          U64 hash = u64_hash_from_str8(exe_path);
+          U64 slot_idx = hash%rds_state->deploy_slots_count;
+          B32 is_deployed = 0;
+          U128 deployed_hash = {0};
+          RWMutexScope(rds_state->deploy_mutex, 0)
+          {
+            for(RDS_DeployNode *n = rds_state->deploy_slots[slot_idx]; n != 0; n = n->next)
+            {
+              if(path_match_normalized(n->path, exe_path))
+              {
+                is_deployed = 1;
+                deployed_hash = n->hash;
+                break;
+              }
+            }
+          }
+          if(is_deployed)
+          {
+            String8List command_line = {0};
+            String8 deployed_exe_path = str8f(scratch.arena, "%S/%I64x%I64x%S", rds_state->deploy_cache_path, deployed_hash.u64[0], deployed_hash.u64[1], program_ext_postfix_from_os(OperatingSystem_CURRENT, 1));
+            str8_list_push(scratch.arena, &command_line, deployed_exe_path);
+            for EachNode(n, String8Node, msg.launch_params->command_line.first->next)
+            {
+              str8_list_push(scratch.arena, &command_line, n->string);
+            }
+            launch_params.command_line = command_line;
+          }
+        }
+      }
       
       //- rjf: do action, get response
       DS_Response response = {.good = 1, .msg_id = msg.msg_id};
@@ -194,9 +246,8 @@ dmn_thread__entry_point(void *p)
         
         //- rjf: launching
         case DS_MsgKind_Launch:
-        if(msg.launch_params != 0)
         {
-          response.pid = ds_ctrl_launch(ctrl_ctx, msg.launch_params);
+          response.pid = ds_ctrl_launch(ctrl_ctx, &launch_params);
         }break;
         
         //- rjf: attaching
@@ -347,6 +398,12 @@ entry_point(CmdLine *cmd_line)
   }
   rds_state->sock_session = sock_session_open((U16)port, 0, DS_PACKET_SIZE);
   rds_state->sock_send_mutex = rw_mutex_alloc();
+  String8 user_cache_data_path = get_process_info()->user_program_cache_data_path;
+  rds_state->deploy_cache_path = str8f(arena, "%S/raddbg_server", user_cache_data_path);
+  make_directory(rds_state->deploy_cache_path);
+  rds_state->deploy_mutex = rw_mutex_alloc();
+  rds_state->deploy_slots_count = 256;
+  rds_state->deploy_slots = push_array(arena, RDS_DeployNode *, rds_state->deploy_slots_count);
   rds_state->c2d_rw_mutex = rw_mutex_alloc();
   rds_state->c2d_cv = cond_var_alloc();
   rds_state->c2d_arena = arena_alloc();
@@ -526,6 +583,8 @@ entry_point(CmdLine *cmd_line)
       response.good = 1;
       
       // rjf: do message specifics
+      String8 deploy_path = {0};
+      U128 deploy_hash = {0};
       switch(msg.kind)
       {
         default:{}break;
@@ -534,6 +593,27 @@ entry_point(CmdLine *cmd_line)
         case DS_MsgKind_Handshake:
         {
           // TODO(rjf): send initial state
+        }break;
+        
+        //- rjf: deploying files
+        case DS_MsgKind_DeployStatus:
+        {
+          String8 hash_path = str8f(scratch.arena, "%S/%I64x%I64x%S", rds_state->deploy_cache_path, msg.hash.u64[0], msg.hash.u64[1], program_ext_postfix_from_os(OperatingSystem_CURRENT, 1));
+          FileProperties props = properties_from_file_path(hash_path);
+          if(props.modified != 0)
+          {
+            response.good = 1;
+            deploy_path = msg.path;
+            deploy_hash = msg.hash;
+          }
+        }break;
+        case DS_MsgKind_Deploy:
+        {
+          U128 hash = u128_hash_from_str8(msg.data);
+          String8 hash_path = str8f(scratch.arena, "%S/%I64x%I64x%S", rds_state->deploy_cache_path, hash.u64[0], hash.u64[1], program_ext_postfix_from_os(OperatingSystem_CURRENT, 1));
+          write_data_to_file_path(hash_path, msg.data);
+          deploy_path = msg.path;
+          deploy_hash = hash;
         }break;
         
         //- rjf: halting
@@ -605,6 +685,17 @@ entry_point(CmdLine *cmd_line)
         
         //- rjf: system ops
         case DS_MsgKind_ListSystemProcesses:{}break;
+      }
+      
+      // rjf: store (source path -> deployed hash) correllation
+      if(deploy_path.size != 0) RWMutexScope(rds_state->deploy_mutex, 1)
+      {
+        U64 hash = u64_hash_from_str8(deploy_path);
+        U64 slot_idx = hash%rds_state->deploy_slots_count;
+        RDS_DeployNode *n = push_array(rds_state->arena, RDS_DeployNode, 1);
+        SLLStackPush(rds_state->deploy_slots[slot_idx], n);
+        n->path = str8_copy(rds_state->arena, deploy_path);
+        n->hash = deploy_hash;
       }
       
       // rjf: send response

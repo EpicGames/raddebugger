@@ -12,7 +12,7 @@ str8_lit_comp("Response"),
 str8_lit_comp("Event"),
 };
 
-String8 ds_name_from_msg_kind_table[20] =
+String8 ds_name_from_msg_kind_table[22] =
 {
 str8_lit_comp("Null"),
 str8_lit_comp("Handshake"),
@@ -22,6 +22,8 @@ str8_lit_comp("Kill"),
 str8_lit_comp("Detach"),
 str8_lit_comp("Run"),
 str8_lit_comp("SingleStep"),
+str8_lit_comp("DeployStatus"),
+str8_lit_comp("Deploy"),
 str8_lit_comp("Halt"),
 str8_lit_comp("MemoryReserve"),
 str8_lit_comp("MemoryCommit"),

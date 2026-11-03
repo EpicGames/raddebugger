@@ -69,8 +69,10 @@ struct DS_Msg
   DMN_Handle module;
   U64 pid;
   U64 code;
+  U128 hash;
   
   //- rjf: data blob extensions
+  String8 path;
   String8 data;
   
   //- rjf: process launching parameter extension
@@ -114,18 +116,6 @@ internal String8 ds_data_from_dmn_events(Arena *arena, DMN_EventList evts);
 
 internal String8List ds_packets_from_data(Arena *arena, DS_PacketKind kind, String8 data);
 internal String8 ds_data_from_packets(Arena *arena, String8List packets, DS_PacketKind *packet_kind_out);
-
-////////////////////////////////
-//~ rjf: Message/Response Parsing
-
-#if 0
-internal DS_Msg ds_msg_from_packet(Arena *arena, String8 data);
-internal String8 ds_packet_from_msg(Arena *arena, DS_Msg *msg);
-internal DS_Response ds_response_from_packet(String8 data);
-internal String8 ds_packet_from_response(Arena *arena, DS_Response *response);
-internal DMN_EventList ds_dmn_events_from_packet(Arena *arena, String8 data);
-internal String8 ds_packet_from_dmn_events(Arena *arena, DMN_EventList evts);
-#endif
 
 ////////////////////////////////
 //~ rjf: Local Server Functions
