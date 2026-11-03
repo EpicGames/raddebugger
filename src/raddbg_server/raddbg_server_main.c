@@ -73,7 +73,8 @@ struct RDS_ClientSlot
 typedef struct RDS_DeployNode RDS_DeployNode;
 struct RDS_DeployNode
 {
-  RDS_DeployNode *next;
+  RDS_DeployNode *path_next;
+  RDS_DeployNode *hash_next;
   String8 path;
   U128 hash;
 };
@@ -91,7 +92,8 @@ struct RDS_State
   //- rjf: deploy state
   String8 deploy_cache_path;
   RWMutex deploy_mutex;
-  RDS_DeployNode **deploy_slots;
+  RDS_DeployNode **deploy_path_slots;
+  RDS_DeployNode **deploy_hash_slots;
   U64 deploy_slots_count;
   
   //- rjf: connected clients
@@ -213,7 +215,7 @@ dmn_thread__entry_point(void *p)
           U128 deployed_hash = {0};
           RWMutexScope(rds_state->deploy_mutex, 0)
           {
-            for(RDS_DeployNode *n = rds_state->deploy_slots[slot_idx]; n != 0; n = n->next)
+            for(RDS_DeployNode *n = rds_state->deploy_path_slots[slot_idx]; n != 0; n = n->path_next)
             {
               if(path_match_normalized(n->path, exe_path))
               {
@@ -226,7 +228,7 @@ dmn_thread__entry_point(void *p)
           if(is_deployed)
           {
             String8List command_line = {0};
-            String8 deployed_exe_path = str8f(scratch.arena, "%S/%I64x%I64x%S", rds_state->deploy_cache_path, deployed_hash.u64[0], deployed_hash.u64[1], program_ext_postfix_from_os(OperatingSystem_CURRENT, 1));
+            String8 deployed_exe_path = str8f(scratch.arena, "%S/%I64x_%I64x%S", rds_state->deploy_cache_path, deployed_hash.u64[0], deployed_hash.u64[1], program_ext_postfix_from_os(OperatingSystem_CURRENT, 1));
             str8_list_push(scratch.arena, &command_line, deployed_exe_path);
             for EachNode(n, String8Node, msg.launch_params->command_line.first->next)
             {
@@ -286,6 +288,35 @@ dmn_thread__entry_point(void *p)
           response.good = 1;
           events = ds_ctrl_run(scratch.arena, ctrl_ctx, &ctrls);
         }break;
+      }
+      
+      //- rjf: map event module paths -> client
+      for EachNode(n, DMN_EventNode, events.first)
+      {
+        if(n->v.kind == DMN_EventKind_LoadModule)
+        {
+          B32 is_deployed_path = str8_match(rds_state->deploy_cache_path, n->v.module_info->module_path, StringMatchFlag_RightSideSloppy);
+          if(is_deployed_path)
+          {
+            String8 hash_string = str8_chop_last_dot(str8_skip_last_slash(n->v.module_info->module_path));
+            U64 underscore_pos = str8_find_needle(hash_string, 0, s("_"), 0);
+            String8 u640_string = str8_prefix(hash_string, underscore_pos);
+            String8 u641_string = str8_skip(hash_string, underscore_pos+1);
+            U128 hash = u128_make(u64_from_str8(u640_string, 16), u64_from_str8(u641_string, 16));
+            U64 slot_idx = hash.u64[0]%rds_state->deploy_slots_count;
+            RWMutexScope(rds_state->deploy_mutex, 0)
+            {
+              for(RDS_DeployNode *deploy_n = rds_state->deploy_hash_slots[slot_idx]; deploy_n != 0; deploy_n = deploy_n->hash_next)
+              {
+                if(u128_match(hash, deploy_n->hash))
+                {
+                  n->v.string = str8_copy(scratch.arena, deploy_n->path);
+                  n->v.module_info->module_path = n->v.string;
+                }
+              }
+            }
+          }
+        }
       }
       
       //- rjf: log events
@@ -403,7 +434,8 @@ entry_point(CmdLine *cmd_line)
   make_directory(rds_state->deploy_cache_path);
   rds_state->deploy_mutex = rw_mutex_alloc();
   rds_state->deploy_slots_count = 256;
-  rds_state->deploy_slots = push_array(arena, RDS_DeployNode *, rds_state->deploy_slots_count);
+  rds_state->deploy_path_slots = push_array(arena, RDS_DeployNode *, rds_state->deploy_slots_count);
+  rds_state->deploy_hash_slots = push_array(arena, RDS_DeployNode *, rds_state->deploy_slots_count);
   rds_state->c2d_rw_mutex = rw_mutex_alloc();
   rds_state->c2d_cv = cond_var_alloc();
   rds_state->c2d_arena = arena_alloc();
@@ -598,7 +630,7 @@ entry_point(CmdLine *cmd_line)
         //- rjf: deploying files
         case DS_MsgKind_DeployStatus:
         {
-          String8 hash_path = str8f(scratch.arena, "%S/%I64x%I64x%S", rds_state->deploy_cache_path, msg.hash.u64[0], msg.hash.u64[1], program_ext_postfix_from_os(OperatingSystem_CURRENT, 1));
+          String8 hash_path = str8f(scratch.arena, "%S/%I64x_%I64x%S", rds_state->deploy_cache_path, msg.hash.u64[0], msg.hash.u64[1], program_ext_postfix_from_os(OperatingSystem_CURRENT, 1));
           FileProperties props = properties_from_file_path(hash_path);
           response.good = (props.modified != 0);
           if(response.good)
@@ -610,7 +642,7 @@ entry_point(CmdLine *cmd_line)
         case DS_MsgKind_Deploy:
         {
           U128 hash = u128_hash_from_str8(msg.data);
-          String8 hash_path = str8f(scratch.arena, "%S/%I64x%I64x%S", rds_state->deploy_cache_path, hash.u64[0], hash.u64[1], program_ext_postfix_from_os(OperatingSystem_CURRENT, 1));
+          String8 hash_path = str8f(scratch.arena, "%S/%I64x_%I64x%S", rds_state->deploy_cache_path, hash.u64[0], hash.u64[1], program_ext_postfix_from_os(OperatingSystem_CURRENT, 1));
           response.good = write_data_to_file_path(hash_path, msg.data);
           deploy_path = msg.path;
           deploy_hash = hash;
@@ -690,10 +722,12 @@ entry_point(CmdLine *cmd_line)
       // rjf: store (source path -> deployed hash) correllation
       if(deploy_path.size != 0) RWMutexScope(rds_state->deploy_mutex, 1)
       {
-        U64 hash = u64_hash_from_str8(deploy_path);
-        U64 slot_idx = hash%rds_state->deploy_slots_count;
+        U64 hash_slot_idx = deploy_hash.u64[0]%rds_state->deploy_slots_count;
+        U64 path_hash = u64_hash_from_str8(deploy_path);
+        U64 path_slot_idx = path_hash%rds_state->deploy_slots_count;
         RDS_DeployNode *n = push_array(rds_state->arena, RDS_DeployNode, 1);
-        SLLStackPush(rds_state->deploy_slots[slot_idx], n);
+        SLLStackPush_N(rds_state->deploy_path_slots[path_slot_idx], n, path_next);
+        SLLStackPush_N(rds_state->deploy_hash_slots[hash_slot_idx], n, hash_next);
         n->path = str8_copy(rds_state->arena, deploy_path);
         n->hash = deploy_hash;
       }
