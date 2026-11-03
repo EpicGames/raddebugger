@@ -3404,7 +3404,10 @@ d_ctrl_thread__next_dmn_event(Arena *arena, DMN_CtrlCtx *ctrl_ctx, D_Msg *msg, D
       }
     }
     
+    ////////////////////////////
     //- rjf: no event -> run all servers until we get a new one
+    //
+    B32 new_events = 0;
     if(!got_event) ProfScope("no event -> run all servers until we get a new one")
     {
       //- rjf: prep spoof
@@ -3519,7 +3522,7 @@ d_ctrl_thread__next_dmn_event(Arena *arena, DMN_CtrlCtx *ctrl_ctx, D_Msg *msg, D
           D_ServerState *local_server_state = d_server_state_from_id(D_ServerID_LocalHost);
           D_ServerRunCtrls *local_server_run_ctrls = d_ctrl_thread__server_run_ctrls_from_id(run_ctrls, D_ServerID_LocalHost);
           
-          // rjf: if scheduled -> run
+          // rjf: if scheduled, or if no other servers are running? -> run
           if(d_ctrl_thread__server_is_scheduled(local_server_state, local_server_run_ctrls))
           {
             // rjf: form local run controls
@@ -3546,6 +3549,7 @@ d_ctrl_thread__next_dmn_event(Arena *arena, DMN_CtrlCtx *ctrl_ctx, D_Msg *msg, D
             
             // rjf: run for new events
             DMN_EventList events = dmn_ctrl_run(scratch.arena, ctrl_ctx, &local_run_ctrls);
+            new_events = 1;
             
             // rjf: store the new events in the local server queue
             {
@@ -3663,6 +3667,7 @@ d_ctrl_thread__next_dmn_event(Arena *arena, DMN_CtrlCtx *ctrl_ctx, D_Msg *msg, D
             
             // rjf: data -> events
             DMN_EventList events = ds_dmn_events_from_data(scratch.arena, data);
+            new_events = 1;
             
             // rjf: endpoint -> server state
             D_ServerState *ss = 0;
@@ -3746,6 +3751,16 @@ d_ctrl_thread__next_dmn_event(Arena *arena, DMN_CtrlCtx *ctrl_ctx, D_Msg *msg, D
         }
       }
 #endif
+    }
+    
+    ////////////////////////////
+    //- rjf: no event, *and* our run didn't cause any new events -> not attached error
+    //
+    if(!got_event && !new_events)
+    {
+      event->kind = DMN_EventKind_Error;
+      event->error_kind = DMN_ErrorKind_NotAttached;
+      got_event = 1;
     }
   }
   
