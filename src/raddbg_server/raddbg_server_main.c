@@ -295,7 +295,7 @@ dmn_thread__entry_point(void *p)
       {
         if(n->v.kind == DMN_EventKind_LoadModule)
         {
-          B32 is_deployed_path = str8_match(rds_state->deploy_cache_path, n->v.module_info->module_path, StringMatchFlag_RightSideSloppy);
+          B32 is_deployed_path = str8_match(rds_state->deploy_cache_path, path_normalized_from_string(scratch.arena, n->v.module_info->module_path), StringMatchFlag_RightSideSloppy);
           if(is_deployed_path)
           {
             String8 hash_string = str8_chop_last_dot(str8_skip_last_slash(n->v.module_info->module_path));
@@ -430,7 +430,7 @@ entry_point(CmdLine *cmd_line)
   rds_state->sock_session = sock_session_open((U16)port, 0, DS_PACKET_SIZE);
   rds_state->sock_send_mutex = rw_mutex_alloc();
   String8 user_cache_data_path = get_process_info()->user_program_cache_data_path;
-  rds_state->deploy_cache_path = str8f(arena, "%S/raddbg_server", user_cache_data_path);
+  rds_state->deploy_cache_path = path_normalized_from_string(arena, str8f(arena, "%S/raddbg_server", user_cache_data_path));
   make_directory(rds_state->deploy_cache_path);
   rds_state->deploy_mutex = rw_mutex_alloc();
   rds_state->deploy_slots_count = 256;
