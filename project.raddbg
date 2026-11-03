@@ -18,6 +18,7 @@ target:
   debug_subprocesses: 0
   remote: 0
   deploy: 0
+  enabled: 1
 }
 target:
 {

@@ -108,6 +108,13 @@ ds_msg_from_data(Arena *arena, String8 data)
         dmn_trap_chunk_list_push(arena, &msg.traps, trap_count, &trap);
       }
     }
+    
+    // rjf: read run entities
+    {
+      off += str8_deserial_read_struct(data, off, &msg.run_entities.count);
+      msg.run_entities.handles = push_array(arena, DMN_Handle, msg.run_entities.count);
+      off += str8_deserial_read_array(data, off, msg.run_entities.handles, msg.run_entities.count);
+    }
   }
   return msg;
 }
@@ -193,6 +200,12 @@ ds_data_from_msg(Arena *arena, DS_Msg *msg)
           str8_serial_push_struct(scratch.arena, &srl, &n->v[idx].size);
         }
       }
+    }
+    
+    // rjf: write run entities
+    {
+      str8_serial_push_struct(scratch.arena, &srl, &msg->run_entities.count);
+      str8_serial_push_array(scratch.arena, &srl, msg->run_entities.handles, msg->run_entities.count);
     }
   }
   String8 result = str8_serial_end(arena, &srl);

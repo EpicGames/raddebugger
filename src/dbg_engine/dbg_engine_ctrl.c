@@ -3620,6 +3620,7 @@ d_ctrl_thread__next_dmn_event(Arena *arena, DMN_CtrlCtx *ctrl_ctx, D_Msg *msg, D
             // rjf: drain event packets
             String8List packets = {0};
             SOCK_Endpoint endpoint = {0};
+            B32 got_server_events = 0;
             {
               GuardedRing *ring = d_ctrl_state->sock_event_ring;
               RingGuard g = guarded_ring_open(ring);
@@ -3635,6 +3636,7 @@ d_ctrl_thread__next_dmn_event(Arena *arena, DMN_CtrlCtx *ctrl_ctx, D_Msg *msg, D
                     U8 *packet_data = push_array(scratch.arena, U8, packet_size);
                     guarded_ring_read_or_wait(&g, packet_size, packet_data, max_U64);
                     packet = str8(packet_data, packet_size);
+                    got_server_events = 1;
                   }
                 }
                 
@@ -3654,7 +3656,7 @@ d_ctrl_thread__next_dmn_event(Arena *arena, DMN_CtrlCtx *ctrl_ctx, D_Msg *msg, D
                 }
                 
                 // rjf: terminal? -> done
-                if(header.flags & DS_PacketFlag_Terminal)
+                if(header.flags & DS_PacketFlag_Terminal || packet.size == 0)
                 {
                   break;
                 }
@@ -3667,10 +3669,14 @@ d_ctrl_thread__next_dmn_event(Arena *arena, DMN_CtrlCtx *ctrl_ctx, D_Msg *msg, D
             
             // rjf: data -> events
             DMN_EventList events = ds_dmn_events_from_data(scratch.arena, data);
-            new_events = 1;
+            if(events.count != 0)
+            {
+              new_events = 1;
+            }
             
             // rjf: endpoint -> server state
             D_ServerState *ss = 0;
+            if(got_server_events)
             {
               String8 address = sock_string_from_endpoint(scratch.arena, endpoint);
               D_Handle server_handle = d_ctrl_thread__handle_from_addr_or_connect(address);
@@ -3690,17 +3696,20 @@ d_ctrl_thread__next_dmn_event(Arena *arena, DMN_CtrlCtx *ctrl_ctx, D_Msg *msg, D
             {
               for EachNode(n, DMN_EventNode, events.first)
               {
-                DMN_EventNode *dst_n = ss->free_dmn_event_node;
-                if(dst_n != 0)
+                if(!ss->group_halt || n->v.kind != DMN_EventKind_Halt)
                 {
-                  SLLStackPop(ss->free_dmn_event_node);
+                  DMN_EventNode *dst_n = ss->free_dmn_event_node;
+                  if(dst_n != 0)
+                  {
+                    SLLStackPop(ss->free_dmn_event_node);
+                  }
+                  else
+                  {
+                    dst_n = push_array(ss->dmn_event_arena, DMN_EventNode, 1);
+                  }
+                  SLLQueuePush(ss->first_dmn_event_node, ss->last_dmn_event_node, dst_n);
+                  dmn_event_deep_copy(ss->dmn_event_arena, &dst_n->v, &n->v);
                 }
-                else
-                {
-                  dst_n = push_array(ss->dmn_event_arena, DMN_EventNode, 1);
-                }
-                SLLQueuePush(ss->first_dmn_event_node, ss->last_dmn_event_node, dst_n);
-                dmn_event_deep_copy(ss->dmn_event_arena, &dst_n->v, &n->v);
               }
               ss->run_state = 0;
             }
@@ -4677,6 +4686,10 @@ d_ctrl_thread__launch(DMN_CtrlCtx *ctrl_ctx, D_Msg *msg)
     DS_Msg server_msg = {DS_MsgKind_Launch, .launch_params = &launch_params};
     DS_Response response = d_server_msg(scratch.arena, server_endpoint, &server_msg);
     pid = response.pid;
+    if(!response.good)
+    {
+      log_user_errorf("Couldn't launch target on server at %S.", sock_string_from_endpoint(scratch.arena, server_endpoint));
+    }
     scratch_end(scratch);
   }
   
