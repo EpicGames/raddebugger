@@ -30,7 +30,7 @@ ds_msg_from_data(Arena *arena, String8 data)
     
     // rjf: read data blobs
     off += str8_deserial_read_struct(data, off, &msg.path.size);
-    msg.data = str8_substr(data, r1u64(off, off+msg.path.size));
+    msg.path = str8_substr(data, r1u64(off, off+msg.path.size));
     off += msg.path.size;
     off += str8_deserial_read_struct(data, off, &msg.data.size);
     msg.data = str8_substr(data, r1u64(off, off+msg.data.size));

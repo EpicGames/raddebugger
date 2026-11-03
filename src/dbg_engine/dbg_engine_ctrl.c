@@ -2058,12 +2058,14 @@ d_server_io_send_msg(D_ServerIOCtx ctx, SOCK_Endpoint endpoint, DS_Msg *msg)
     }
   }
   
-  // rjf: wait for send completion
-  SOCK_SendCompletion completion = {0};
-  sock_wait_for_send_completion(completion_ring, &completion, max_U64);
-  
-  // rjf: result -> completion is good
-  B32 result = completion.good;
+  // rjf: wait for send completions
+  B32 result = 1;
+  for EachIndex(idx, packets.node_count)
+  {
+    SOCK_SendCompletion completion = {0};
+    sock_wait_for_send_completion(completion_ring, &completion, max_U64);
+    result = result && completion.good;
+  }
   
   scratch_end(scratch);
   return result;
