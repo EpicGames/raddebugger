@@ -16,6 +16,8 @@
 #include <oodle2.h>
 #pragma pop_macro("OOINLINEFUNC")
 
+#pragma comment(lib, "oo2core_win64")
+
 #if !OODLE_STATIC
 typedef OO_BOOL  (OOFUNC2 CMP_Oodle2_CheckVersion)(OO_U32, OO_U32 *);
 typedef OO_SINTa (OOFUNC2 CMP_Oodle2_Bound       )(OodleLZ_Compressor, OO_SINTa);

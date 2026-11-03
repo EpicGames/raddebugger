@@ -1,4 +1,4 @@
-// Copyright (c) Epic Games Tools
+// Copyright Epic Games, Inc. All Rights Reserved.
 // Licensed under the MIT license (https://opensource.org/license/mit/)
 
 #ifndef RADCOBJ_H

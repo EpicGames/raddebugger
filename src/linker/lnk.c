@@ -10,6 +10,8 @@
 #define NO_ASYNC 1
 #define NO_WIN32_RIO 1
 
+#define RADLINK_UBA_COW_WORKAROUND
+
 // --- Code Base ---------------------------------------------------------------
 
 #include "base/base_inc.h"
