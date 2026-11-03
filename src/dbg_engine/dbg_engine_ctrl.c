@@ -3242,6 +3242,12 @@ d_ctrl_thread__next_dmn_event(Arena *arena, DMN_CtrlCtx *ctrl_ctx, D_Msg *msg, D
           ss != start_dequeue_server || first;
           (first = 0, ss = (ss->order_next == 0 ? d_ctrl_state->first_server : ss->order_next), d_ctrl_state->next_dequeue_server = ss))
       {
+        //- rjf: if we got an event from a previous server, we're done.
+        if(got_event)
+        {
+          break;
+        }
+        
         //- rjf: if this server is not scheduled, never return debug events from it
         {
           D_ServerRunCtrls *server_run_ctrls = d_ctrl_thread__server_run_ctrls_from_id(run_ctrls, ss->server_id);
@@ -3509,82 +3515,89 @@ d_ctrl_thread__next_dmn_event(Arena *arena, DMN_CtrlCtx *ctrl_ctx, D_Msg *msg, D
         // halt the local one.
         d_ctrl_state->ctrl_thread_dmn_run_block = 1;
         {
-          // rjf: form local run controls
-          DMN_RunCtrls local_run_ctrls = {0};
-          {
-            D_ServerRunCtrls *local_server_run_ctrls = d_ctrl_thread__server_run_ctrls_from_id(run_ctrls, D_ServerID_LocalHost);
-            if(local_server_run_ctrls != 0)
-            {
-              local_run_ctrls.ignore_previous_exception  = local_server_run_ctrls->ignore_previous_exception;
-              local_run_ctrls.run_entities               = local_server_run_ctrls->run_entities.handles;
-              local_run_ctrls.run_entity_count           = local_server_run_ctrls->run_entities.count;
-              local_run_ctrls.traps                      = local_server_run_ctrls->traps;
-            }
-            if(run_ctrls->priority_thread.server_id == D_ServerID_LocalHost)
-            {
-              local_run_ctrls.priority_thread = d_dmn_from_handle(run_ctrls->priority_thread);
-            }
-            if(run_ctrls->single_step_thread.server_id == D_ServerID_LocalHost)
-            {
-              local_run_ctrls.single_step_thread = d_dmn_from_handle(run_ctrls->single_step_thread);
-            }
-            local_run_ctrls.run_entities_are_processes = run_ctrls->run_entities_are_processes;
-            local_run_ctrls.run_entities_are_unfrozen  = run_ctrls->run_entities_are_unfrozen;
-          }
+          // rjf: unpack local server state
+          D_ServerState *local_server_state = d_server_state_from_id(D_ServerID_LocalHost);
+          D_ServerRunCtrls *local_server_run_ctrls = d_ctrl_thread__server_run_ctrls_from_id(run_ctrls, D_ServerID_LocalHost);
           
-          // rjf: run for new events
-          DMN_EventList events = dmn_ctrl_run(scratch.arena, ctrl_ctx, &local_run_ctrls);
-          
-          // rjf: store the new events in the local server queue
+          // rjf: if scheduled -> run
+          if(d_ctrl_thread__server_is_scheduled(local_server_state, local_server_run_ctrls))
           {
-            D_ServerID server_id = D_ServerID_LocalHost;
-            U64 slot_idx = server_id%d_ctrl_state->server_slots_count;
-            for(D_ServerState *ss = d_ctrl_state->server_slots[slot_idx].first; ss != 0; ss = ss->order_next)
+            // rjf: form local run controls
+            DMN_RunCtrls local_run_ctrls = {0};
             {
-              if(ss->server_id == server_id)
+              if(local_server_run_ctrls != 0)
               {
-                for EachNode(src_n, DMN_EventNode, events.first)
+                local_run_ctrls.ignore_previous_exception  = local_server_run_ctrls->ignore_previous_exception;
+                local_run_ctrls.run_entities               = local_server_run_ctrls->run_entities.handles;
+                local_run_ctrls.run_entity_count           = local_server_run_ctrls->run_entities.count;
+                local_run_ctrls.traps                      = local_server_run_ctrls->traps;
+              }
+              if(run_ctrls->priority_thread.server_id == D_ServerID_LocalHost)
+              {
+                local_run_ctrls.priority_thread = d_dmn_from_handle(run_ctrls->priority_thread);
+              }
+              if(run_ctrls->single_step_thread.server_id == D_ServerID_LocalHost)
+              {
+                local_run_ctrls.single_step_thread = d_dmn_from_handle(run_ctrls->single_step_thread);
+              }
+              local_run_ctrls.run_entities_are_processes = run_ctrls->run_entities_are_processes;
+              local_run_ctrls.run_entities_are_unfrozen  = run_ctrls->run_entities_are_unfrozen;
+            }
+            
+            // rjf: run for new events
+            DMN_EventList events = dmn_ctrl_run(scratch.arena, ctrl_ctx, &local_run_ctrls);
+            
+            // rjf: store the new events in the local server queue
+            {
+              D_ServerID server_id = D_ServerID_LocalHost;
+              U64 slot_idx = server_id%d_ctrl_state->server_slots_count;
+              for(D_ServerState *ss = d_ctrl_state->server_slots[slot_idx].first; ss != 0; ss = ss->order_next)
+              {
+                if(ss->server_id == server_id)
                 {
-                  DMN_EventNode *dst_n = ss->free_dmn_event_node;
-                  if(dst_n != 0)
+                  for EachNode(src_n, DMN_EventNode, events.first)
                   {
-                    SLLStackPop(ss->free_dmn_event_node);
+                    DMN_EventNode *dst_n = ss->free_dmn_event_node;
+                    if(dst_n != 0)
+                    {
+                      SLLStackPop(ss->free_dmn_event_node);
+                    }
+                    else
+                    {
+                      dst_n = push_array(ss->dmn_event_arena, DMN_EventNode, 1);
+                    }
+                    dmn_event_deep_copy(ss->dmn_event_arena, &dst_n->v, &src_n->v);
+                    SLLQueuePush(ss->first_dmn_event_node, ss->last_dmn_event_node, dst_n);
                   }
-                  else
-                  {
-                    dst_n = push_array(ss->dmn_event_arena, DMN_EventNode, 1);
-                  }
-                  dmn_event_deep_copy(ss->dmn_event_arena, &dst_n->v, &src_n->v);
-                  SLLQueuePush(ss->first_dmn_event_node, ss->last_dmn_event_node, dst_n);
                 }
               }
             }
-          }
-          
-          // rjf: if we got anything other than a 'not-attached' error, then this
-          // debug event requires that we halt all running servers
-          if(events.first != 0 && (events.first->v.kind != DMN_EventKind_Error || events.first->v.error_kind != DMN_ErrorKind_NotAttached))
-          {
-            B32 first = 1;
-            D_ServerState *start_dequeue_server = d_ctrl_state->next_dequeue_server;
-            for(D_ServerState *ss = d_ctrl_state->next_dequeue_server;
-                ss != start_dequeue_server || first;
-                (first = 0, ss = (ss->order_next == 0 ? d_ctrl_state->first_server : ss->order_next), d_ctrl_state->next_dequeue_server = ss))
+            
+            // rjf: if we got anything other than a 'not-attached' error, then this
+            // debug event requires that we halt all running servers
+            if(events.first != 0 && (events.first->v.kind != DMN_EventKind_Error || events.first->v.error_kind != DMN_ErrorKind_NotAttached))
             {
-              if(ss->server_id != D_ServerID_LocalHost && ss->run_state)
+              B32 first = 1;
+              D_ServerState *start_dequeue_server = d_ctrl_state->next_dequeue_server;
+              for(D_ServerState *ss = d_ctrl_state->next_dequeue_server;
+                  ss != start_dequeue_server || first;
+                  (first = 0, ss = (ss->order_next == 0 ? d_ctrl_state->first_server : ss->order_next), d_ctrl_state->next_dequeue_server = ss))
               {
-                // rjf: unpack server
-                D_Handle server_handle = {.server_id = ss->server_id};
-                D_Entity *server = d_entity_from_handle(server_handle);
-                String8 server_addr = server->string;
-                SOCK_Endpoint server_endpoint = sock_endpoint_from_string(server_addr);
-                
-                // rjf: send
-                DS_Msg msg = {DS_MsgKind_Halt};
-                d_server_io_send_msg(server_io_ctx, server_endpoint, &msg);
-                
-                // rjf: set group halt state (to skip halt event)
-                ss->group_halt = 1;
+                if(ss->server_id != D_ServerID_LocalHost && ss->run_state)
+                {
+                  // rjf: unpack server
+                  D_Handle server_handle = {.server_id = ss->server_id};
+                  D_Entity *server = d_entity_from_handle(server_handle);
+                  String8 server_addr = server->string;
+                  SOCK_Endpoint server_endpoint = sock_endpoint_from_string(server_addr);
+                  
+                  // rjf: send
+                  DS_Msg msg = {DS_MsgKind_Halt};
+                  d_server_io_send_msg(server_io_ctx, server_endpoint, &msg);
+                  
+                  // rjf: set group halt state (to skip halt event)
+                  ss->group_halt = 1;
+                }
               }
             }
           }

@@ -2,6 +2,20 @@
 // Licensed under the MIT license (https://opensource.org/license/mit/)
 
 ////////////////////////////////
+//~ rjf: milestone TODO notes
+//
+// [ ] remote / multi-server debugging
+// [ ] new evaluation system
+// [ ] natvis
+// [ ] plugins (backend abstraction, static builtins + dynamic)
+//   [ ] server / controller backend
+//   [ ] architecture
+//   [ ] disassembly
+//   [ ] unwinder
+//   [ ] converter
+//   [ ] visualizer
+
+////////////////////////////////
 //~ rjf: remote TODO notes
 //
 // [ ] ui -> ui?
