@@ -4681,8 +4681,6 @@ d_ctrl_thread__launch(DMN_CtrlCtx *ctrl_ctx, D_Msg *msg)
     D_Handle server_handle = d_ctrl_thread__handle_from_addr_or_connect(msg->address);
     D_ServerID server_id = server_handle.server_id;
     D_ServerState *ss = d_server_state_from_id(server_id);
-    fprintf(stderr, "server_id: %i\n", server_id);
-    fprintf(stderr, "address: \"%.*s\"\n", str8_varg(msg->address));
     ss->launch_or_attach_counter += 1;
   }
   
