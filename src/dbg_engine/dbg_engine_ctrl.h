@@ -504,8 +504,8 @@ struct D_CtrlState
   D_ServerState *last_server;
   D_ServerState *free_server;
   D_ServerState *next_dequeue_server;
-  B32 ctrl_thread_dmn_run_block;
   B32 ctrl_thread_local_server_group_halt;
+  B32 ctrl_thread_local_server_group_halt_guard;
   Arena *user_entry_point_arena;
   String8List user_entry_points;
   U64 exception_code_filters[(D_ExceptionCodeKind_COUNT+63)/64];
@@ -789,9 +789,6 @@ internal void d_ctrl_thread__eval_scope_end(D_EvalScope *scope);
 //- rjf: server connection lookups
 internal D_Handle d_ctrl_thread__handle_from_addr_or_connect(String8 addr);
 internal D_ServerState *d_server_state_from_id(D_ServerID id);
-
-//- rjf: control system socket wakeup function
-internal void d_ctrl_sock_wakeup(void);
 
 //- rjf: log flusher
 internal void d_ctrl_thread__end_and_flush_log(void);

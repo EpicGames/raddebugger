@@ -62,6 +62,7 @@ DS_MsgTable:
 @enum DS_MsgKind:
 {
   @expand(DS_MsgTable a) `$(a.name)`,
+  COUNT,
 }
 
 @data(String8) ds_name_from_msg_kind_table:

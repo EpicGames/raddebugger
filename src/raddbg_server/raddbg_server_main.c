@@ -75,6 +75,8 @@ struct RDS_State
 {
   Arena *arena;
   B32 quiet;
+  U64 msg_log_flags[(DS_MsgKind_COUNT+63)/64];
+  U64 log_counter;
   SOCK_Session sock_session;
   RWMutex sock_send_mutex;
   
@@ -122,7 +124,7 @@ rds_logf(char *fmt, ...)
 internal void
 rds_log_response(DS_Response response)
 {
-  rds_logf("[response]\n");
+  rds_logf("%I64d: [response]\n", rds_state->log_counter);
   rds_logf("  msg_id: 0x%llx\n", response.msg_id);
   rds_logf("  good: %i\n", response.good);
   if(response.vaddr != 0)
@@ -137,6 +139,7 @@ rds_log_response(DS_Response response)
   {
     rds_logf("  data: {%llu bytes}\n", response.data.size);
   }
+  rds_state->log_counter += 1;
 }
 
 ////////////////////////////////
@@ -234,6 +237,13 @@ dmn_thread__entry_point(void *p)
         }break;
       }
       
+      //- rjf: log events
+      for EachNode(n, DMN_EventNode, events.first)
+      {
+        rds_logf("%I64d: [%S event]\n", rds_state->log_counter, lower_from_str8(scratch.arena, dmn_event_kind_string_table[n->v.kind]));
+        rds_state->log_counter += 1;
+      }
+      
       //- rjf: pack events & send to all connected client 
       if(events.count != 0)
       {
@@ -255,7 +265,10 @@ dmn_thread__entry_point(void *p)
         String8List packets = ds_packets_from_data(scratch.arena, DS_PacketKind_Response, data);
         RWMutexScope(rds_state->sock_send_mutex, 1)
         {
-          rds_log_response(response);
+          if(!!(rds_state->msg_log_flags[msg.kind/64] & (1ull<<(msg.kind%64))))
+          {
+            rds_log_response(response);
+          }
           for EachNode(n, String8Node, packets.first)
           {
             sock_send(rds_state->sock_session, msg_n->endpoint, SOCK_Protocol_TCP, n->string, max_U64);
@@ -328,6 +341,10 @@ entry_point(CmdLine *cmd_line)
   rds_state = push_array(arena, RDS_State, 1);
   rds_state->arena = arena;
   rds_state->quiet = (cmd_line_has_flag(cmd_line, s("quiet")) || cmd_line_has_flag(cmd_line, s("q")));
+  for EachElement(idx, rds_state->msg_log_flags)
+  {
+    rds_state->msg_log_flags[idx] = max_U64;
+  }
   rds_state->sock_session = sock_session_open((U16)port, 0, DS_PACKET_SIZE);
   rds_state->sock_send_mutex = rw_mutex_alloc();
   rds_state->c2d_rw_mutex = rw_mutex_alloc();
@@ -335,6 +352,29 @@ entry_point(CmdLine *cmd_line)
   rds_state->c2d_arena = arena_alloc();
   rds_state->client_slots_count = 64;
   rds_state->client_slots = push_array(arena, RDS_ClientSlot, rds_state->client_slots_count);
+  
+  //- rjf: filter msg kind logs
+  {
+    MemoryZeroArray(rds_state->msg_log_flags);
+    String8List msg_kinds = cmd_line_strings(cmd_line, s("log_msgs"));
+    for EachNode(n, String8Node, msg_kinds.first)
+    {
+      DS_MsgKind msg_kind = DS_MsgKind_Null;
+      for EachNonZeroEnumVal(DS_MsgKind, k)
+      {
+        if(str8_match(n->string, ds_name_from_msg_kind_table[k], StringMatchFlag_CaseInsensitive))
+        {
+          msg_kind = k;
+          break;
+        }
+      }
+      if(msg_kind != DS_MsgKind_Null)
+      {
+        rds_logf("[logging %S messages]\n", lower_from_str8(scratch.arena, ds_name_from_msg_kind_table[msg_kind]));
+        rds_state->msg_log_flags[msg_kind/64] |= 1ull<<(msg_kind%64);
+      }
+    }
+  }
   
   //- rjf: launch demon thread
   thread_launch(dmn_thread__entry_point, 0);
@@ -374,12 +414,12 @@ entry_point(CmdLine *cmd_line)
   }
   
   //- rjf: loop: wait for messages, issue commands to demon
+  rds_logf("[waiting for message]\n");
   for(;;)
   {
     Temp scratch = scratch_begin(0, 0);
     
     //- rjf: get next set of packets from client
-    rds_logf("[waiting for message]\n");
     SOCK_Protocol protocol = SOCK_Protocol_TCP;
     SOCK_Endpoint endpoint = {0};
     String8List packets = {0};
@@ -453,11 +493,11 @@ entry_point(CmdLine *cmd_line)
     }
     
     //- rjf: log message info
-    if(kind != DS_PacketKind_Null)
+    if(kind != DS_PacketKind_Null && (msg_kind == DS_MsgKind_Null || !!(rds_state->msg_log_flags[msg_kind/64] & (1ull<<(msg_kind%64)))))
     {
       String8 endpoint_string = sock_string_from_endpoint(scratch.arena, endpoint);
       String8 packet_kind_name = lower_from_str8(scratch.arena, ds_name_from_packet_kind_table[kind]);
-      rds_logf("[%S]\n", packet_kind_name);
+      rds_logf("%I64d: [%S]\n", rds_state->log_counter, packet_kind_name);
       rds_logf("  sender: %S\n", endpoint_string);
       if(msg_kind != DS_MsgKind_Null)
       {
@@ -467,6 +507,7 @@ entry_point(CmdLine *cmd_line)
         rds_logf("  msg_kind: %S\n", msg_kind_name);
         rds_logf("  msg_id: 0x%llx\n", msg_id);
       }
+      rds_state->log_counter += 1;
     }
     
     //- rjf: try to handle this message on the main thread, before sending to
@@ -572,7 +613,10 @@ entry_point(CmdLine *cmd_line)
         String8List packets = ds_packets_from_data(scratch.arena, DS_PacketKind_Response, data);
         RWMutexScope(rds_state->sock_send_mutex, 1)
         {
-          rds_log_response(response);
+          if(!!(rds_state->msg_log_flags[msg.kind/64] & (1ull<<(msg.kind%64))))
+          {
+            rds_log_response(response);
+          }
           for EachNode(n, String8Node, packets.first)
           {
             sock_send(rds_state->sock_session, endpoint, SOCK_Protocol_TCP, n->string, max_U64);

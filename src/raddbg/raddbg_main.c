@@ -9,11 +9,13 @@
 // [ ] natvis
 // [ ] plugins (backend abstraction, static builtins + dynamic)
 //   [ ] server / controller backend
+//   [ ] visualizer
+//
+// [ ] "someday" plugins (not immediately necessary)
 //   [ ] architecture
 //   [ ] disassembly
 //   [ ] unwinder
 //   [ ] converter
-//   [ ] visualizer
 
 ////////////////////////////////
 //~ rjf: remote TODO notes

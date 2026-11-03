@@ -3358,13 +3358,15 @@ dmn_ctrl_run(Arena *arena, DMN_CtrlCtx *ctx, DMN_RunCtrls *ctrls)
 ////////////////////////////////
 //~ rjf: @dmn_os_hooks Halting (Implemented Per-OS)
 
-internal void
+internal B32
 dmn_halt(U64 code, U64 user_data)
 {
+  B32 result = 0;
   MutexScope(lnx_dmn_state->halter_mutex)
   {
     if(lnx_dmn_state->process_count)
     {
+      result = 1;
       lnx_dmn_state->halter_tid     = gettid();
       lnx_dmn_state->halt_code      = code;
       lnx_dmn_state->halt_user_data = user_data;
@@ -3375,6 +3377,7 @@ dmn_halt(U64 code, U64 user_data)
       }
     }
   }
+  return result;
 }
 
 ////////////////////////////////

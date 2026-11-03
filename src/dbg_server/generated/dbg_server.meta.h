@@ -36,6 +36,7 @@ DS_MsgKind_ThreadRegBlockRead,
 DS_MsgKind_ThreadRegBlockWrite,
 DS_MsgKind_ThreadGetModuleTLSVAddr,
 DS_MsgKind_ListSystemProcesses,
+DS_MsgKind_COUNT,
 } DS_MsgKind;
 
 C_LINKAGE_BEGIN
