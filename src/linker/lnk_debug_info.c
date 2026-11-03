@@ -291,7 +291,7 @@ THREAD_POOL_TASK_FUNC(lnk_read_type_servers_task)
     }
 
     // check magic
-    if (!msf_check_magic_70(msf_data) && msf_check_magic_20(msf_data)) { goto exit; }
+    if (!msf_check_magic_70(msf_data) && !msf_check_magic_20(msf_data)) { goto exit; }
 
     // read the stream table
     MSF_RawStreamTable *st = msf_raw_stream_table_from_data(scratch.arena, msf_data);
