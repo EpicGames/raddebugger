@@ -203,7 +203,22 @@ coff_obj_writer_serialize(Arena *arena, COFF_ObjWriter *obj_writer)
         U64 sect_name_off = string_table.total_size;
         str8_list_push(scratch.arena, &string_table, push_cstr(scratch.arena, sect_name));
         
-        sect_name = push_str8f(scratch.arena, "/%u", sect_name_off);
+        U32 offset = safe_cast_u32(sect_name_off);
+        
+        // standard 7-digit encoding
+        if (offset <= 9999999) {
+          sect_name = push_str8f(scratch.arena, "/%u", offset);
+        }
+        // extended base-64 encoding
+        else {
+          U8 *encoded = push_array(scratch.arena, U8, sizeof(d->name));
+          encoded[0] = encoded[1] = '/';
+          String8 alphabet = str8_lit("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/");
+          for EachIndex(i, 6) {
+            encoded[7-i] = alphabet.str[(sect_name_off >> (i*6)) & 63];
+          }
+          sect_name = str8(encoded, sizeof(d->name));
+        }
         AssertAlways(sect_name.size <= sizeof(d->name));
       }
       
