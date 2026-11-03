@@ -3504,19 +3504,18 @@ d_ctrl_thread__next_dmn_event(Arena *arena, DMN_CtrlCtx *ctrl_ctx, D_Msg *msg, D
                 }
               }
               
-              // rjf: send message
-              d_server_io_send_msg(server_io_ctx, server_endpoint, &msg);
-              
-              // rjf: set run state
-              num_servers_running += 1;
-              ss->run_state = 1;
+              // rjf: send message, set run state
+              if(d_server_io_send_msg(server_io_ctx, server_endpoint, &msg))
+              {
+                num_servers_running += 1;
+                ss->run_state = 1;
+              }
             }
           }
         }
         
-        //- rjf: run the local server synchronously - if we get a response from another server, it will
-        // halt the local one.
-        d_ctrl_state->ctrl_thread_dmn_run_block = 1;
+        //- rjf: run the local server synchronously - if we get a response from another server mid-run,
+        // it will halt the local one.
         {
           // rjf: unpack local server state
           D_ServerState *local_server_state = d_server_state_from_id(D_ServerID_LocalHost);
@@ -3548,7 +3547,9 @@ d_ctrl_thread__next_dmn_event(Arena *arena, DMN_CtrlCtx *ctrl_ctx, D_Msg *msg, D
             }
             
             // rjf: run for new events
+            d_ctrl_state->ctrl_thread_dmn_run_block = 1;
             DMN_EventList events = dmn_ctrl_run(scratch.arena, ctrl_ctx, &local_run_ctrls);
+            d_ctrl_state->ctrl_thread_dmn_run_block = 0;
             new_events = 1;
             
             // rjf: store the new events in the local server queue
@@ -3561,25 +3562,30 @@ d_ctrl_thread__next_dmn_event(Arena *arena, DMN_CtrlCtx *ctrl_ctx, D_Msg *msg, D
                 {
                   for EachNode(src_n, DMN_EventNode, events.first)
                   {
-                    DMN_EventNode *dst_n = ss->free_dmn_event_node;
-                    if(dst_n != 0)
+                    if(src_n->v.kind != DMN_EventKind_Halt || !d_ctrl_state->ctrl_thread_local_server_group_halt)
                     {
-                      SLLStackPop(ss->free_dmn_event_node);
+                      DMN_EventNode *dst_n = ss->free_dmn_event_node;
+                      if(dst_n != 0)
+                      {
+                        SLLStackPop(ss->free_dmn_event_node);
+                      }
+                      else
+                      {
+                        dst_n = push_array(ss->dmn_event_arena, DMN_EventNode, 1);
+                      }
+                      dmn_event_deep_copy(ss->dmn_event_arena, &dst_n->v, &src_n->v);
+                      SLLQueuePush(ss->first_dmn_event_node, ss->last_dmn_event_node, dst_n);
                     }
-                    else
-                    {
-                      dst_n = push_array(ss->dmn_event_arena, DMN_EventNode, 1);
-                    }
-                    dmn_event_deep_copy(ss->dmn_event_arena, &dst_n->v, &src_n->v);
-                    SLLQueuePush(ss->first_dmn_event_node, ss->last_dmn_event_node, dst_n);
                   }
                 }
               }
             }
             
-            // rjf: if we got anything other than a 'not-attached' error, then this
-            // debug event requires that we halt all running servers
-            if(events.first != 0 && (events.first->v.kind != DMN_EventKind_Error || events.first->v.error_kind != DMN_ErrorKind_NotAttached))
+            // rjf: if we got anything other than a 'not-attached' error, or a group halt,
+            // then this debug event requires that we halt all running servers
+            if(events.first != 0 &&
+               (events.first->v.kind != DMN_EventKind_Error || events.first->v.error_kind != DMN_ErrorKind_NotAttached) &&
+               (!d_ctrl_state->ctrl_thread_local_server_group_halt || events.first->v.kind != DMN_EventKind_Halt))
             {
               B32 first = 1;
               D_ServerState *start_dequeue_server = d_ctrl_state->next_dequeue_server;
@@ -3587,26 +3593,27 @@ d_ctrl_thread__next_dmn_event(Arena *arena, DMN_CtrlCtx *ctrl_ctx, D_Msg *msg, D
                   ss != start_dequeue_server || first;
                   (first = 0, ss = (ss->order_next == 0 ? d_ctrl_state->first_server : ss->order_next), d_ctrl_state->next_dequeue_server = ss))
               {
-                if(ss->server_id != D_ServerID_LocalHost && ss->run_state)
+                if(ss->server_id != D_ServerID_LocalHost && ss->run_state && !ss->group_halt)
                 {
                   // rjf: unpack server
-                  D_Handle server_handle = {.server_id = ss->server_id};
+                  D_Handle server_handle = d_handle_from_server_id(ss->server_id);
                   D_Entity *server = d_entity_from_handle(server_handle);
                   String8 server_addr = server->string;
                   SOCK_Endpoint server_endpoint = sock_endpoint_from_string(server_addr);
                   
                   // rjf: send
-                  DS_Msg msg = {DS_MsgKind_Halt};
-                  d_server_io_send_msg(server_io_ctx, server_endpoint, &msg);
+                  DS_Msg group_halt_msg = {DS_MsgKind_Halt};
+                  DS_Response group_halt_response = d_server_msg(scratch.arena, server_endpoint, &group_halt_msg);
                   
                   // rjf: set group halt state (to skip halt event)
                   ss->group_halt = 1;
                 }
               }
             }
+            
+            d_ctrl_state->ctrl_thread_local_server_group_halt = 0;
           }
         }
-        d_ctrl_state->ctrl_thread_dmn_run_block = 0;
         
         //- rjf: wait for all running servers to stop (either we're waiting on them for events, *or* we generated
         // a halt, and we're waiting for that)
@@ -3714,11 +3721,10 @@ d_ctrl_thread__next_dmn_event(Arena *arena, DMN_CtrlCtx *ctrl_ctx, D_Msg *msg, D
               ss->run_state = 0;
             }
             
-            // rjf: if ss has group halt set, consume extra response
+            // rjf: if ss has group halt set, unset
             if(ss != 0 && ss->group_halt)
             {
               ss->group_halt = 0;
-              d_server_io_recv_response(scratch.arena, server_io_ctx);
             }
           }
         }
@@ -4609,6 +4615,7 @@ d_ctrl_sock_wakeup(void)
   // halt, so that we can wake up and process the received packet.
   if(d_ctrl_state->ctrl_thread_dmn_run_block)
   {
+    d_ctrl_state->ctrl_thread_local_server_group_halt = 1;
     dmn_halt(0, 0);
   }
   ins_atomic_u32_eval_assign(&async_loop_again, 1);

@@ -505,6 +505,7 @@ struct D_CtrlState
   D_ServerState *free_server;
   D_ServerState *next_dequeue_server;
   B32 ctrl_thread_dmn_run_block;
+  B32 ctrl_thread_local_server_group_halt;
   Arena *user_entry_point_arena;
   String8List user_entry_points;
   U64 exception_code_filters[(D_ExceptionCodeKind_COUNT+63)/64];
