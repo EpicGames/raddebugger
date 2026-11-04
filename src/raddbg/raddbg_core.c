@@ -5634,6 +5634,7 @@ rd_window_state_from_cfg(CFG_Node *cfg)
     // rjf: create wm window, equip for rendering
     String8 title = rd_push_window_title(scratch.arena);
     ws->os = wm_window_open(r2f32p(pos.x, pos.y, pos.x+size.x, pos.y+size.y), (!has_pos*WM_WindowFlag_UseDefaultPosition)|WM_WindowFlag_CustomBorder, title);
+    ws->mica_requested = ws->mica_enabled = ws->mica_dark = ws->mica_alt = 0;
     ws->r = r_window_equip(ws->os);
     ws->last_dpi = wm_dpi_from_window(ws->os);
     WM_Monitor zero_monitor = {0};
@@ -5972,6 +5973,8 @@ rd_window_frame(void)
   //- rjf: @window_frame_part build UI
   //
   UI_Box *lister_box = &ui_nil_box;
+  UI_Box *top_bar_box = &ui_nil_box;
+  UI_Box *bottom_bar_box = &ui_nil_box;
   ProfScope("build UI")
   {
     ////////////////////////////
@@ -6021,6 +6024,20 @@ rd_window_frame(void)
       if(rd_setting_b32_from_name(s("smooth_ui_text"))) {text_raster_flags |= FNT_RasterFlag_Smooth;}
       if(rd_setting_b32_from_name(s("hint_ui_text"))) {text_raster_flags |= FNT_RasterFlag_Hinted;}
       ui_push_text_raster_flags(text_raster_flags);
+    }
+
+    {
+      B32 requested = rd_setting_b32_from_name(str8_lit("mica_backdrop"));
+      B32 alt = requested && rd_setting_b32_from_name(str8_lit("mica_alt"));
+      Vec4F32 background = ui_color_from_name(str8_lit("background"));
+      B32 dark = (0.2126f*background.x + 0.7152f*background.y + 0.0722f*background.z < 0.5f);
+      if(requested != ws->mica_requested || (requested && (dark != ws->mica_dark || alt != ws->mica_alt)))
+      {
+        ws->mica_enabled = wm_window_set_mica_backdrop(ws->os, requested, dark, alt);
+        ws->mica_requested = requested;
+        ws->mica_dark = dark;
+        ws->mica_alt = alt;
+      }
     }
     
     ////////////////////////////
@@ -7389,6 +7406,7 @@ rd_window_frame(void)
         UI_WidthFill UI_Row
         UI_Focus(UI_FocusKind_Null)
       {
+        top_bar_box = ui_top_parent()->parent;
         UI_Key menu_bar_group_key = ui_key_from_string(ui_key_zero(), str8_lit("###top_bar_group"));
         MemoryZeroArray(ui_top_parent()->parent->corner_radii);
         
@@ -7414,7 +7432,7 @@ rd_window_frame(void)
             //- rjf: menu items
             if(dim_2f32(top_bar_rect).x > ui_top_font_size()*60)
             {
-              ui_set_next_flags(UI_BoxFlag_DrawBackground);
+              ui_set_next_flags(ws->mica_enabled ? 0 : UI_BoxFlag_DrawBackground);
               UI_PrefWidth(ui_children_sum(1)) UI_Row UI_PrefWidth(ui_text_dim(20, 1)) UI_GroupKey(menu_bar_group_key)
               {
                 // rjf: file menu
@@ -7771,6 +7789,10 @@ rd_window_frame(void)
                     UI_TagF(!ui_ctx_menu_is_open(items[idx].menu_key) ? "weak" : "")
                     {
                       UI_Signal sig = rd_menu_bar_button(items[idx].name);
+                      if(ws->mica_enabled && !ui_ctx_menu_is_open(items[idx].menu_key))
+                      {
+                        sig.box->background_color.w = 0;
+                      }
                       wm_window_push_custom_title_bar_client_area(ws->os, sig.box->rect);
                       if(menu_open)
                       {
@@ -8146,6 +8168,7 @@ rd_window_frame(void)
         UI_Pane(bottom_bar_rect, str8_lit("###bottom_bar")) UI_WidthFill UI_Row
         UI_Flags(0)
       {
+        bottom_bar_box = ui_top_parent()->parent;
         Temp scratch = scratch_begin(0, 0);
         
         // rjf: developer frame-time indicator
@@ -8851,7 +8874,7 @@ rd_window_frame(void)
           //- rjf: determine how much this panel is occluding others
           //
           B32 is_occluding = 0;
-          if(panel_trees[panel_tree_idx] == front_panel)
+          if(panel_trees[panel_tree_idx] == front_panel && !ws->mica_enabled)
           {
             is_occluding = (abs_f32(panel_rect.x0 - target_rect_px.x0) > 2 ||
                             abs_f32(panel_rect.y0 - target_rect_px.y0) > 2);
@@ -9607,6 +9630,19 @@ rd_window_frame(void)
     B32 do_background_blur = rd_setting_b32_from_name(str8_lit("background_blur"));
     B32 force_opaque_floating_backgrounds = rd_setting_b32_from_name(str8_lit("opaque_backgrounds"));
     B32 do_drop_shadows = rd_setting_b32_from_name(str8_lit("drop_shadows"));
+    F32 panel_background_opacity = 1.f;
+    F32 native_window_corner_radius = 0.f;
+    if(ws->mica_enabled)
+    {
+      panel_background_opacity = rd_setting_f32_from_name(str8_lit("panel_background_opacity"));
+      panel_background_opacity = Clamp(0.f, panel_background_opacity, 1.f);
+      
+      // NOTE: Windows 11 (required for mica) rounds non-maximized window corners by 8 DIPs.
+      if(!wm_window_is_maximized(ws->os) && !wm_window_is_fullscreen(ws->os))
+      {
+        native_window_corner_radius = 8.f*wm_dpi_from_window(ws->os)/96.f;
+      }
+    }
     Vec4F32 base_background_color = ui_color_from_name(str8_lit("background"));
     Vec4F32 base_border_color = ui_color_from_name(str8_lit("border"));
     Vec4F32 drop_shadow_color = ui_color_from_name(str8_lit("drop_shadow"));
@@ -9628,7 +9664,15 @@ rd_window_frame(void)
     
     //- rjf: draw background color
     {
-      dr_rect(wm_client_rect_from_window(ws->os), base_background_color, 0, 0, 0);
+      Rng2F32 background_rect = window_rect;
+      Vec4F32 background_color = base_background_color;
+      if(ws->mica_enabled)
+      {
+        background_rect.y0 = top_bar_box->rect.y1;
+        background_rect.y1 = bottom_bar_box->rect.y0;
+        background_color.w = panel_background_opacity;
+      }
+      dr_rect(background_rect, background_color, 0, 0, 0);
     }
     
     //- rjf: draw window border
@@ -9727,6 +9771,14 @@ rd_window_frame(void)
       if(force_opaque_floating_backgrounds && box->flags & UI_BoxFlag_Floating && box->flags & UI_BoxFlag_DrawDropShadow)
       {
         box_background_color.w = 1.f;
+      }
+      if(ws->mica_enabled && (box == top_bar_box || box == bottom_bar_box))
+      {
+        box_background_color.w = 0.f;
+      }
+      else if(ws->mica_enabled && box->parent == bottom_bar_box)
+      {
+        box_background_color.w *= 0.35f;
       }
       
       // rjf: draw background
@@ -9961,6 +10013,10 @@ rd_window_frame(void)
             b->corner_radii[Corner_10]*rounded_corner_amount,
             b->corner_radii[Corner_11]*rounded_corner_amount,
           };
+          if(b == bottom_bar_box && native_window_corner_radius > 0)
+          {
+            b_corner_radii[Corner_01] = b_corner_radii[Corner_11] = native_window_corner_radius;
+          }
           
           // rjf: draw border
           if(b->flags & UI_BoxFlag_DrawBorder)

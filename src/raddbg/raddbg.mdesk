@@ -261,6 +261,12 @@ RD_VocabTable:
         'theme': string,
       @no_expand @display_name('User Theme')
         'theme_colors': set,
+      @default(0) @display_name('Mica Backdrop') @description("Uses Windows 11 Mica behind the title and status bars. Requires Windows 11 22H2 or later and the Direct3D renderer; content panels are opaque by default.")
+        'mica_backdrop': bool,
+      @default(0) @expand_if("$.mica_backdrop") @display_name('Mica Alt') @description("Uses the stronger-tinted Mica Alt backdrop instead of standard Mica. Turn off for standard Mica. Only applies when Mica Backdrop is enabled.")
+        'mica_alt': bool,
+      @default(1.f) @expand_if("$.mica_backdrop") @display_name('Panel Background Opacity') @description("Controls panel background opacity over Mica: 0 is transparent and 1 is opaque. Text, controls, highlights, and floating dialogs are unaffected. Only applies when Mica is active.")
+        'panel_background_opacity': @range[0, 1] f32,
       
       //- rjf: auto eval
       @display_name('Show Auto Watches In Source / Disassembly') @description("Enables the display of auto watch expressions inline in source and disassembly views.") @default(1)
@@ -2735,9 +2741,12 @@ raddbg_readme:
   @subtitle "User & Project Files";
   @p "Applicable state controlling the debugger's appearance, behavior, targets, breakpoints, and other configurations is saved and reloaded across runs of the debugger through both *user files* and *project files*. These files are auto-saved. These files are written in a textual format which can be hand-edited as necessary, but they're also continuously re-read and re-written by the debugger. By default, the debugger uses `%appdata%/raddbg/default.raddbg_user` for its user file path, and `%appdata%/raddbg/default.raddbg_project` for its project file path. These paths can be overridden on the command line (see the 'Command-Line Usage' section).";
   @p "The *user file* defaultly stores file path maps, windows (including their preferred monitor, placement, and size), each window's panel layout and tabs, keybindings, theme colors, and fonts.";
+  @p "On Windows 11 22H2 or later, **Mica Backdrop** can be enabled from the command palette or user settings. It uses the system's wallpaper-based material behind the title and status bars. The setting is off by default, requires the Direct3D renderer, and is saved in the user file. When Mica is enabled, **Panel Background Opacity** controls the tint behind panel content: `1` (the default) is opaque, `0` is transparent, and values in between blend the panel background with Mica. Text, controls, highlights, and floating dialogs are unaffected. This opacity setting has no effect when Mica is inactive. Windows may replace the material with a solid color when transparency is disabled or for accessibility or power-saving settings.";
   @p "The *project file* defaultly stores targets, breakpoints, watch pins, and exception code filters.";
   @p "Because both can be hand-edited, however, if you want to store something normally stored in a user file in a project file, or vice versa, this can be done by hand transferring the textual data from one file to another. There is no path in the debugger's UI to support this transfer, currently, although this is planned.";
   
+  @p "With **Mica Backdrop** enabled, **Mica Alt** selects the stronger-tinted alternate material (`DWMSBT_TABBEDWINDOW`). Leave it off for standard Mica (`DWMSBT_MAINWINDOW`). This selection updates existing windows immediately, is saved in the user file, and works with **Panel Background Opacity** for either material.";
+
   @subtitle "Driving Another Debugger Instance";
   @p "When the debugger is launched with the `--ipc` command-line argument, it does not launch another instance of the graphical debugger. Instead, it launches, sends a string encoding a command to a running instance of the graphical debugger, and then terminates. The set of commands which can be sent are identical to those which can be run from the debugger's UI itself, but these commands must be encoded textually (through the other command-line arguments). These commands are described in the 'Commands' section.";
 }

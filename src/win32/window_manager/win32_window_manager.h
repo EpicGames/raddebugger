@@ -46,6 +46,7 @@ struct W32_WM_Window
   F32 custom_border_title_thickness;
   F32 custom_border_edge_thickness;
   B32 custom_border_composition_enabled;
+  B32 mica_enabled;
   Arena *paint_arena;
   W32_WM_TitleBarClientArea *first_title_bar_client_area;
   W32_WM_TitleBarClientArea *last_title_bar_client_area;

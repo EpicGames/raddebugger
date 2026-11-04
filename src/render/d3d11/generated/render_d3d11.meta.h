@@ -12,6 +12,7 @@ R_D3D11_VShadKind_Rect,
 R_D3D11_VShadKind_Blur,
 R_D3D11_VShadKind_Mesh,
 R_D3D11_VShadKind_Geo3DComposite,
+R_D3D11_VShadKind_TranslucentResolve,
 R_D3D11_VShadKind_COUNT,
 } R_D3D11_VShadKind;
 
@@ -21,6 +22,7 @@ R_D3D11_PShadKind_Rect,
 R_D3D11_PShadKind_Blur,
 R_D3D11_PShadKind_Mesh,
 R_D3D11_PShadKind_Geo3DComposite,
+R_D3D11_PShadKind_TranslucentResolve,
 R_D3D11_PShadKind_COUNT,
 } R_D3D11_PShadKind;
 
@@ -29,6 +31,7 @@ typedef enum R_D3D11_UniformTypeKind
 R_D3D11_UniformTypeKind_Rect,
 R_D3D11_UniformTypeKind_Blur,
 R_D3D11_UniformTypeKind_Mesh,
+R_D3D11_UniformTypeKind_TranslucentResolve,
 R_D3D11_UniformTypeKind_COUNT,
 } R_D3D11_UniformTypeKind;
 
@@ -263,9 +266,9 @@ str8_lit_comp(
 "}\n"
 "\n"
 "// The source holds only a padded copy of the blurred region; clamp taps to its valid pixel centers.\n"
-"float3 sample_src(float2 src_px)\n"
+"float4 sample_src(float2 src_px)\n"
 "{\n"
-"  return stage_t2d.Sample(stage_sampler, clamp(src_px, src_clamp.xy, src_clamp.zw) * src_texel_size).rgb;\n"
+"  return stage_t2d.Sample(stage_sampler, clamp(src_px, src_clamp.xy, src_clamp.zw) * src_texel_size);\n"
 "}\n"
 "\n"
 "//- rjf: vertex shader\n"
@@ -311,15 +314,22 @@ str8_lit_comp(
 "ps_main(Vertex2Pixel v2p) : SV_TARGET\n"
 "{\n"
 "  // rjf: blend weighted texture samples into color\n"
+"  // Translucent surfaces hold linear premultiplied color, so color and coverage are blurred together.\n"
 "  float2 src_px = v2p.position.xy + src_offset;\n"
-"  float3 color = kernel[0].x * sample_src(src_px);\n"
+"  float4 color = kernel[0].x * sample_src(src_px);\n"
+"  float weight_sum = kernel[0].x;\n"
 "  for(uint i = 1; i < blur_count; i += 1)\n"
 "  {\n"
 "    float weight = kernel[i].x;\n"
 "    float offset = kernel[i].y;\n"
 "    color += weight * sample_src(src_px - offset * direction);\n"
 "    color += weight * sample_src(src_px + offset * direction);\n"
+"    weight_sum += 2 * weight;\n"
 "  }\n"
+"  \n"
+"  // The truncated kernel does not sum to 1, which slightly dims color; keep that look but not a coverage\n"
+"  // loss, which would let a translucent backdrop show through opaque content.\n"
+"  color.a /= weight_sum;\n"
 "  \n"
 "  // rjf: sample for corners\n"
 "  // this is doing alpha testing, leave blurring only where mostly opaque pixels are\n"
@@ -333,7 +343,7 @@ str8_lit_comp(
 "    }\n"
 "  }\n"
 "  \n"
-"  return float4(color, 1.f);\n"
+"  return color;\n"
 "}\n"
 ""
 );
@@ -427,6 +437,66 @@ str8_lit_comp(
 "{\n"
 "  float4 final_color = stage_t2d.Sample(stage_sampler, v2p.texcoord);\n"
 "  return final_color;\n"
+"}\n"
+""
+);
+
+read_only global String8 r_d3d11_g_translucentresolve_shader_src =
+str8_lit_comp(
+""
+"\n"
+"cbuffer Globals : register(b0)\n"
+"{\n"
+"  int2 src_offset; // surface pixel -> source pixel\n"
+"}\n"
+"\n"
+"struct CPU2Vertex\n"
+"{\n"
+"  uint vertex_id : SV_VertexID;\n"
+"};\n"
+"\n"
+"struct Vertex2Pixel\n"
+"{\n"
+"  float4 position : SV_POSITION;\n"
+"};\n"
+"\n"
+"// sRGB view: rgb loads as linear premultiplied color\n"
+"Texture2D src_t2d : register(t0);\n"
+"\n"
+"float srgb_from_linear_f32(float x)\n"
+"{\n"
+"  return x < 0.0031308f ? 12.92f*x : 1.055f*pow(x, 1.f/2.4f) - 0.055f;\n"
+"}\n"
+"\n"
+"//- vertex shader\n"
+"\n"
+"Vertex2Pixel\n"
+"vs_main(CPU2Vertex c2v)\n"
+"{\n"
+"  // same clockwise strip as the geo3d composite (the main rasterizer culls back faces)\n"
+"  float2 corner = float2((c2v.vertex_id >> 1) ? 1.f : 0.f, (c2v.vertex_id & 1) ? 1.f : 0.f);\n"
+"  Vertex2Pixel v2p;\n"
+"  v2p.position = float4(2.f*corner - 1.f, 0.f, 1.f);\n"
+"  return v2p;\n"
+"}\n"
+"\n"
+"//- pixel shader\n"
+"\n"
+"float4\n"
+"ps_main(Vertex2Pixel v2p) : SV_TARGET\n"
+"{\n"
+"  float4 src = src_t2d.Load(int3(int2(v2p.position.xy) + src_offset, 0));\n"
+"  float alpha = saturate(src.a);\n"
+"  float4 result = float4(0, 0, 0, 0);\n"
+"  if(alpha > 0)\n"
+"  {\n"
+"    float3 color = saturate(src.rgb / alpha);\n"
+"    result = float4(float3(srgb_from_linear_f32(color.r),\n"
+"                           srgb_from_linear_f32(color.g),\n"
+"                           srgb_from_linear_f32(color.b)) * alpha,\n"
+"                    alpha);\n"
+"  }\n"
+"  return result;\n"
 "}\n"
 ""
 );

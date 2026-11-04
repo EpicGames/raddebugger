@@ -1209,6 +1209,48 @@ wm_window_set_title(WM_Window handle, String8 title)
   scratch_end(scratch);
 }
 
+internal B32
+wm_window_set_mica_backdrop(WM_Window handle, B32 enabled, B32 dark, B32 alt)
+{
+  W32_WM_Window *window = w32_wm_window_from_handle(handle);
+  if(window == 0)
+  {
+    log_user_error(str8_lit("Cannot set a Mica backdrop on an invalid window."));
+    return 0;
+  }
+#if defined(R_BACKEND) && R_BACKEND == R_BACKEND_D3D11
+  // Attribute values keep this optional feature buildable with older Windows SDKs.
+  DWORD dark_attribute = 20;
+  DWORD backdrop_attribute = 38;
+  BOOL use_dark = dark;
+  DWORD backdrop = enabled ? (alt ? 4 : 2) : 1; // DWMSBT_TABBEDWINDOW / DWMSBT_MAINWINDOW / DWMSBT_NONE
+  HRESULT error = S_OK;
+  if(enabled)
+  {
+    error = DwmSetWindowAttribute(window->hwnd, dark_attribute, &use_dark, sizeof(use_dark));
+  }
+  if(SUCCEEDED(error))
+  {
+    error = DwmSetWindowAttribute(window->hwnd, backdrop_attribute, &backdrop, sizeof(backdrop));
+  }
+  if(SUCCEEDED(error))
+  {
+    window->mica_enabled = enabled;
+  }
+  else
+  {
+    log_user_errorf("Could not %s the Mica backdrop (HRESULT 0x%08lx). Mica requires Windows 11 22H2 or later.",
+                    enabled ? "enable" : "disable", (U32)error);
+  }
+#else
+  if(enabled)
+  {
+    log_user_error(str8_lit("Mica backdrops require the Direct3D renderer."));
+  }
+#endif
+  return window->mica_enabled;
+}
+
 internal void
 wm_window_first_paint(WM_Window window_handle)
 {

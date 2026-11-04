@@ -65,10 +65,17 @@ struct R_D3D11_Uniforms_Mesh
   Mat4x4F32 xform;
 };
 
+typedef struct R_D3D11_Uniforms_TranslucentResolve R_D3D11_Uniforms_TranslucentResolve;
+struct R_D3D11_Uniforms_TranslucentResolve
+{
+  Vec2S32 src_offset; // surface pixel -> resolve_src pixel
+  S32 _padding0_[2];
+};
+
 ////////////////////////////////
 //~ rjf: Main State Types
 
-// Per-window blur and geo3d scratch targets are released after this many frames without use.
+// Per-window blur, geo3d, and translucent-resolve scratch targets are released after this many frames without use.
 #define R_D3D11_SCRATCH_IDLE_FRAMES 600
 
 typedef struct R_D3D11_Tex2D R_D3D11_Tex2D;
@@ -104,6 +111,15 @@ struct R_D3D11_Window
   ID3D11RenderTargetView *surface_rtv;
   POINT surface_offset;
   B32 surface_drawing;
+  
+  // translucent (Mica) frame: the surface holds linear premultiplied color until r_window_end_frame resolves it
+  B32 translucent;
+  
+  // translucent-resolve scratch: grow-only copy of the window's pixels, released when unused for a while
+  ID3D11Texture2D *resolve_src;
+  ID3D11ShaderResourceView *resolve_src_srv;
+  Vec2S32 resolve_size;
+  U64 resolve_last_used_frame;
   
   // blur scratch: grow-only, sized to blurred regions, released when unused for a while
   ID3D11Texture2D *blur_src;
@@ -155,7 +171,9 @@ struct R_D3D11_State
   ID3D11RasterizerState1  *main_rasterizer;
   ID3D11BlendState        *main_blend_state;
   ID3D11BlendState        *surface_blend_state; // main blend, RGB writes only: the surface's alpha stays 1
+  ID3D11BlendState        *surface_translucent_blend_state; // premultiplied "over" into a transparent surface, alpha included
   ID3D11BlendState        *no_blend_state;
+  ID3D11BlendState        *no_blend_rgb_state; // RGB writes only
   ID3D11SamplerState      *samplers[R_Tex2DSampleKind_COUNT];
   ID3D11DepthStencilState *noop_depth_stencil;
   ID3D11DepthStencilState *plain_depth_stencil;
@@ -202,6 +220,8 @@ internal Rng2S32 r_d3d11_window_rect_from_clip(Rng2F32 clip, Vec2S32 resolution)
 internal D3D11_RECT r_d3d11_surface_scissor_from_rect(R_D3D11_Window *wnd, Rng2S32 rect);
 internal void r_d3d11_window_release_blur_targets(R_D3D11_Window *wnd);
 internal void r_d3d11_window_release_geo3d_targets(R_D3D11_Window *wnd);
+internal void r_d3d11_window_release_resolve_targets(R_D3D11_Window *wnd);
+internal void r_d3d11_window_resolve_translucent_surface(R_D3D11_Window *wnd);
 internal HRESULT r_d3d11_window_close_surface(WM_Window window, R_D3D11_Window *wnd);
 
 #endif // RENDER_D3D11_H

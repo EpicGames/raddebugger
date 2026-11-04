@@ -51,6 +51,16 @@ wm_window_set_title(WM_Window window, String8 title)
 {
 }
 
+internal B32
+wm_window_set_mica_backdrop(WM_Window window, B32 enabled, B32 dark, B32 alt)
+{
+  if(enabled)
+  {
+    log_user_error(str8_lit("Mica backdrops are unavailable without a window manager."));
+  }
+  return 0;
+}
+
 internal void
 wm_window_first_paint(WM_Window window)
 {
