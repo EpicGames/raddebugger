@@ -8127,7 +8127,7 @@ rd_window_frame(void)
           dr_fstrs_push_new(scratch.arena, &status_fstrs, &params, rd_icon_kind_text_table[RD_IconKind_Play],
                             .font = rd_font_from_slot(RD_FontSlot_Icons),
                             .raster_flags = rd_raster_flags_from_slot(RD_FontSlot_Icons));
-          dr_fstrs_push_new(scratch.arena, &status_fstrs, &params, str8_lit("  Running..."));
+          dr_fstrs_push_new(scratch.arena, &status_fstrs, &params, d_user_state->last_ctrl_status.size != 0 ? str8f(scratch.arena, "  %S", d_user_state->last_ctrl_status) : s("  Running..."));
           if(long_running_tasks.count != 0)
           {
             String8 string = push_str8f(scratch.arena, "  Loading %I64u debug information file%s...", long_running_tasks.count, long_running_tasks.count == 1 ? "" : "s");

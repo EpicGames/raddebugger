@@ -1576,7 +1576,7 @@ d_thread_read_reg_block(D_Handle handle, void *reg_block)
       }
       
       //- rjf: remote server case
-      else
+      else if(handle.server_id != 0)
       {
         Temp scratch = scratch_begin(0, 0);
         SOCK_Endpoint endpoint = d_endpoint_from_server_id(handle.server_id);
@@ -1761,7 +1761,7 @@ d_thread_get_module_tls_vaddr(D_Handle thread, D_Handle module, U64 *vaddr_out)
     }
     
     //- rjf: remote demon version
-    else
+    else if(thread.server_id != 0)
     {
       Temp scratch = scratch_begin(0, 0);
       SOCK_Endpoint endpoint = d_endpoint_from_server_id(thread.server_id);
@@ -4516,13 +4516,13 @@ d_ctrl_thread__handle_from_addr_or_connect(String8 addr)
   //- rjf: if not found, connect to server & handshake
   if(!found && addr.size != 0)
   {
+    Temp scratch = scratch_begin(0, 0);
     SOCK_Endpoint endpoint = sock_endpoint_from_string(addr);
     
     // rjf: handshake & get state
     B32 good_handshake = 1;
+    D_CtrlThread_StatusF("Connecting to server at %S.", sock_string_from_endpoint(scratch.arena, endpoint))
     {
-      Temp scratch = scratch_begin(0, 0);
-      
       // rjf: handshake & get state
       DS_Msg server_msg = {DS_MsgKind_Handshake};
       DS_Response response = d_server_msg(scratch.arena, endpoint, &server_msg);
@@ -4533,7 +4533,6 @@ d_ctrl_thread__handle_from_addr_or_connect(String8 addr)
       {
         log_user_errorf("Couldn't successfully connect to server at %S (%S).", sock_string_from_endpoint(scratch.arena, endpoint), addr);
       }
-      scratch_end(scratch);
     }
     
     // rjf: push connect event
@@ -4607,6 +4606,7 @@ d_ctrl_thread__handle_from_addr_or_connect(String8 addr)
     
     // rjf: form handle
     handle.server_id = server_id;
+    scratch_end(scratch);
   }
   
   return handle;
@@ -4650,6 +4650,30 @@ d_ctrl_thread__end_and_flush_log(void)
 //- rjf: msg kind implementations
 
 internal void
+d_ctrl_thread__status(String8 string)
+{
+  Temp scratch = scratch_begin(0, 0);
+  D_EventList evts = {0};
+  D_Event *evt = d_event_list_push(scratch.arena, &evts);
+  evt->kind = D_EventKind_Status;
+  evt->string = string;
+  d_c2u_push_events(&evts);
+  scratch_end(scratch);
+}
+
+internal void
+d_ctrl_thread__statusf(char *fmt, ...)
+{
+  Temp scratch = scratch_begin(0, 0);
+  va_list args;
+  va_start(args, fmt);
+  String8 string = str8fv(scratch.arena, fmt, args);
+  d_ctrl_thread__status(string);
+  va_end(args);
+  scratch_end(scratch);
+}
+
+internal void
 d_ctrl_thread__open_remote_server(DMN_CtrlCtx *ctrl_ctx, D_Msg *msg)
 {
   d_ctrl_thread__handle_from_addr_or_connect(msg->address);
@@ -4673,6 +4697,7 @@ d_ctrl_thread__launch(DMN_CtrlCtx *ctrl_ctx, D_Msg *msg)
 {
   Temp scratch = scratch_begin(0, 0);
   SOCK_Endpoint server_endpoint = sock_endpoint_from_string(msg->address);
+  String8 server_endpoint_string = sock_string_from_endpoint(scratch.arena, server_endpoint);
   
   //////////////////////////////
   //- rjf: message -> launch parameters for debug servers
@@ -4705,6 +4730,7 @@ d_ctrl_thread__launch(DMN_CtrlCtx *ctrl_ctx, D_Msg *msg)
     
     // rjf: determine if this hash exists remotely
     B32 already_deployed = 0;
+    D_CtrlThread_StatusF("Checking if \"%S\" (ID: `%I64x_%I64x`) is deployed.", exe_path, exe_hash.u64[0], exe_hash.u64[1])
     {
       DS_Msg msg = {DS_MsgKind_DeployStatus, .path = exe_path, .hash = exe_hash};
       DS_Response response = d_server_msg(scratch.arena, server_endpoint, &msg);
@@ -4712,7 +4738,7 @@ d_ctrl_thread__launch(DMN_CtrlCtx *ctrl_ctx, D_Msg *msg)
     }
     
     // rjf: if this hash does *not* exist remotely -> deploy
-    if(!already_deployed)
+    if(!already_deployed) D_CtrlThread_StatusF("\"%S\" (ID: `%I64x_%I64x`) not yet deployed. Uploading...", exe_path, exe_hash.u64[0], exe_hash.u64[1])
     {
       DS_Msg msg = {DS_MsgKind_Deploy, .path = exe_path, .hash = exe_hash, .data = exe_data};
       DS_Response response = d_server_msg(scratch.arena, server_endpoint, &msg);
@@ -4723,7 +4749,7 @@ d_ctrl_thread__launch(DMN_CtrlCtx *ctrl_ctx, D_Msg *msg)
   //- rjf: remote? -> send message to launch, wait on new PID
   //
   U64 pid = 0;
-  if(msg->address.size != 0)
+  if(msg->address.size != 0) D_CtrlThread_StatusF("Launching target on %S...", server_endpoint_string)
   {
     Temp scratch = scratch_begin(0, 0);
     DS_Msg server_msg = {DS_MsgKind_Launch, .launch_params = &launch_params};
@@ -4731,7 +4757,7 @@ d_ctrl_thread__launch(DMN_CtrlCtx *ctrl_ctx, D_Msg *msg)
     pid = response.pid;
     if(!response.good)
     {
-      log_user_errorf("Couldn't launch target on server at %S.", sock_string_from_endpoint(scratch.arena, server_endpoint));
+      log_user_errorf("Couldn't launch target on server at %S.", server_endpoint_string);
     }
     scratch_end(scratch);
   }
@@ -7036,7 +7062,7 @@ d_process_read(D_Handle process, Rng1U64 range, void *dst)
       }
       
       //- rjf: remote server reads
-      else
+      else if(process.server_id != 0)
       {
         Temp scratch = scratch_begin(0, 0);
         SOCK_Endpoint endpoint = d_endpoint_from_server_id(process.server_id);
@@ -7115,7 +7141,7 @@ d_process_write(D_Handle process, Rng1U64 range, void *src)
       }
       
       //- rjf: remote server writes
-      else
+      else if(process.server_id != 0)
       {
         Temp scratch = scratch_begin(0, 0);
         SOCK_Endpoint endpoint = d_endpoint_from_server_id(process.server_id);

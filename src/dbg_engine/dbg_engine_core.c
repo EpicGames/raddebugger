@@ -198,6 +198,7 @@ d_init(void)
     d_user_state->ctrl_entity_store = d_entity_ctx_rw_store_alloc();
     d_user_state->ctrl_stop_arena = arena_alloc();
     d_user_state->ctrl_msg_arena = arena_alloc();
+    d_user_state->last_ctrl_status_arena = arena_alloc();
     
     // rjf: set up caches
     for(U64 idx = 0; idx < ArrayCount(d_user_state->tls_base_caches); idx += 1)

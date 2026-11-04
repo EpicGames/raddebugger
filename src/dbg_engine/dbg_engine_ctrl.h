@@ -793,6 +793,12 @@ internal D_ServerState *d_server_state_from_id(D_ServerID id);
 //- rjf: log flusher
 internal void d_ctrl_thread__end_and_flush_log(void);
 
+//- rjf: status event helper
+internal void d_ctrl_thread__status(String8 string);
+internal void d_ctrl_thread__statusf(char *fmt, ...);
+#define D_CtrlThread_Status(string) DeferLoop(d_ctrl_thread__status(string), d_ctrl_thread__status(s("")))
+#define D_CtrlThread_StatusF(...) DeferLoop(d_ctrl_thread__statusf(__VA_ARGS__), d_ctrl_thread__status(s("")))
+
 //- rjf: msg kind implementations
 internal void d_ctrl_thread__open_remote_server(DMN_CtrlCtx *ctrl_ctx, D_Msg *msg);
 internal void d_ctrl_thread__close_remote_server(DMN_CtrlCtx *ctrl_ctx, D_Msg *msg);

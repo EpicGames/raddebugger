@@ -444,23 +444,26 @@ entry_point(CmdLine *cmd_line)
   
   //- rjf: filter msg kind logs
   {
-    MemoryZeroArray(rds_state->msg_log_flags);
     String8List msg_kinds = cmd_line_strings(cmd_line, s("log_msgs"));
-    for EachNode(n, String8Node, msg_kinds.first)
+    if(msg_kinds.node_count != 0)
     {
-      DS_MsgKind msg_kind = DS_MsgKind_Null;
-      for EachNonZeroEnumVal(DS_MsgKind, k)
+      MemoryZeroArray(rds_state->msg_log_flags);
+      for EachNode(n, String8Node, msg_kinds.first)
       {
-        if(str8_match(n->string, ds_name_from_msg_kind_table[k], StringMatchFlag_CaseInsensitive))
+        DS_MsgKind msg_kind = DS_MsgKind_Null;
+        for EachNonZeroEnumVal(DS_MsgKind, k)
         {
-          msg_kind = k;
-          break;
+          if(str8_match(n->string, ds_name_from_msg_kind_table[k], StringMatchFlag_CaseInsensitive))
+          {
+            msg_kind = k;
+            break;
+          }
         }
-      }
-      if(msg_kind != DS_MsgKind_Null)
-      {
-        rds_logf("[logging %S messages]\n", lower_from_str8(scratch.arena, ds_name_from_msg_kind_table[msg_kind]));
-        rds_state->msg_log_flags[msg_kind/64] |= 1ull<<(msg_kind%64);
+        if(msg_kind != DS_MsgKind_Null)
+        {
+          rds_logf("[logging %S messages]\n", lower_from_str8(scratch.arena, ds_name_from_msg_kind_table[msg_kind]));
+          rds_state->msg_log_flags[msg_kind/64] |= 1ull<<(msg_kind%64);
+        }
       }
     }
   }

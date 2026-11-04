@@ -1629,8 +1629,14 @@ d_tick(Arena *arena, D_TargetArray *targets, D_BreakpointArray *breakpoints, D_P
           {
             arena_clear(d_user_state->ctrl_stop_arena);
             MemoryCopyStruct(&d_user_state->ctrl_last_stop_event, event);
-            d_user_state->ctrl_last_stop_event.string = push_str8_copy(d_user_state->ctrl_stop_arena, d_user_state->ctrl_last_stop_event.string);
+            d_user_state->ctrl_last_stop_event.string = str8_copy(d_user_state->ctrl_stop_arena, d_user_state->ctrl_last_stop_event.string);
           }
+        }break;
+        
+        case D_EventKind_Status:
+        {
+          arena_clear(d_user_state->last_ctrl_status_arena);
+          d_user_state->last_ctrl_status = str8_copy(d_user_state->last_ctrl_status_arena, event->string);
         }break;
       }
       log_infof("}\n\n");

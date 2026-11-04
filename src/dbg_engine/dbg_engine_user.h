@@ -234,9 +234,10 @@ typedef enum D_EventKind
   D_EventKind_Null,
   D_EventKind_Error,
   
-  //- rjf: starts/stops
+  //- rjf: starts/stops/statuses
   D_EventKind_Started,
   D_EventKind_Stopped,
+  D_EventKind_Status,
   
   //- rjf: entity creation/deletion
   D_EventKind_NewProc,
@@ -393,6 +394,8 @@ struct D_UserState
   Arena *ctrl_stop_arena;
   D_Event ctrl_last_stop_event;
   U64 stop_count;
+  Arena *last_ctrl_status_arena;
+  String8 last_ctrl_status;
 };
 
 ////////////////////////////////
