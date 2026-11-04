@@ -384,7 +384,7 @@ struct LNX_DMN_State
   LNX_DMN_Process *last_process;
   U64 process_count;
   
-  // rjf: pending process/thread counts
+  // rjf: pending counts
   U64 process_pending_creation;
   U64 threads_pending_creation;
   
