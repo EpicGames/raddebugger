@@ -22,6 +22,50 @@ lnk_radcobj_no_free(void *user, void *memory)
 {
 }
 
+internal uint64_t
+lnk_radcobj_bound(void *user, uint64_t size)
+{
+  return cmp_bound(user, size);
+}
+
+internal uint64_t
+lnk_radcobj_encode(void *user, void *dst, uint64_t dst_size, const void *src, uint64_t src_size)
+{
+  return cmp_encode(user, str8((U8 *)src, src_size), str8(dst, dst_size));
+}
+
+#if !CMP_ENCODER_ONLY
+internal uint64_t
+lnk_radcobj_scratch(void *user, uint64_t size)
+{
+  U64 result = cmp_scratch(user, size);
+  return result ? result : UINT64_MAX;
+}
+
+internal uint64_t
+lnk_radcobj_decode(void *user, void *dst, uint64_t dst_size, const void *src, uint64_t src_size, void *scratch, uint64_t scratch_size)
+{
+  return cmp_decode(user, str8((U8 *)src, src_size), str8(dst, dst_size), str8(scratch, scratch_size)) ? dst_size : 0;
+}
+#endif
+
+internal RADCOBJ_Compressor
+lnk_radcobj_compressor(CMP_Ctx *cmp)
+{
+  RADCOBJ_Compressor result = {0};
+  if (cmp && cmp->sdk_type == CMP_SdkType_Oodle2) {
+    result.user     = cmp;
+    result.sdk_type = RADCOBJ_SDK_OODLE2;
+    result.bound    = lnk_radcobj_bound;
+    result.encode   = lnk_radcobj_encode;
+#if !CMP_ENCODER_ONLY
+    result.scratch  = lnk_radcobj_scratch;
+    result.decode   = lnk_radcobj_decode;
+#endif
+  }
+  return result;
+}
+
 internal String8
 lnk_obj_codec_encode(Arena *arena, CMP_Ctx *cmp, U64 segment_size, String8 data)
 {
@@ -31,7 +75,8 @@ lnk_obj_codec_encode(Arena *arena, CMP_Ctx *cmp, U64 segment_size, String8 data)
   RADCOBJ_Allocator  allocator = { &state, lnk_radcobj_arena_alloc, lnk_radcobj_no_free };
   void              *output    = 0;
   uint64_t           size      = 0;
-  const char *error = radcobj_encode(cmp, (U32)segment_size, data.str, data.size, &output, &size, &allocator);
+  RADCOBJ_Compressor compressor = lnk_radcobj_compressor(cmp);
+  const char *error = radcobj_encode(&compressor, (U32)segment_size, data.str, data.size, &output, &size, &allocator);
   if (error == NULL) {
     arena_pop(arena, state.allocation_size - size);
     result = str8(output, size);
@@ -209,11 +254,13 @@ lnk_obj_codec_compressor_info(String8 encoded, CMP_CompressorInfoUnpacked *info_
 
   RADCOBJ_Header header;
   if (radcobj_validate(encoded.str, encoded.size, &header)) { return 0; }
+  // The standalone API supports custom codecs; the linker currently uses Oodle2.
+  if (header.compressor.sdk_type != RADCOBJ_SDK_OODLE2) { return 0; }
 
   info_out->v.raw_size      = header.compressor.raw_size;
   info_out->v.segment_count = header.compressor.segment_count;
   info_out->v.segment_size  = header.compressor.segment_size;
-  info_out->v.sdk_type      = header.compressor.sdk_type;
+  info_out->v.sdk_type      = CMP_SdkType_Oodle2;
   info_out->segments        = (CMP_PackedSegment *)(encoded.str + sizeof(header));
 
   return 1;
@@ -230,7 +277,8 @@ internal B32
 lnk_obj_codec_decode(CMP_Ctx *sdk, CMP_CompressorInfoUnpacked *compressor_info, Rng1U64 range, String8 encoded, String8 dst, String8 scratch)
 {
   RADCOBJ_Allocator allocator = { &scratch, lnk_radcobj_scratch_alloc, lnk_radcobj_no_free };
-  return radcobj_decode_range(sdk, encoded.str, encoded.size, range.min, dim_1u64(range), dst.str, dst.size, &allocator) == 0;
+  RADCOBJ_Compressor compressor = lnk_radcobj_compressor(sdk);
+  return radcobj_decode_range(&compressor, encoded.str, encoded.size, range.min, dim_1u64(range), dst.str, dst.size, &allocator) == 0;
 }
 
 internal B32

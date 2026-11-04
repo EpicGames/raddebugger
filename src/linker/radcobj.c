@@ -9,7 +9,8 @@
 int
 radcobj_match_magic(const void *data, uint64_t size)
 {
-  return data != 0 && size >= sizeof(uint64_t) && memcmp(data, RADCOBJ_MAGIC, sizeof(uint64_t)) == 0;
+  const uint64_t magic = RADCOBJ_MAGIC;
+  return data != 0 && size >= sizeof(magic) && memcmp(data, &magic, sizeof(magic)) == 0;
 }
 
 internal const char *
@@ -31,8 +32,8 @@ radcobj_validate_header(const void *data, uint64_t size, RADCOBJ_Header *header_
   if (header.version != RADCOBJ_VERSION) {
     return "unsupported RADCOBJ version";
   }
-  if (header.compressor.sdk_type != RADCOBJ_SDK_OODLE2) {
-    return "unsupported compression SDK";
+  if (header.compressor.sdk_type == 0) {
+    return "invalid compression SDK identifier";
   }
 
   uint64_t raw_size     = header.compressor.raw_size;
@@ -237,13 +238,17 @@ radcobj_validate(const void *data, uint64_t size, RADCOBJ_Header *header_out)
 }
 
 const char *
-radcobj_encode(CMP_Ctx *cmp, uint32_t segment_size, const void *raw, uint64_t raw_size, void **output_out, uint64_t *output_size, const RADCOBJ_Allocator *allocator)
+radcobj_encode(const RADCOBJ_Compressor *cmp, uint32_t segment_size, const void *raw, uint64_t raw_size, void **output_out, uint64_t *output_size, const RADCOBJ_Allocator *allocator)
 {
   if (output_out)  { *output_out = 0;  }
   if (output_size) { *output_size = 0; }
 
   if (!output_out                             ||
       !output_size                            ||
+      !cmp                                    ||
+      !cmp->sdk_type                          ||
+      !cmp->bound                             ||
+      !cmp->encode                            ||
       !allocator                              ||
       !allocator->alloc                       ||
       !allocator->free                        ||
@@ -411,17 +416,6 @@ radcobj_encode(CMP_Ctx *cmp, uint32_t segment_size, const void *raw, uint64_t ra
     }
   }
 
-#if OODLE_STATIC
-  CMP_Ctx static_sdk = {0};
-  static_sdk.sdk_type = CMP_SdkType_Oodle2;
-  if (cmp == 0) { cmp = &static_sdk; }
-#endif
-
-  if (cmp == 0 || cmp->sdk_type != CMP_SdkType_Oodle2) {
-    error = "invalid encoder input or compression SDK";
-    goto exit;
-  }
-
   U64            directory_end = sizeof(RADCOBJ_Header) + segments_count * sizeof(RADCOBJ_Segment);
   U64            metadata_end  = directory_end;
   RADCOBJ_Header header        = {0};
@@ -470,7 +464,7 @@ radcobj_encode(CMP_Ctx *cmp, uint32_t segment_size, const void *raw, uint64_t ra
   }
 
   U64 capacity   = metadata_end;
-  U64 full_bound = full_count ? cmp_bound(cmp, segment_size) : 0;
+  U64 full_bound = full_count ? cmp->bound(cmp->user, segment_size) : 0;
   if (full_count) {
     if (full_bound == 0) {
       error = "failed to size encoded segment";
@@ -487,7 +481,7 @@ radcobj_encode(CMP_Ctx *cmp, uint32_t segment_size, const void *raw, uint64_t ra
     capacity += full_count * full_bound;
   }
 
-  U64 tail_bound = tail_size ? cmp_bound(cmp, tail_size) : 0;
+  U64 tail_bound = tail_size ? cmp->bound(cmp->user, tail_size) : 0;
   if (tail_size) {
     if (tail_bound == 0) {
       error = "failed to size encoded tail segment";
@@ -575,7 +569,7 @@ radcobj_encode(CMP_Ctx *cmp, uint32_t segment_size, const void *raw, uint64_t ra
     U64     encode_size     = src_size;
     if ( ! store_raw) {
       String8 encoded_segment = { output + cursor, bound_size };
-      encode_size = cmp_encode(cmp, src, encoded_segment);
+      encode_size = cmp->encode(cmp->user, encoded_segment.str, encoded_segment.size, src.str, src.size);
       if (encode_size == 0 || encode_size > bound_size) {
         allocator->free(allocator->user, output);
         error = "failed to encode RADCOBJ segment";
@@ -595,7 +589,8 @@ radcobj_encode(CMP_Ctx *cmp, uint32_t segment_size, const void *raw, uint64_t ra
     cursor = (U64)segment.offset + segment.size;
   }
 
-  MemoryCopy(&header.magic, RADCOBJ_MAGIC, sizeof(header.magic));
+  const uint64_t magic = RADCOBJ_MAGIC;
+  MemoryCopy(&header.magic, &magic, sizeof(header.magic));
   header.version                  = RADCOBJ_VERSION;
   header.compressor.raw_size      = raw_size;
   header.compressor.segment_size  = segment_size;
@@ -616,16 +611,10 @@ exit:
 }
 
 internal const char *
-radcobj_decode_range_from_header(CMP_Ctx *cmp, const void *data, uint64_t size, const RADCOBJ_Header *header, uint64_t first, uint64_t count, void *output, uint64_t output_capacity, const RADCOBJ_Allocator *allocator)
+radcobj_decode_range_from_header(const RADCOBJ_Compressor *cmp, const void *data, uint64_t size, const RADCOBJ_Header *header, uint64_t first, uint64_t count, void *output, uint64_t output_capacity, const RADCOBJ_Allocator *allocator)
 {
   const char *error = radcobj_validate_segments(data, size, header, first, count);
   if (error) { return error; }
-
-#if OODLE_STATIC
-  CMP_Ctx static_sdk = {0};
-  static_sdk.sdk_type = CMP_SdkType_Oodle2;
-  if (!cmp) { cmp = &static_sdk; }
-#endif
 
   if (output_capacity > SIZE_MAX) {
     return "decode output capacity exceeds the address-space limit";
@@ -651,6 +640,7 @@ radcobj_decode_range_from_header(CMP_Ctx *cmp, const void *data, uint64_t size, 
   }
 
   String8 scratch = {0};
+  B32 decoder_ready = 0;
   const U8 *bytes = data;
   for (U64 i = first; i < first + count; i += 1) {
     RADCOBJ_Segment segment;
@@ -663,29 +653,32 @@ radcobj_decode_range_from_header(CMP_Ctx *cmp, const void *data, uint64_t size, 
     if (segment.flags & RADCOBJ_SegmentFlag_Uncompressed) {
       MemoryCopy(dst.str, src.str, dst.size);
     } else {
-      // raw-only ranges need neither an SDK context nor a scratch allocator
-      if (scratch.str == NULL) {
-        if (cmp == NULL || cmp->sdk_type != header->compressor.sdk_type) {
+      // raw-only ranges need neither a compressor nor a scratch allocator
+      if ( ! decoder_ready) {
+        if (cmp == NULL || cmp->decode == NULL || cmp->sdk_type != header->compressor.sdk_type) {
           error = "compression SDK does not match the object";
           break;
         }
-        if (allocator == NULL || allocator->alloc == NULL || allocator->free == NULL) {
-          error = "invalid decoder scratch allocator";
-          break;
-        }
-        U64 scratch_size = cmp_scratch(cmp, header->compressor.segment_size);
-        if (scratch_size == 0 || scratch_size > SIZE_MAX) {
+        U64 scratch_size = cmp->scratch ? cmp->scratch(cmp->user, header->compressor.segment_size) : 0;
+        if (scratch_size == UINT64_MAX || scratch_size > SIZE_MAX) {
           error = "failed to size decoder scratch";
           break;
         }
-        scratch.str = allocator->alloc(allocator->user, (size_t)scratch_size);
-        if (scratch.str == NULL) {
-          error = "failed to allocate decoder scratch";
-          break;
+        if (scratch_size) {
+          if (allocator == NULL || allocator->alloc == NULL || allocator->free == NULL) {
+            error = "invalid decoder scratch allocator";
+            break;
+          }
+          scratch.str = allocator->alloc(allocator->user, (size_t)scratch_size);
+          if (scratch.str == NULL) {
+            error = "failed to allocate decoder scratch";
+            break;
+          }
         }
         scratch.size = scratch_size;
+        decoder_ready = 1;
       }
-      if ( ! cmp_decode(cmp, src, dst, scratch)) {
+      if (cmp->decode(cmp->user, dst.str, dst.size, src.str, src.size, scratch.str, scratch.size) != dst.size) {
         error = "failed to decode RADCOBJ segment";
         break;
       }
@@ -697,7 +690,7 @@ radcobj_decode_range_from_header(CMP_Ctx *cmp, const void *data, uint64_t size, 
 }
 
 const char *
-radcobj_decode_range(CMP_Ctx *cmp, const void *data, uint64_t size, uint64_t first_segment, uint64_t segment_count, void *output, uint64_t output_capacity, const RADCOBJ_Allocator *allocator)
+radcobj_decode_range(const RADCOBJ_Compressor *cmp, const void *data, uint64_t size, uint64_t first_segment, uint64_t segment_count, void *output, uint64_t output_capacity, const RADCOBJ_Allocator *allocator)
 {
   RADCOBJ_Header header;
   const char *error = radcobj_validate_header(data, size, &header);
@@ -706,7 +699,7 @@ radcobj_decode_range(CMP_Ctx *cmp, const void *data, uint64_t size, uint64_t fir
 }
 
 const char *
-radcobj_decode(CMP_Ctx *cmp, const void *data, uint64_t size, void *output, uint64_t output_capacity, const RADCOBJ_Allocator *allocator)
+radcobj_decode(const RADCOBJ_Compressor *cmp, const void *data, uint64_t size, void *output, uint64_t output_capacity, const RADCOBJ_Allocator *allocator)
 {
   RADCOBJ_Header header;
   const char *error = radcobj_validate_header(data, size, &header);

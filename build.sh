@@ -82,7 +82,6 @@ if [[ ! -f "build/blake3.a" ]]; then
 fi
 
 # --- Set up Oodle SDK -------------------------------------------------------
-if [[ "${radcobj:-0}" == "1" ]]; then oodle=1; fi
 if [[ "${oodle:-0}" == "1" ]]; then
   oodle_sdk_path="${OODLE_SDK_DIR:-}"
   if [[ -z "$oodle_sdk_path" ]]; then
@@ -123,7 +122,7 @@ fi
 cd build
 if [[ "${radcobj:-0}" == "1" ]]; then
   didbuild=1
-  $compile "${oodle_flags[@]}" -DOODLE_STATIC=1 -fPIC -c ../src/linker/radcobj_main.c -o radcobj.o
+  $compile "${oodle_flags[@]}" -fPIC -c ../src/linker/radcobj_main.c -o radcobj.o
   $ar rcs libradcobj.a radcobj.o
 fi
 if [[ "${raddbg:-0}"               == "1" ]]; then didbuild=1 && compile ../src/raddbg/raddbg_main.c $cc_icon $cc_link $cc_os_gfx $cc_render $cc_font_provider -o raddbg; fi

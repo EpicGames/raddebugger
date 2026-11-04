@@ -160,7 +160,6 @@ if not exist build\blake3.lib if "%VSCMD_ARG_TGT_ARCH%" equ "x64" (
 )
 
 :: --- Set up Oodle SDK -------------------------------------------------------
-if "%radcobj%"=="1" set oodle=1
 if "%oodle%"=="1" (
   set "oodle_sdk_path=%OODLE_SDK_DIR%"
   if not defined oodle_sdk_path (
@@ -223,7 +222,7 @@ if "%radcobj%"=="1" (
   set didbuild=1
   set radcobj_crt=
   if "%msvc%"=="1" set radcobj_crt=/Zl
-  %compile% !radcobj_crt! -DOODLE_STATIC=1 %only_compile% ..\src\linker\radcobj_main.c %obj_out%radcobj.obj || exit /b 1
+  %compile% !radcobj_crt! %only_compile% ..\src\linker\radcobj_main.c %obj_out%radcobj.obj || exit /b 1
   %~dp0build\prelink.exe /nod /include:radcobj_match_magic /include:radcobj_validate /include:radcobj_encode /include:radcobj_decode_range /include:radcobj_decode /include:radcobj_raw_view %~dp0build\radcobj.obj /out:prelink.radcobj.obj || exit /b1
   %mklib% -out:radcobj.lib %~dp0build\prelink.radcobj.obj || exit /b 1
 )

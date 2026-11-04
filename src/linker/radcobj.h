@@ -7,8 +7,8 @@
 #include <stdint.h>
 #include <stddef.h>
 
-#define RADCOBJ_MAGIC "RADCOBJ\0"
-#define RADCOBJ_VERSION 1
+#define RADCOBJ_MAGIC 0x524144434f424a00ull // "RADCOBJ\0"
+#define RADCOBJ_VERSION 2
 #define RADCOBJ_MIN_SEGMENT_SIZE 4096
 #define RADCOBJ_SDK_OODLE2 1
 
@@ -93,8 +93,6 @@ typedef struct RADCOBJ_DebugSSubsection
 extern "C" {
 #endif
 
-struct CMP_Ctx;
-
 typedef struct RADCOBJ_Allocator
 {
   void *user;
@@ -102,11 +100,21 @@ typedef struct RADCOBJ_Allocator
   void  (*free)(void *user, void *memory);
 } RADCOBJ_Allocator;
 
+typedef struct RADCOBJ_Compressor
+{
+  uint64_t (*bound)(void *user, uint64_t size);
+  uint64_t (*scratch)(void *user, uint64_t size);
+  uint64_t (*decode)(void *user, void *dst, uint64_t dst_size, const void *src, uint64_t src_size, void *scratch, uint64_t scratch_size);
+  uint64_t (*encode)(void *user, void *dst, uint64_t dst_size, const void *src, uint64_t src_size);
+  void *user;
+  uint32_t sdk_type; // format identifier stored in the object and checked when decoding; RADCOBJ_SDK_OODLE2 is reserved for Oodle2
+} RADCOBJ_Compressor;
+
 int radcobj_match_magic(const void *data, uint64_t size);
 const char *radcobj_validate(const void *data, uint64_t size, RADCOBJ_Header *header_out);
-const char *radcobj_encode(struct CMP_Ctx *sdk, uint32_t segment_size, const void *raw, uint64_t raw_size, void **output, uint64_t *output_size, const RADCOBJ_Allocator *allocator);
-const char *radcobj_decode(struct CMP_Ctx *sdk, const void *data, uint64_t size, void *output, uint64_t output_capacity, const RADCOBJ_Allocator *allocator);
-const char *radcobj_decode_range(struct CMP_Ctx *sdk, const void *data, uint64_t size, uint64_t first_segment, uint64_t segment_count, void *output, uint64_t output_capacity, const RADCOBJ_Allocator *allocator);
+const char *radcobj_encode(const RADCOBJ_Compressor *cmp, uint32_t segment_size, const void *raw, uint64_t raw_size, void **output, uint64_t *output_size, const RADCOBJ_Allocator *allocator);
+const char *radcobj_decode(const RADCOBJ_Compressor *cmp, const void *data, uint64_t size, void *output, uint64_t output_capacity, const RADCOBJ_Allocator *allocator);
+const char *radcobj_decode_range(const RADCOBJ_Compressor *cmp, const void *data, uint64_t size, uint64_t first_segment, uint64_t segment_count, void *output, uint64_t output_capacity, const RADCOBJ_Allocator *allocator);
 const char *radcobj_raw_view(const void *data, uint64_t size, uint64_t raw_offset, uint64_t raw_size, const void **output);
 
 #ifdef __cplusplus
