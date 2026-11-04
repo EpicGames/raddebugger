@@ -3177,7 +3177,7 @@ rd_view_ui(Rng2F32 rect)
                 {
                   for EachEnumVal(Axis2, axis)
                   {
-                    cursor_tbl.v[axis] = (delta.v[0]>0 ? cursor_tbl_range.max.v[axis] : delta.v[0]<0 ? cursor_tbl_range.min.v[axis] + !!cursor_tbl_min_is_empty_selection[axis] : cursor_tbl.v[axis]);
+                    cursor_tbl.v[axis] = (delta.v[axis]>0 ? cursor_tbl_range.max.v[axis] : delta.v[axis]<0 ? cursor_tbl_range.min.v[axis] + !!cursor_tbl_min_is_empty_selection[axis] : cursor_tbl.v[axis]);
                   }
                 }break;
               }
@@ -15460,12 +15460,12 @@ rd_frame(void)
           case RD_CmdKind_TabBarTop:
           {
             CFG_Node *panel = cfg_node_from_id(rd_regs()->panel);
-            cfg_node_release(rd_state->cfg, cfg_node_child_from_string(panel, str8_lit("tabs_on_bottom")));
+            cfg_node_release(rd_state->cfg, cfg_node_child_from_string(panel, s("tabs_on_bottom")));
           }break;
           case RD_CmdKind_TabBarBottom:
           {
             CFG_Node *panel = cfg_node_from_id(rd_regs()->panel);
-            cfg_node_child_from_string_or_alloc(rd_state->cfg, panel, str8_lit("tabs_on_bottom"));
+            cfg_node_child_from_string_or_alloc(rd_state->cfg, panel, s("tabs_on_bottom"));
           }break;
           case RD_CmdKind_TabSettings:
           {
@@ -15481,7 +15481,7 @@ rd_frame(void)
             FileProperties props = properties_from_file_path(path);
             if(props.created != 0)
             {
-              rd_cmd(RD_CmdKind_BuildTab, .string = str8_lit("pending"), .expr = rd_eval_string_from_file_path(scratch.arena, path));
+              rd_cmd(RD_CmdKind_BuildTab, .string = s("pending"), .expr = rd_eval_string_from_file_path(scratch.arena, path));
             }
             else
             {
