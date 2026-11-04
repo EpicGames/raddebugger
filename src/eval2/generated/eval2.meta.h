@@ -149,6 +149,7 @@ E2_ExprKind expr_kind;
 E2_ExprParseKind parse_kind;
 S64 precedence;
 B8 reverse_children;
+B8 trailing_identifier;
 String8 pre;
 String8 sep;
 String8 post;

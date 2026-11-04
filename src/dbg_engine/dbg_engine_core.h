@@ -5,17 +5,58 @@
 #define DBG_ENGINE_CORE_H
 
 ////////////////////////////////
-//~ rjf: @eval2 Evaluation Bundle
+//~ rjf: @eval2 Evaluation Types
+
+typedef U64 D_EvalID;
+
+typedef struct D_EvalIDNode D_EvalIDNode;
+struct D_EvalIDNode
+{
+  D_EvalIDNode *next;
+  D_EvalID v;
+};
 
 typedef struct D_Eval D_Eval;
 struct D_Eval
 {
+  D_EvalID id;
+  D_EvalID parent_id;
   String8 string;
   E2_Expr *expr;
   E2_IRNode *irtree;
   String8 bytecode;
   E2_Val val;
   E2_MsgList msgs;
+};
+
+typedef struct D_EvalNode D_EvalNode;
+struct D_EvalNode
+{
+  D_EvalNode *string_next;
+  D_EvalNode *id_next;
+  D_Eval eval;
+};
+
+typedef struct D_EvalSlot D_EvalSlot;
+struct D_EvalSlot
+{
+  D_EvalNode *first;
+  D_EvalNode *last;
+};
+
+typedef struct D_EvalCache D_EvalCache;
+struct D_EvalCache
+{
+  Arena *arena;
+  U64 arena_eval_start_pos;
+  D_EvalID id_gen;
+  U64 slots_count;
+  D_EvalSlot *string_slots;
+  D_EvalSlot *id_slots;
+  D_EvalIDNode nil_parent;
+  D_EvalIDNode *top_parent;
+  D_EvalIDNode *free_parent;
+  E2_ConsTypeMap *cons_type_map;
 };
 
 ////////////////////////////////
@@ -355,7 +396,11 @@ struct D_TrapNet
 ////////////////////////////////
 //~ rjf: @eval2 Bundled Evaluation Path
 
-internal D_Eval d_eval_from_string(Arena *arena, String8 string);
+internal D_EvalCache *d_eval_cache_alloc(void);
+internal void d_eval_cache_select(D_EvalCache *cache);
+internal D_EvalID d_eval_push_parent(D_EvalID id);
+internal D_EvalID d_eval_pop_parent(void);
+internal D_Eval d_eval_from_string(String8 string);
 
 ////////////////////////////////
 //~ rjf: Layer Initialization

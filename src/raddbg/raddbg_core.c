@@ -4457,7 +4457,7 @@ rd_view_ui(Rng2F32 rect)
                           if(ui_hovering(sig) && row_depth == 0) UI_Tooltip RD_Font(RD_FontSlot_Code)
                           {
                             String8 expr = cell->eval.string;
-                            D_Eval eval = d_eval_from_string(scratch.arena, expr);
+                            D_Eval eval = d_eval_from_string(expr);
                             String8 indent = s("                                                                ");
                             
                             // rjf: log string
@@ -4487,7 +4487,19 @@ rd_view_ui(Rng2F32 rect)
                                 if(top_task->last_child == 0)
                                 {
                                   String8 expr_kind_name = e2_expr_kind_string_table[expr->kind];
-                                  ui_labelf("%.*s%S", top_task->depth, indent.str, expr_kind_name);
+                                  String8 string_ext = {0};
+                                  if(expr->string.size != 0)
+                                  {
+                                    string_ext = sf(" \"%S\"", expr->string);
+                                  }
+                                  ui_labelf("%.*s%S%S", top_task->depth, indent.str, expr_kind_name, string_ext);
+                                  if(expr->kind == E2_ExprKind_Identifier)
+                                  {
+                                    for EachNode(n, String8Node, expr->qualifiers.first)
+                                    {
+                                      ui_labelf("%.*squalifier: %S", top_task->depth+1, indent.str, n->string);
+                                    }
+                                  }
                                 }
                                 
                                 // rjf: try to push a child
@@ -11460,6 +11472,7 @@ rd_init(CmdLine *cmdln)
   rd_state->num_frames_requested = 2;
   rd_state->seconds_until_autosave = 0.5f;
   rd_state->eval_cache = e_cache_alloc();
+  rd_state->eval2_cache = d_eval_cache_alloc();
   for(U64 idx = 0; idx < ArrayCount(rd_state->cmds_arenas); idx += 1)
   {
     rd_state->cmds_arenas[idx] = arena_alloc();
@@ -13522,6 +13535,11 @@ rd_frame(void)
       ctx->cfa                         = d_cached_cfa_from_thread_unwind(thread, unwind_count);
     }
     e_select_interpret_ctx(interpret_ctx, eval_dbg_infos_primary->rdi, rip_voff);
+    
+    ////////////////////////////
+    //- rjf: begin evaluation @eval2
+    //
+    d_eval_cache_select(rd_state->eval2_cache);
     
     ////////////////////////////
     //- rjf: evaluate unpacked settings (must be used earlier than this point in the frame,

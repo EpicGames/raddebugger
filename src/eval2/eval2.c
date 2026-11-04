@@ -225,12 +225,21 @@ e2_select_assets(E2_Assets *assets)
 }
 
 internal E2_DbgInfo *
-e2_dbgi_from_num(U32 num)
+e2_dbgi_from_id(E2_DbgInfoID id)
 {
   E2_DbgInfo *result = &e2_dbg_info_nil;
-  if(0 < num && num <= e2_assets->dbg_infos_count)
+  if(e2_assets->dbg_infos_count != 0)
   {
-    result = &e2_assets->dbg_infos[num-1];
+    U32 start_idx = id%e2_assets->dbg_infos_count;
+    for EachIndex(scan_idx, e2_assets->dbg_infos_count)
+    {
+      U32 idx = (start_idx+scan_idx)%e2_assets->dbg_infos_count;
+      if(e2_assets->dbg_infos[idx].id == id)
+      {
+        result = &e2_assets->dbg_infos[idx];
+        break;
+      }
+    }
   }
   return result;
 }
@@ -579,11 +588,11 @@ e2_type_key_basic(E2_TypeKind kind)
 }
 
 internal E2_TypeKey
-e2_type_key_dbgi(E2_TypeKind kind, U32 dbg_info_num, U32 type_idx)
+e2_type_key_dbgi(E2_TypeKind kind, E2_DbgInfoID dbg_info_id, U32 type_idx)
 {
   E2_TypeKey key = {E2_TypeKeyKind_DbgInfo};
   key.u32[0] = kind;
-  key.u32[1] = dbg_info_num;
+  key.u32[1] = dbg_info_id;
   key.u32[2] = type_idx;
   return key;
 }
@@ -678,10 +687,10 @@ e2_byte_size_from_type_key(E2_TypeKey k)
   return result;
 }
 
-internal U32
-e2_dbgi_num_from_type_key(E2_TypeKey k)
+internal E2_DbgInfoID
+e2_dbgi_id_from_type_key(E2_TypeKey k)
 {
-  U32 result = 0;
+  E2_DbgInfoID result = 0;
   if(k.kind == E2_TypeKeyKind_DbgInfo)
   {
     result = k.u32[1];
@@ -692,8 +701,8 @@ e2_dbgi_num_from_type_key(E2_TypeKey k)
 internal E2_DbgInfo *
 e2_dbgi_from_type_key(E2_TypeKey k)
 {
-  U32 dbgi_num = e2_dbgi_num_from_type_key(k);
-  E2_DbgInfo *dbg_info = e2_dbgi_from_num(dbgi_num);
+  E2_DbgInfoID dbgi_id = e2_dbgi_id_from_type_key(k);
+  E2_DbgInfo *dbg_info = e2_dbgi_from_id(dbgi_id);
   return dbg_info;
 }
 
@@ -1080,9 +1089,9 @@ e2_type_deep_match(E2_TypeKey l, E2_TypeKey r)
            kind == E2_TypeKind_Class ||
            kind == E2_TypeKind_Enum)
         {
-          U32 dbgi_num = e2_dbgi_num_from_type_key(key);
+          E2_DbgInfoID dbgi_id = e2_dbgi_id_from_type_key(key);
           U32 type_idx = e2_dbgi_type_idx_from_key(key);
-          E2_DbgInfo *dbgi = e2_dbgi_from_num(dbgi_num);
+          E2_DbgInfo *dbgi = e2_dbgi_from_id(dbgi_id);
           RDI_TypeNode *type_node = rdi_element_from_name_idx(dbgi->rdi, TypeNodes, type_idx);
           String8 name = str8_from_rdi_string_idx(dbgi->rdi, type_node->user_defined.name_string_idx);
           hash_ptrs[key_idx][0] = u64_hash_from_seed_str8(hash_ptrs[key_idx][0], name);
@@ -1106,7 +1115,7 @@ e2_type_deep_match(E2_TypeKey l, E2_TypeKey r)
               member_task = push_array_no_zero(scratch.arena, Task, 1);
             }
             MemoryZeroStruct(&member_task);
-            member_task->k = e2_type_key_dbgi(e2_type_kind_from_rdi(member_type_node->kind), dbgi_num, member->type_idx);
+            member_task->k = e2_type_key_dbgi(e2_type_kind_from_rdi(member_type_node->kind), dbgi_id, member->type_idx);
             SLLStackPush(task_tops[key_idx][0], member_task);
           }
         }
@@ -1137,9 +1146,9 @@ e2_type_key_direct(E2_TypeKey k)
     case E2_TypeKeyKind_Basic:{}break;
     case E2_TypeKeyKind_DbgInfo:
     {
-      U32 dbgi_num = e2_dbgi_num_from_type_key(k);
+      E2_DbgInfoID dbgi_id = e2_dbgi_id_from_type_key(k);
       U32 dbgi_type_idx = e2_dbgi_type_idx_from_key(k);
-      E2_DbgInfo *dbgi = e2_dbgi_from_num(dbgi_num);
+      E2_DbgInfo *dbgi = e2_dbgi_from_id(dbgi_id);
       RDI_TypeNode *type_node = rdi_element_from_name_idx(dbgi->rdi, TypeNodes, dbgi_type_idx);
       U32 direct_type_idx = 0;
       if(RDI_TypeKind_FirstConstructed <= type_node->kind && type_node->kind <= RDI_TypeKind_LastConstructed)
@@ -1154,7 +1163,7 @@ e2_type_key_direct(E2_TypeKey k)
       {
         direct_type_idx = type_node->bitfield.direct_type_idx;
       }
-      result = e2_type_key_dbgi(e2_type_kind_from_rdi(type_node->kind), dbgi_num, direct_type_idx);
+      result = e2_type_key_dbgi(e2_type_kind_from_rdi(type_node->kind), dbgi_id, direct_type_idx);
     }break;
     case E2_TypeKeyKind_Cons:
     {
@@ -1179,12 +1188,12 @@ e2_type_key_owner(E2_TypeKey k)
       case E2_TypeKeyKind_Basic:{}break;
       case E2_TypeKeyKind_DbgInfo:
       {
-        U32 dbgi_num = e2_dbgi_num_from_type_key(k);
+        E2_DbgInfoID dbgi_id = e2_dbgi_id_from_type_key(k);
         U32 dbgi_type_idx = e2_dbgi_type_idx_from_key(k);
-        E2_DbgInfo *dbgi = e2_dbgi_from_num(dbgi_num);
+        E2_DbgInfo *dbgi = e2_dbgi_from_id(dbgi_id);
         RDI_TypeNode *type_node = rdi_element_from_name_idx(dbgi->rdi, TypeNodes, dbgi_type_idx);
         U32 owner_type_idx = type_node->constructed.owner_type_idx;
-        result = e2_type_key_dbgi(e2_type_kind_from_rdi(type_node->kind), dbgi_num, owner_type_idx);
+        result = e2_type_key_dbgi(e2_type_kind_from_rdi(type_node->kind), dbgi_id, owner_type_idx);
       }break;
       case E2_TypeKeyKind_Cons:{}break;
       case E2_TypeKeyKind_Reg:{}break;
@@ -1916,20 +1925,6 @@ e2_parse_from_string(Arena *arena, E2_ParseState *state, B32 identifier_is_type,
       }
     }
     
-    //- rjf: identifiers with an active dot op kind -> member access
-    else if(need_new_expr && state->top_task->expr_kind == E2_ExprKind_Dot && e2_try_token(lang, string, E2_TokenKind_Identifier, s(""), &off, &token))
-    {
-      expr = e2_expr(arena, E2_ExprKind_Dot);
-      expr->first_child = state->top_task->first_child;
-      expr->last_child  = state->top_task->last_child;
-      expr->child_count = state->top_task->child_count;
-      expr->src_range   = state->top_task->src_range;
-      expr->string      = str8_substr(string, token.range);
-      E2_ParseTask *task = state->top_task;
-      SLLStackPop(state->top_task);
-      SLLStackPush(state->free_task, task);
-    }
-    
     //- rjf: standalone identifiers (also could be definition or operator keyword)
     else if(need_new_expr && e2_try_token(lang, string, E2_TokenKind_Identifier, s(""), &off, &token))
     {
@@ -2271,6 +2266,7 @@ e2_parse_from_string(Arena *arena, E2_ParseState *state, B32 identifier_is_type,
         B32 splitter_is_required = 0;
         S64 precedence = 0;
         B32 reverse_children = 0;
+        B32 trailing_identifier = 0;
         {
           String8 token_string = str8_substr(string, token.range);
           for EachIndex(idx, lang_info->expr_kind_parse_infos_count)
@@ -2285,10 +2281,20 @@ e2_parse_from_string(Arena *arena, E2_ParseState *state, B32 identifier_is_type,
               expr_kind = expr_kind_info->expr_kind;
               precedence = expr_kind_info->precedence;
               reverse_children = expr_kind_info->reverse_children;
+              trailing_identifier = expr_kind_info->trailing_identifier;
               child_count_target = e2_expr_kind_target_operand_count_table[expr_kind];
               break;
             }
           }
+        }
+        
+        // rjf: get trailing identifier
+        String8 trailing_identifier_string = {0};
+        if(trailing_identifier)
+        {
+          E2_Token trailing_identifier_token = {E2_TokenKind_Null};
+          e2_try_token(lang, string, E2_TokenKind_Identifier, s(""), &trailing_symbol_off, &trailing_identifier_token);
+          trailing_identifier_string = str8_substr(string, trailing_identifier_token.range);
         }
         
         // rjf: non-null operator kind -> push task to fill other children of this operator node
@@ -2314,6 +2320,7 @@ e2_parse_from_string(Arena *arena, E2_ParseState *state, B32 identifier_is_type,
           task->splitter_min_child_count = 2;
           task->expected_closer = closer;
           task->splitter_is_required = splitter_is_required;
+          task->identifier = trailing_identifier_string;
           SLLStackPush(state->top_task, task);
           off = trailing_symbol_off;
         }
@@ -2466,6 +2473,7 @@ e2_parse_from_string(Arena *arena, E2_ParseState *state, B32 identifier_is_type,
             finished_root->last_child = completed_task->last_child;
             finished_root->child_count = completed_task->child_count;
             finished_root->src_range = completed_task->src_range;
+            finished_root->string = completed_task->identifier;
           }
         }
         
@@ -3488,9 +3496,17 @@ e2_compile_from_expr(Arena *arena, E2_CompileState *state, E2_IRNode *resolve_re
     {
       if(state->caller_request_count > 0)
       {
-        if(compile.status == E2_CompileStatus_MissedIdentifierResolution)
+        switch(compile.status)
         {
-          e2_msgf(arena, &compile.msgs, state->top_task->expr->src_range, "`%S` couldn't be resolved.", compile.identifier);
+          default:{}break;
+          case E2_CompileStatus_MissedIdentifierResolution:
+          {
+            e2_msgf(arena, &compile.msgs, state->top_task->expr->src_range, "`%S` couldn't be resolved.", compile.identifier);
+          }break;
+          case E2_CompileStatus_MemberAccess:
+          {
+            e2_msgf(arena, &compile.msgs, state->top_task->expr->src_range, "Couldn't find member named `%S`.", compile.member_name);
+          }break;
         }
         compile.status = E2_CompileStatus_Error;
       }
