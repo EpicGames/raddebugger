@@ -276,16 +276,16 @@ lnx_wm_key_from_keysym(KeySym ks, B32 *out_is_right_sided)
     case XK_KP_7:{key = WM_Key_Num7;}break;
     case XK_KP_8:{key = WM_Key_Num8;}break;
     case XK_KP_9:{key = WM_Key_Num9;}break;
-    case '-':{key = WM_Key_Minus;}break;
-    case '=':{key = WM_Key_Equal;}break;
-    case '[':{key = WM_Key_LeftBracket;}break;
-    case ']':{key = WM_Key_RightBracket;}break;
-    case ';':{key = WM_Key_Semicolon;}break;
-    case '\'':{key = WM_Key_Quote;}break;
-    case '.':{key = WM_Key_Period;}break;
-    case ',':{key = WM_Key_Comma;}break;
-    case '/':{key = WM_Key_Slash;}break;
-    case '\\':{key = WM_Key_BackSlash;}break;
+    case '-':case '_':{key = WM_Key_Minus;}break;
+    case '=':case '+':{key = WM_Key_Equal;}break;
+    case '[':case '{':{key = WM_Key_LeftBracket;}break;
+    case ']':case '}':{key = WM_Key_RightBracket;}break;
+    case ';':case ':':{key = WM_Key_Semicolon;}break;
+    case '\'':case '"':{key = WM_Key_Quote;}break;
+    case '.':case '>':{key = WM_Key_Period;}break;
+    case ',':case '<':{key = WM_Key_Comma;}break;
+    case '/':case '?':{key = WM_Key_Slash;}break;
+    case '\\':case '|':{key = WM_Key_BackSlash;}break;
     case '\t':{key = WM_Key_Tab;}break;
     case 'a':case 'A':{key = WM_Key_A;}break;
     case 'b':case 'B':{key = WM_Key_B;}break;
@@ -314,7 +314,17 @@ lnx_wm_key_from_keysym(KeySym ks, B32 *out_is_right_sided)
     case 'y':case 'Y':{key = WM_Key_Y;}break;
     case 'z':case 'Z':{key = WM_Key_Z;}break;
     case ' ':{key = WM_Key_Space;}break;
-    case '`':{key = WM_Key_Tick;}break;
+    case '`':case '~':{key = WM_Key_Tick;}break;
+    case '!':{key = WM_Key_1;}break;
+    case '@':{key = WM_Key_2;}break;
+    case '#':{key = WM_Key_3;}break;
+    case '$':{key = WM_Key_4;}break;
+    case '%':{key = WM_Key_5;}break;
+    case '^':{key = WM_Key_6;}break;
+    case '&':{key = WM_Key_7;}break;
+    case '*':{key = WM_Key_8;}break;
+    case '(':{key = WM_Key_9;}break;
+    case ')':{key = WM_Key_0;}break;
   }
   if(out_is_right_sided)
   {
