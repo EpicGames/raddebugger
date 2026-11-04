@@ -5,6 +5,15 @@
 #define LINUX_DEMON_H
 
 ////////////////////////////////
+//~ rjf: Implicit Layer Dependencies
+
+#include "elf/elf.h"
+#include "gnu/gnu.h"
+#include "gnu/gnu_parse.h"
+#include "elf/elf_parse.h"
+#include "stap/stap_parse.h"
+
+////////////////////////////////
 //~ rjf: Linux Includes
 
 #include <sys/ptrace.h>

@@ -1,6 +1,9 @@
 // Copyright (c) Epic Games Tools
 // Licensed under the MIT license (https://opensource.org/license/mit/)
 
+#ifndef ELF_PARSE_C
+#define ELF_PARSE_C
+
 //- rjf: top-level binary parsing
 
 internal ELF_Bin
@@ -209,3 +212,5 @@ elf_parse_note(Arena *arena, String8 raw_note, ELF_Class elf_class, ELF_MachineK
   exit:;
   return result;
 }
+
+#endif // ELF_PARSE_C

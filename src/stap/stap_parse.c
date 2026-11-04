@@ -1,6 +1,9 @@
 // Copyright (c) Epic Games Tools
 // Licensed under the MIT license (https://opensource.org/license/mit/)
 
+#ifndef STAP_PARSE_C
+#define STAP_PARSE_C
+
 internal B32
 stap_is_scale_valid(U64 scale)
 {
@@ -399,3 +402,4 @@ stap_arg_array_copy(Arena *arena, STAP_ArgArray arr)
   return result;
 }
 
+#endif // STAP_PARSE_H

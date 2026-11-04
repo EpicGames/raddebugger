@@ -2,6 +2,13 @@
 // Licensed under the MIT license (https://opensource.org/license/mit/)
 
 ////////////////////////////////
+//~ rjf: Implicit Layer Dependencies
+
+#include "coff/coff.c"
+#include "coff/coff_parse.c"
+#include "pe/pe.c"
+
+////////////////////////////////
 //~ rjf: Entity Helpers
 
 //- rjf: entity <-> handle

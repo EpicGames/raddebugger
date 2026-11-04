@@ -2,6 +2,15 @@
 // Licensed under the MIT license (https://opensource.org/license/mit/)
 
 ////////////////////////////////
+//~ rjf: Implicit Layer Dependencies
+
+#include "elf/elf.c"
+#include "gnu/gnu.c"
+#include "gnu/gnu_parse.c"
+#include "elf/elf_parse.c"
+#include "stap/stap_parse.c"
+
+////////////////////////////////
 //~ rjf: Generated Code
 
 #include "generated/linux_demon.meta.c"

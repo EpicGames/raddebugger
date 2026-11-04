@@ -1,6 +1,9 @@
 // Copyright (c) Epic Games Tools
 // Licensed under the MIT license (https://opensource.org/license/mit/)
 
+#ifndef COFF_PARSE_C
+#define COFF_PARSE_C
+
 internal B32
 coff_is_big_obj(String8 raw_coff)
 {
@@ -153,7 +156,7 @@ coff_section_header_array_from_name(Arena *arena, String8 string_table, COFF_Sec
       match_count += 1;
     }
   }
-
+  
   COFF_SectionHeader *matches = push_array(arena, COFF_SectionHeader, match_count);
   for (U64 sect_idx = 0, match_idx = 0; sect_idx < section_count; sect_idx += 1) {
     if (str8_match(coff_name_from_section_header(string_table, &section_table[sect_idx]), name, 0)) {
@@ -161,7 +164,7 @@ coff_section_header_array_from_name(Arena *arena, String8 string_table, COFF_Sec
       match_idx += 1;
     }
   }
-
+  
   return (COFF_SectionHeaderArray){ .count = match_count, .v = matches };
 }
 
@@ -356,7 +359,7 @@ coff_parse_secdef(COFF_ParsedSymbol symbol, B32 is_big_obj, COFF_ComdatSelectTyp
 {
   Assert(coff_interp_symbol(symbol.section_number, symbol.value, symbol.storage_class) == COFF_SymbolValueInterp_Regular);
   Assert(symbol.aux_symbol_count > 0);
-
+  
   if (is_big_obj) {
     COFF_SymbolSecDef *sd = (COFF_SymbolSecDef *)((COFF_Symbol32 *)symbol.raw_symbol + 1);
     if (selection_out) *selection_out = sd->selection;
@@ -377,14 +380,14 @@ coff_parse_weak_tag(COFF_ParsedSymbol symbol, B32 is_big_obj)
 {
   Assert(coff_interp_symbol(symbol.section_number, symbol.value, symbol.storage_class) == COFF_SymbolValueInterp_Weak);
   Assert(symbol.aux_symbol_count > 0);
-
+  
   void *tag;
   if (is_big_obj) {
     tag = (COFF_SymbolWeakExt *)((COFF_Symbol32 *)symbol.raw_symbol + 1);
   } else {
     tag = (COFF_SymbolWeakExt *)((COFF_Symbol16 *)symbol.raw_symbol + 1);
   }
-
+  
   return tag;
 }
 
@@ -698,17 +701,17 @@ coff_parse_archive_member_header(String8 raw_archive, U64 offset, COFF_ParsedArc
     String8 mode     = str8_skip_chop_whitespace(str8_cstring_capped(header->mode,     header->mode     + sizeof(header->mode)    ));
     String8 size     = str8_skip_chop_whitespace(str8_cstring_capped(header->size,     header->size     + sizeof(header->size)    ));
     String8 end      = str8_cstring_capped(header->end, header->end + sizeof(header->end));
-
+    
     if ( ! str8_is_integer(size, 10)) { return 0; }
     U64 data_size = u64_from_str8(size, 10);
     if (data_size > max_U32) { return 0; }
-
+    
     U64 time_stamp = 0;
     if (str8_is_integer(date, 10)) {
       time_stamp = u64_from_str8(date, 10);
       if (time_stamp > max_U32) { time_stamp = 0; }
     }
-
+    
     header_out->name           = name;
     header_out->time_stamp     = time_stamp;
     header_out->user_id        = str8_is_integer(user_id, 10) ? u32_from_str8(user_id, 10)  : 0;
@@ -836,7 +839,7 @@ coff_parse_short_import(String8 raw_archive_member, U64 offset, COFF_ShortImport
   if (offset > raw_archive_member.size || sizeof(COFF_ImportHeader) > raw_archive_member.size - offset) {
     return 0;
   }
-
+  
   COFF_ImportHeader *header = str8_deserial_get_raw_ptr(raw_archive_member, offset, sizeof(*header));
   if (header == NULL ||
       !coff_is_import(str8_skip(raw_archive_member, offset)) ||
@@ -844,16 +847,16 @@ coff_parse_short_import(String8 raw_archive_member, U64 offset, COFF_ShortImport
       COFF_ImportHeader_ExtractType(header->flags) > COFF_ImportHeader_Const) {
     return 0;
   }
-
+  
   String8 strings    = str8_substr(raw_archive_member, r1u64(offset + sizeof(*header), offset + sizeof(*header) + header->data_size));
   U64     name_end   = str8_find_needle(strings, 0, str8_lit("\0"), 0);
   U64     dll_end    = name_end < strings.size ? str8_find_needle(strings, name_end + 1, str8_lit("\0"), 0) : strings.size;
   U64     export_end = dll_end < strings.size ? str8_find_needle(strings, dll_end + 1, str8_lit("\0"), 0) : strings.size;
-
+  
   if (name_end == 0 || dll_end <= name_end + 1 || dll_end >= strings.size || dll_end + 1 != strings.size) {
     return 0;
   }
-
+  
   header_out->is_sig_correct  = 1;
   header_out->version         = header->version;
   header_out->machine         = header->machine;
@@ -865,7 +868,7 @@ coff_parse_short_import(String8 raw_archive_member, U64 offset, COFF_ShortImport
   header_out->func_name       = str8_prefix(strings, name_end);
   header_out->dll_name        = str8_substr(strings, r1u64(name_end + 1, dll_end));
   header_out->actual_export   = str8_substr(strings, r1u64(dll_end + 1, export_end)); 
-
+  
   return sizeof(*header) + header->data_size;
 }
 
@@ -990,7 +993,7 @@ coff_archive_parse_from_member_list(COFF_ArchiveMemberList member_list)
       }
     }
   }
-
+  
   COFF_ArchiveSecondMember second_member = {0};
   if (ptr) {
     if (str8_match_lit("/", ptr->data.header.name, 0)) {
@@ -1027,7 +1030,7 @@ coff_archive_parse_from_member_list(COFF_ArchiveMemberList member_list)
   parse.long_names        = long_names_member.data;
   parse.error             = error;
   return parse;
-
+  
   error:;
   return (COFF_ArchiveParse){ .error = error };
 }
@@ -1077,3 +1080,4 @@ coff_archive_parse_from_data(String8 raw_archive)
   return null_parse;
 }
 
+#endif // COFF_PARSE_C
