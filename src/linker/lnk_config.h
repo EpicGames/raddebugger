@@ -661,5 +661,5 @@ internal void lnk_whole_archive(LNK_Config *config, String8 lib_name);
 
 internal void lnk_apply_cmd_option_to_config(LNK_Config *config, String8 name, String8 value, struct LNK_Obj *obj);
 internal LNK_Config * lnk_config_init(String8 exe_name, U64 argc, char **argv);
-internal void lnk_config_apply_cmd_line(LNK_Config *config, LNK_CmdLine input_cmd_line);
+internal void lnk_config_apply_cmd_line(LNK_Config *config, String8 exe_name, LNK_CmdLine input_cmd_line);
 

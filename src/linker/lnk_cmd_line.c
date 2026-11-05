@@ -84,8 +84,15 @@ lnk_arg_list_parse_windows_rules(Arena *arena, String8 string)
 internal void
 lnk_cmd_line_push_option_node(LNK_CmdLine *cmd_line, LNK_CmdOption *opt)
 {
-  SLLQueuePush(cmd_line->first_option, cmd_line->last_option, opt);
+  DLLPushBack(cmd_line->first_option, cmd_line->last_option, opt);
   cmd_line->option_count += 1;
+}
+
+internal void
+lnk_cmd_line_remove_option_node(LNK_CmdLine *cmd_line, LNK_CmdOption *opt)
+{
+  DLLRemove(cmd_line->first_option, cmd_line->last_option, opt);
+  cmd_line->option_count -= 1;
 }
 
 internal LNK_CmdOption *

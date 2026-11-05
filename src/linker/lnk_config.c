@@ -1214,38 +1214,24 @@ lnk_apply_write_temp_files(Arena *arena, LNK_Config *config)
 internal void lnk_apply_def_file_to_config(LNK_Config *config, String8 path, LNK_Obj *obj);
 
 internal void
-lnk_apply_cmd_option_to_config(LNK_Config *config, String8 cmd_name, String8 value, LNK_Obj *obj)
+lnk_apply_cmd_option_to_config_ex(LNK_Config *config, LNK_CmdSwitch *cmd, String8 value, LNK_Obj *obj)
 {
   Temp scratch = scratch_begin(&config->arena, 1);
 
-  // find switch that is applied to the config
-  LNK_CmdSwitch cmd_switch_info = {0};
-  for EachElement(i, g_switch_map) {
-    if (g_switch_map[i].tool & config->tool) {
-      if (str8_match_cstr(g_switch_map[i].name, cmd_name, StringMatchFlag_CaseInsensitive)) {
-        cmd_switch_info = g_switch_map[i];
-        break;
-      }
-    }
-  }
-
   // unpack command values
   String8List values = {0};
-  if (cmd_switch_info.value_kind == LNK_CmdValueKind_List) {
+  if (cmd->value_kind == LNK_CmdValueKind_List) {
     values = str8_split_by_string_chars(scratch.arena, value, str8_lit(","), 0);
   }
 
-  LNK_CmdSwitchType cmd_switch = cmd_switch_info.type;
+  LNK_CmdSwitchType cmd_switch = cmd->type;
   switch (cmd_switch) {
-  case LNK_CmdSwitch_Null: {
-    lnk_error_obj(LNK_Warning_UnknownSwitch, obj, "unknown switch: \"/%S%s%S\"", cmd_name, value.size ? ":" : "", value);
-  } break;
-
   default: break;
 
-  case LNK_CmdSwitch_NotImplemented: {
-    lnk_not_implemented("switch \"%S\" is not implemented \"%S\"", cmd_name, value);
-  } break;
+  case LNK_CmdSwitch_Null: { } break;
+
+  // TODO: deprecate
+  case LNK_CmdSwitch_NotImplemented: { InvalidPath; } break;
 
   case LNK_CmdSwitch_Align: {
     lnk_cmd_switch_parse_u64(obj, cmd_switch, value, &config->sect_align, LNK_ParseU64Flag_CheckPow2);
@@ -2446,6 +2432,22 @@ lnk_apply_cmd_option_to_config(LNK_Config *config, String8 cmd_name, String8 val
   scratch_end(scratch);
 }
 
+internal void
+lnk_apply_cmd_option_to_config(LNK_Config *config, String8 cmd_name, String8 value, LNK_Obj *obj)
+{
+  // find switch that is applied to the config
+  for EachElement(i, g_switch_map) {
+    if (g_switch_map[i].tool & config->tool) {
+      if (str8_matchi(str8_cstring(g_switch_map[i].name), cmd_name)) {
+        lnk_apply_cmd_option_to_config_ex(config, &g_switch_map[i], value, obj);
+        goto exit;
+      }
+    }
+  }
+  lnk_error_obj(LNK_Warning_UnknownSwitch, obj, "unknown switch: \"/%S%s%S\"", cmd_name, value.size ? ":" : "", value);
+  exit:;
+}
+
 typedef enum LNK_DefFileStmt
 {
   LNK_DefFileStmt_Null,
@@ -3007,12 +3009,39 @@ lnk_make_default_cmd_line(Arena *arena, LNK_CmdLine user_cmd_line, LNK_Tool tool
 }
 
 internal void
-lnk_config_apply_cmd_line(LNK_Config *config, LNK_CmdLine input_cmd_line)
+lnk_config_apply_cmd_line(LNK_Config *config, String8 exe_name, LNK_CmdLine input_cmd_line)
 {
   ProfBeginFunction();
 
   Arena *arena = config->arena;
   Temp scratch = scratch_begin(&arena, 1);
+
+  {
+    // select the program before interpreting program-specific switches or defaults
+    for EachNode(opt, LNK_CmdOption, input_cmd_line.first_option) {
+      LNK_CmdSwitchType type = lnk_cmd_switch_type_from_string(opt->string);
+      if (type == LNK_CmdSwitch_Rad_Tool ||
+          type == LNK_CmdSwitch_Lib ||
+          type == LNK_CmdSwitch_Compress ||
+          type == LNK_CmdSwitch_Decompress ||
+          type == LNK_CmdSwitch_RadTypeServer) {
+
+        // remove option so it's not applied twice
+        lnk_cmd_line_remove_option_node(&input_cmd_line, opt);
+
+        LNK_CmdSwitch *cmd = lnk_cmd_switch_from_type(type);
+        lnk_apply_cmd_option_to_config_ex(config, cmd, opt->value, 0);
+
+        break;
+      }
+    }
+
+    // set default tool
+    if (config->tool == LNK_Tool_Null) {
+      config->tool = lnk_tool_from_string(str8_chop_last_dot(str8_skip_last_slash(exe_name)));
+      if (config->tool == LNK_Tool_Null) { config->tool = LNK_Tool_Linker; }
+    }
+  }
 
   HashMap     env_vars      = lnk_env_vars_from_process_info(scratch.arena, get_process_info(), LNK_EnvVarRule_Batch);
   LNK_CmdLine user_cmd_line = input_cmd_line;
@@ -3334,26 +3363,7 @@ lnk_config_init(String8 exe_name, U64 argc, char **argv)
   config->work_dir     = get_current_path(arena);
 
   LNK_CmdLine cmd_line = lnk_cmd_line_parse_windows_rules(arena, cmd_unwrap);
-
-  // select the program before interpreting program-specific switches or defaults
-  for EachNode(cmd, LNK_CmdOption, cmd_line.first_option) {
-    LNK_CmdSwitchType type = lnk_cmd_switch_type_from_string(cmd->string);
-    if (type == LNK_CmdSwitch_Rad_Tool   ||
-        type == LNK_CmdSwitch_Lib        ||
-        type == LNK_CmdSwitch_Compress   ||
-        type == LNK_CmdSwitch_Decompress ||
-        type == LNK_CmdSwitch_RadTypeServer) {
-      lnk_apply_cmd_option_to_config(config, cmd->string, cmd->value, 0);
-    }
-  }
-
-  // pick tool based on the program name (on unknown default to linker)
-  if (config->tool == LNK_Tool_Null) {
-    config->tool = lnk_tool_from_string(str8_chop_last_dot(str8_skip_last_slash(exe_name)));
-    if (config->tool == LNK_Tool_Null) { config->tool = LNK_Tool_Linker; }
-  }
-
-  lnk_config_apply_cmd_line(config, cmd_line);
+  lnk_config_apply_cmd_line(config, exe_name, cmd_line);
 
   scratch_end(scratch);
   ProfEnd();

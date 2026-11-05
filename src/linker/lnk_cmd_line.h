@@ -3,12 +3,14 @@
 
 #pragma once
 
-typedef struct LNK_CmdOption
+typedef struct LNK_CmdOption LNK_CmdOption;
+struct LNK_CmdOption
 {
-  struct LNK_CmdOption *next;
-  String8               string;
-  String8               value;
-} LNK_CmdOption;
+  LNK_CmdOption *prev;
+  LNK_CmdOption *next;
+  String8        string;
+  String8        value;
+};
 
 typedef struct LNK_CmdLine
 {

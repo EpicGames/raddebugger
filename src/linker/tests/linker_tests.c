@@ -11106,6 +11106,37 @@ TEST(pressure_cfm_cache)
 }
 #endif
 
+TEST(basic_librarian_test)
+{
+  T_Ok(t_write_def_obj("test.obj", (T_COFF_DefObj){
+                       .machine  = T_COFF_DefSetMachine(X64),
+                       .sections = (T_COFF_DefSection[]){
+                         { "text", ".text", str8_lit_comp("foobar") },
+                         {0}
+                       },
+                       .symbols = (T_COFF_DefSymbol[]){
+                         T_COFF_DefSymbol_ExternFunc("foobar", "text", 0),
+                         {0},
+                       }
+                       }));
+
+  t_invoke_linkerf("/lib test.obj /out:test.lib");
+  T_Ok(g_last_exit_code == 0);
+
+  T_Ok(t_write_entry_obj());
+
+  t_invoke_linkerf("/subsystem:console /entry:entry /include:foobar /export:foobar /out:a.exe test.lib entry.obj");
+  T_Ok(g_last_exit_code == 0);
+
+  String8              exe    = t_read_file(arena, str8_lit("a.exe"));
+  PE_BinInfo           pe     = pe_bin_info_from_data(arena, exe);
+  COFF_SectionHeader  *sectab = (COFF_SectionHeader *)str8_substr(exe, pe.section_table_range).str;
+  PE_ParsedExportTable exptab = pe_exports_from_data(arena, pe.section_count, sectab, exe, pe.data_dir_franges[PE_DataDirectoryIndex_EXPORT], pe.data_dir_vranges[PE_DataDirectoryIndex_EXPORT]);
+  T_Ok(exptab.export_count == 1);
+  PE_ParsedExport foobar = exptab.exports[0];
+  T_Ok(str8_match(foobar.name, str8_lit("foobar"), 0));
+}
+
 // TODO: linker currenlty skips over the IFC records and should instead load the .ifc; type merger also has to expand type index space with the help of IFC records
 #if 0 && OS_WINDOWS
 TEST(msvc_cpp_module)
