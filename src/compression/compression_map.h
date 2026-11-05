@@ -22,8 +22,9 @@ typedef struct
   FileMap      storage;
   String8      encoded;
   String8      data;
+  String8      source_path; // optional diagnostic name; caller storage must outlive this map
   U64          reserve_size;
-  U32Array     carved; // bit per segment: its placeholder has been carved out of the map's reservation (written under carve_mutex)
+  U32Array     carved; // bit per segment: its placeholder is carved (read/written under carve_mutex)
   CFM_Codec   *codec;
   CMP_CompressorInfoUnpacked compressor_info;
 } CFM_Map;
@@ -68,8 +69,6 @@ typedef struct
   CFM_SegmentInfo *segment;
   B32              has_job;
   CFM_Job          job;
-  void            *evict_target;
-  U64              evict_size;
 } CFM_Lease;
 
 typedef struct
@@ -122,8 +121,8 @@ struct CFM_Context
   String8     sdk_paths[CMP_SdkType_Count];
   CMP_Ctx    *sdks[CMP_SdkType_Count];
   Arena      *arena;
-  RWMutex     mutex;       // guards registry, maps, segment list/tracker, refs
-  Mutex       carve_mutex; // serializes placeholder splits: the kernel rejects concurrent splits of one placeholder
+  RWMutex     mutex;       // guards registry, maps, segment list/tracker, refs, eviction unmaps
+  Mutex       carve_mutex; // guards carved bitmap reads/writes and serializes placeholder splits
   CFM_Worker *workers_ctxs;
   CondVar     work;
 

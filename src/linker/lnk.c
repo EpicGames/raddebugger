@@ -1446,6 +1446,9 @@ THREAD_POOL_TASK_FUNC(lnk_cfm_map_opener)
   ProfEnd();
 
   task->statuses[task_id] = cfm_map_prepare(task->cfm, input->handle, &task->maps[task_id]);
+  if (task->statuses[task_id] == CFM_Ok) {
+    task->maps[task_id]->source_path = input->path;
+  }
   ProfEnd();
 }
 

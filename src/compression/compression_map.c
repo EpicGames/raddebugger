@@ -123,8 +123,6 @@ cfm_acquire_locked(CFM_Context *ctx, CFM_Map *map, U64 segment_idx, CFM_Lease *l
 
   if (segment == NULL) {
     CFM_SegmentNode *segment_node = NULL;
-    void            *evict_target = NULL;
-    U64              evict_size   = 0;
 
     // find empty segment
     for (;;) {
@@ -165,8 +163,17 @@ cfm_acquire_locked(CFM_Context *ctx, CFM_Map *map, U64 segment_idx, CFM_Lease *l
           segment = &n->v;
           AssertAlways(segment->state == CFM_SegmentState_Live);
 
-          evict_target = segment->map->data.str + segment->index * segment->map->compressor_info.v.segment_size;
-          evict_size   = segment->map->compressor_info.v.segment_size;
+          void *evict_target = segment->map->data.str + segment->index * segment->map->compressor_info.v.segment_size;
+          U64 evict_size = segment->map->compressor_info.v.segment_size;
+
+          // keep the old tracker entry and ctx->mutex until its view is gone;
+          // a delayed fault at this address must not schedule a replacement
+          // against the still-mapped old view; do not reuse its backing before
+          // unmapping either: writes for the new owner would alias the old view
+          ProfBegin("CFM unmap");
+          B32 is_unmapped = unmap_memory_preserve_placeholder(evict_target, evict_size);
+          ProfEnd();
+          AssertAlways(is_unmapped);
 
           ProfBegin("CFM purge tracker");
           B32 is_purged = hash_map_purge_string(&ctx->segment_tracker, str8_struct((&(CFM_SegmentKey){ segment->map, segment->index })));
@@ -211,8 +218,6 @@ cfm_acquire_locked(CFM_Context *ctx, CFM_Map *map, U64 segment_idx, CFM_Lease *l
     lease_out->has_job      = 1;
     lease_out->job.map      = map;
     lease_out->job.segment  = segment;
-    lease_out->evict_target = evict_target;
-    lease_out->evict_size   = evict_size;
   } else {
     // segment already was decoded or being decoded -- increment ref count and leave
     segment->refs += 1;
@@ -282,18 +287,37 @@ cfm_worker(void *raw_ctx)
     }
 
     // compute destination segment size and handle tail segment case
-    U64 dst_size = job.segment->index+1 == job.map->compressor_info.v.segment_count
-                   ? job.map->compressor_info.v.raw_size - (job.segment->index * job.map->compressor_info.v.segment_size)
+    U64 segment_idx = job.segment->index;
+    U64 dst_size = segment_idx+1 == job.map->compressor_info.v.segment_count
+                   ? job.map->compressor_info.v.raw_size - (segment_idx * job.map->compressor_info.v.segment_size)
                    : job.map->compressor_info.v.segment_size;
 
     // decode segment
     ProfBegin("Decompressing Segment");
     B32 is_decoded = job.map->codec->decode(sdk,
                                             &job.map->compressor_info,
-                                            r1u64s(job.segment->index, 1),
+                                            r1u64s(segment_idx, 1),
                                             job.map->encoded,
                                             str8(job.segment->write, dst_size),
                                             str8(decode_scratch_ptr, decode_scratch_size));
+    if (!is_decoded) {
+      U64 refs, current_idx;
+      CFM_SegmentState state;
+      CFM_Map *current_map;
+      MutexScopeW(ctx->mutex) {
+        refs = job.segment->refs;
+        current_idx = job.segment->index;
+        current_map = job.segment->map;
+        state = ins_atomic_u32_eval(&job.segment->state);
+      }
+      String8 path = job.map->source_path.size ? job.map->source_path : str8_lit("<unnamed>");
+      fprintf(stderr, "CFM decode failed: thread=%u worker=%llu file=\"%.*s\" map=%p segment=%llu/%llu current_map=%p current_segment=%llu state=%u refs=%llu raw_size=%llu segment_size=%u encoded_size=%llu dst=%p dst_size=%llu scratch=%p scratch_size=%llu needed_scratch=%llu sdk=%u\n",
+              tid(), worker->id, str8_varg(path), (void *)job.map, segment_idx, job.map->compressor_info.v.segment_count,
+              (void *)current_map, current_idx, state, refs, job.map->compressor_info.v.raw_size,
+              job.map->compressor_info.v.segment_size, job.map->encoded.size, (void *)job.segment->write, dst_size,
+              (void *)decode_scratch_ptr, decode_scratch_size, needed_decode_scratch_size, job.map->compressor_info.v.sdk_type);
+      fflush(stderr);
+    }
     AssertAlways(is_decoded); // TODO: handle failed decodes
     ProfEnd();
 
@@ -301,22 +325,19 @@ cfm_worker(void *raw_ctx)
     ProfBegin("CFM map decoded");
     void *target = job.map->data.str + job.segment->index * job.map->compressor_info.v.segment_size;
 
-    // first decode of this segment: carve its placeholder out of the map's reservation.
-    // this worker is the segment's sole owner until it goes live, so its bit is only read
-    // and set by the owner; the set happens under carve_mutex, which also serializes the
-    // splits (the kernel fails concurrent splits of the same placeholder) and keeps
-    // neighbouring bits written by other workers from racing on the same word
-    if ( ! bit_array_get_bit32(job.map->carved, job.segment->index)) {
-      ProfBegin("CFM carve placeholder");
-      B32 is_carved = 0;
-      MutexScope(ctx->carve_mutex) {
+    // serialize placeholder splits and ALL access to the bitmap: different
+    // segment owners still share a U32 word, including readers of that word
+    MutexScope(ctx->carve_mutex) {
+      if ( ! bit_array_get_bit32(job.map->carved, job.segment->index)) {
+        ProfBegin("CFM carve placeholder");
+        B32 is_carved;
         is_carved = carve_memory_placeholder(target, job.map->compressor_info.v.segment_size);
         if (is_carved) {
           bit_array_set_bit32(job.map->carved, job.segment->index, 1);
         }
+        ProfEnd();
+        AssertAlways(is_carved); // TODO: handle failed placeholder split
       }
-      ProfEnd();
-      AssertAlways(is_carved); // TODO: handle failed placeholder split
     }
 
     void *replace_result = shared_memory_view_replace_placeholder(job.segment->memory, target, r1u64(0, job.map->compressor_info.v.segment_size), AccessFlag_Read);
@@ -395,7 +416,8 @@ cfm_read_fault(void *address, void *user_data)
 
   CFM_Context *ctx = user_data;
 
-  // acquire segment lease under the global lock; no syscalls or waits happen while it's held
+  // acquire a lease under the global lock; eviction unmaps the previous view
+  // under this lock before publishing a new tracker entry; decoding stays outside
   CFM_Lease  lease  = {0};
   CFM_Status status = CFM_Unknown;
   ProfBegin("CFM fault lock wait");
@@ -418,15 +440,6 @@ cfm_read_fault(void *address, void *user_data)
     // send decode request if we were the first to touch the segment
     if (lease.has_job) {
       AssertAlways(lease.job.segment->refs > 0);
-
-      if (lease.evict_target) {
-        ProfBegin("CFM unmap");
-        B32 is_unmapped = unmap_memory_preserve_placeholder(lease.evict_target, lease.evict_size);
-        ProfEnd();
-        AssertAlways(is_unmapped);
-        lease.evict_target = 0;
-        lease.evict_size   = 0;
-      }
 
       // round-robin jobs between workers
       U64         worker_idx = ins_atomic_u64_inc_eval(&ctx->next_job_worker);
