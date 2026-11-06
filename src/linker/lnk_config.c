@@ -1811,7 +1811,7 @@ lnk_apply_cmd_option_to_config_ex(LNK_Config *config, LNK_CmdSwitch *cmd, String
     U64 page_size;
     if (lnk_cmd_switch_parse_u64(obj, cmd_switch, value, &page_size, LNK_ParseU64Flag_CheckPow2)) {
       if (page_size >= MSF_MIN_PAGE_SIZE) {
-        if (page_size < MSF_MAX_PAGE_SIZE) {
+        if (page_size <= MSF_MAX_PAGE_SIZE) {
           config->pdb_page_size = page_size;
         } else {
           lnk_error_cmd_switch(LNK_Error_Cmdl, obj, cmd_switch, "page size must be <= %u bytes", MSF_MAX_PAGE_SIZE);
