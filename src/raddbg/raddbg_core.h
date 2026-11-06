@@ -301,6 +301,10 @@ struct RD_WindowState
   // rjf: theme (recomputed each frame)
   UI_Theme *theme;
   Vec4F32 theme_code_colors[RD_CodeColorSlot_COUNT];
+  B32 mica_requested;
+  B32 mica_enabled;
+  B32 mica_dark;
+  B32 mica_alt;
   
   // rjf: font raster flags (recomputed each frame)
   FNT_RasterFlags font_slot_raster_flags[RD_FontSlot_COUNT];
