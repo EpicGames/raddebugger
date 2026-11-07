@@ -395,6 +395,7 @@ internal String8 indented_from_string(Arena *arena, String8 string);
 
 internal String8 escaped_from_raw_str8(Arena *arena, String8 string);
 internal String8 raw_from_escaped_str8(Arena *arena, String8 string);
+internal String8 shell_quoted_from_raw_str8(Arena *arena, String8 string);
 
 ////////////////////////////////
 //~ rjf: Text Wrapping

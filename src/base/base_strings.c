@@ -2231,7 +2231,7 @@ str8_from_32(Arena *arena, String32 in)
 internal String32
 str32_from_8(Arena *arena, String8 in)
 {
-  String32 result = str32_zero(); 
+  String32 result = str32_zero();
   if(in.size)
   {
     U64 cap = in.size;
@@ -2493,7 +2493,7 @@ try_guid_from_string(String8 string, Guid *guid_out)
     String8 data3_str    = list.first->next->next->string;
     String8 data4_hi_str = list.first->next->next->next->string;
     String8 data4_lo_str = list.first->next->next->next->next->string;
-    if(str8_is_integer(data1_str, 16) && 
+    if(str8_is_integer(data1_str, 16) &&
        str8_is_integer(data2_str, 16) &&
        str8_is_integer(data3_str, 16) &&
        str8_is_integer(data4_hi_str, 16) &&
@@ -2662,6 +2662,37 @@ raw_from_escaped_str8(Arena *arena, String8 string)
     }
   }
   String8 result = str8_list_join(arena, &strs, 0);
+  scratch_end(scratch);
+  return result;
+}
+
+internal String8
+shell_quoted_from_raw_str8(Arena *arena, String8 string)
+{
+  Temp scratch = scratch_begin(&arena, 1);
+  String8List parts = {0};
+  U64 start_split_idx = 0;
+  for(U64 idx = 0; idx <= string.size; idx += 1)
+  {
+    if(idx < string.size)
+    {
+      Assert(string.str[idx] != 0);
+    }
+    if(idx == string.size || string.str[idx] == '\'')
+    {
+      String8 substr = str8_substr(string, r1u64(start_split_idx, idx));
+      start_split_idx = idx+1;
+      str8_list_push(scratch.arena, &parts, substr);
+      if(idx < string.size)
+      {
+        str8_list_push(scratch.arena, &parts, str8_lit("'\"'\"'"));
+      }
+    }
+  }
+  StringJoin join = {0};
+  join.pre = str8_lit("'");
+  join.post = str8_lit("'");
+  String8 result = str8_list_join(arena, &parts, &join);
   scratch_end(scratch);
   return result;
 }
