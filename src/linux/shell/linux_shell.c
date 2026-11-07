@@ -21,7 +21,10 @@ sh_message(B32 error, String8 title, String8 message)
     Temp scratch = scratch_begin(0, 0);
     if(text_is_long)
     {
-      String8 cmd = str8f(scratch.arena, "echo \"%S\" | zenity --text-info --no-markup --title=\"%S\"", escaped_from_raw_str8(scratch.arena, message), title);
+      String8 cmd = str8f(scratch.arena,
+                          "printf '%%s' %S | zenity --text-info --no-markup --title=%S",
+                          shell_quoted_from_raw_str8(scratch.arena, message),
+                          shell_quoted_from_raw_str8(scratch.arena, title));
       FILE *f = popen((char *)cmd.str, "r");
       if(f != 0)
       {
@@ -30,7 +33,11 @@ sh_message(B32 error, String8 title, String8 message)
     }
     else
     {
-      String8 cmd = str8f(scratch.arena, "zenity %s --no-markup --title=\"%S\" --text=\"%S\"", error ? "--error" : "--info", title, escaped_from_raw_str8(scratch.arena, message));
+      String8 cmd = str8f(scratch.arena,
+                          "zenity %s --no-markup --title=%S --text=%S",
+                          error ? "--error" : "--info",
+                          shell_quoted_from_raw_str8(scratch.arena, title),
+                          shell_quoted_from_raw_str8(scratch.arena, message));
       FILE *f = popen((char *)cmd.str, "r");
       if(f != 0)
       {
