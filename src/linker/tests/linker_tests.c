@@ -10990,6 +10990,45 @@ TEST(coff_section_name_offsets)
   T_Ok(coff_name_from_section_header(str8_zero(), &inline_header).size == 0);
 }
 
+TEST(overflow_export_ordinals)
+{
+  U64 export_count = max_U16 + 1;
+  T_COFF_DefSymbol *symbols = push_array(arena, T_COFF_DefSymbol, export_count + 1);
+  for EachIndex(i, export_count) {
+    String8 name = str8f(arena, "foo_%llu", i);
+    symbols[i] = (T_COFF_DefSymbol)T_COFF_DefSymbol_Extern(name.str, "text", 0);
+  }
+
+  T_Ok(t_write_file(str8_lit("test.obj"), t_coff_from_def_obj(arena,
+      (T_COFF_DefObj){
+        .machine = T_COFF_DefSetMachine(X64),
+        .sections = (T_COFF_DefSection[]){
+          { "text", ".text", str8_lit("\xC3"), .flags="rx:code@1" },
+          {0},
+        },
+        .symbols = symbols
+      })));
+
+  String8List list = {0};
+  for EachIndex(i, export_count) {
+    str8_list_pushf(arena, &list, "/EXPORT:foo_%llu,@%llu,NONAME", i, i);
+  }
+  String8 exports = str8_list_join(arena, &list, &(StringJoin){.sep = str8_lit("\n") });
+
+  t_write_file(str8_lit("exports.rsp"), exports);
+
+  t_invoke_linkerf("/subsystem:console /entry:foo test.obj @exports.rsp");
+
+  String8 output      = g_errors;
+  U64     match_count = 0;
+  while (output.size) {
+    if (t_match_line(&output, str8_lit("Error(*): exporting too many ordinals; PE doesn't support more than 0xffff ordinals"))) {
+      match_count += 1;
+    }
+  }
+  T_Ok(match_count == 1);
+}
+
 #if 0
 
 TEST(compressed_obj)

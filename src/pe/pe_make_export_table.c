@@ -88,9 +88,12 @@ pe_ordinal_export_is_before(void *raw_a, void *raw_b)
   return (*a)->ordinal < (*b)->ordinal;
 }
 
-internal PE_FinalizedExports
-pe_finalize_export_list(Arena *arena, PE_ExportParseList export_list)
+internal String8
+pe_finalize_export_list(Arena *arena, PE_ExportParseList export_list, PE_FinalizedExports *exports_out)
 {
+  Temp failure_rollback = temp_begin(arena);
+  String8 error = {0};
+
   PE_ExportParsePtrArray named_exports   = {0};
   PE_ExportParsePtrArray ordinal_exports = {0};
   {
@@ -121,10 +124,18 @@ pe_finalize_export_list(Arena *arena, PE_ExportParseList export_list)
   }
 
   // compute max ordinal and used ordinal flag array
-  U64 ordinal_low = max_U64;
-  B8 *is_ordinal_used = push_array(arena, B8, max_U16);
+  U64  ordinal_low        = max_U64;
+  B8  *is_ordinal_used    = push_array(arena, B8, max_U16+1);
+  U64  used_ordinal_count = 0;
   for EachNode(exp_n, PE_ExportParseNode, export_list.first) {
     if (exp_n->data.is_ordinal_assigned) {
+      if ( ! is_ordinal_used[exp_n->data.ordinal]) {
+        if (used_ordinal_count >= max_U16) {
+          error = str8_lit("exporting too many ordinals; PE doesn't support more than 0xffff ordinals");
+          goto failure;
+        }
+        used_ordinal_count += 1;
+      }
       ordinal_low = Min(ordinal_low, exp_n->data.ordinal);
       is_ordinal_used[exp_n->data.ordinal] = 1;
     }
@@ -136,18 +147,24 @@ pe_finalize_export_list(Arena *arena, PE_ExportParseList export_list)
   // assign omitted ordinals
   {
     U16 last_ordinal = ordinal_low;
-    for (U64 exp_idx = 0; exp_idx < named_exports.count; exp_idx += 1) {
+    for EachIndex(exp_idx, named_exports.count) {
       PE_ExportParse *exp = named_exports.v[exp_idx];
-      if (!exp->is_ordinal_assigned) {
-        for (; last_ordinal < max_U16 && is_ordinal_used[last_ordinal] != 0; last_ordinal += 1);
-        exp->ordinal            = last_ordinal;
+      if ( ! exp->is_ordinal_assigned) {
+        for (; last_ordinal <= max_U16 && is_ordinal_used[last_ordinal] != 0; last_ordinal += 1);
+
+        if (last_ordinal > max_U16) {
+          error = str8_lit("export ordinal range exhausted");
+          goto failure;
+        }
+
+        exp->ordinal             = last_ordinal;
         exp->is_ordinal_assigned = 1;
         is_ordinal_used[last_ordinal] = 1;
       }
     }
-    for (U64 exp_idx = 0; exp_idx < ordinal_exports.count; exp_idx += 1) {
+    for EachIndex(exp_idx, ordinal_exports.count) {
       PE_ExportParse *exp = ordinal_exports.v[exp_idx];
-      if (!exp->is_ordinal_assigned) {
+      if ( ! exp->is_ordinal_assigned) {
         exp->ordinal             = last_ordinal;
         exp->is_ordinal_assigned = 1;
         is_ordinal_used[last_ordinal] = 1;
@@ -156,18 +173,22 @@ pe_finalize_export_list(Arena *arena, PE_ExportParseList export_list)
   }
 
   // assign hints
-  {
-    U64 hint = 0;
-    for (U64 exp_idx = 0; exp_idx < named_exports.count; exp_idx += 1, hint += 1) {
-      named_exports.v[exp_idx]->hint = hint;
-    }
+  for EachIndex(i, named_exports.count) {
+    named_exports.v[i]->hint = i;
   }
 
-  return (PE_FinalizedExports) {
-    .ordinal_low       = ordinal_low,
-    .named_exports     = named_exports,
-    .ordinal_exports   = ordinal_exports
-  };
+  if (exports_out) {
+    *exports_out = (PE_FinalizedExports) {
+      .ordinal_low       = ordinal_low,
+      .named_exports     = named_exports,
+      .ordinal_exports   = ordinal_exports
+    };
+  }
+  return str8_zero();
+
+  failure:;
+  temp_end(failure_rollback);
+  return error;
 }
 
 internal String8
@@ -190,7 +211,7 @@ pe_make_edata_obj(Arena               *arena,
 
   ProfBegin("Virtual Offset Table");
   {
-    B8 *is_ordinal_bound = push_array(scratch.arena, B8, max_U16);
+    B8 *is_ordinal_bound = push_array(scratch.arena, B8, max_U16+1);
     for EachElement(arr_idx, finalized_exports.all) {
       for EachIndex(exp_idx, finalized_exports.all[arr_idx].count) {
         PE_ExportParse *exp = finalized_exports.all[arr_idx].v[exp_idx];

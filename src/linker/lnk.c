@@ -2565,7 +2565,11 @@ lnk_link_image(TP_Context *tp, TP_Arena *arena, LNK_Config *config, LNK_Inputer 
     ProfBegin("Build Export Table");
 
     PE_ExportParseList resolved_exports = lnk_resolved_exports_from_config(config, symtab, link->exports);
-    finalized_exports = pe_finalize_export_list(arena->v[0], resolved_exports);
+    String8 finalize_error = pe_finalize_export_list(arena->v[0], resolved_exports, &finalized_exports);
+    if (finalize_error.size) {
+      lnk_error(LNK_Error_ExportTable, "%S", finalize_error);
+      lnk_exit(1);
+    }
     String8 edata_obj = pe_make_edata_obj(arena->v[0], lnk_get_image_name(config), COFF_TimeStamp_Max, config->machine, finalized_exports);
     lnk_inputer_push_obj_linkgen(inputer, 0, str8_lit("* Exports *"), edata_obj);
 
@@ -7427,7 +7431,13 @@ lnk_run_lib(LNK_Config *config)
       pe_export_parse_list_push(scratch.arena, &exports, exp);
     }
 
-    PE_FinalizedExports finalized = pe_finalize_export_list(scratch.arena, exports);
+    PE_FinalizedExports finalized = {0};
+    String8 export_error = pe_finalize_export_list(scratch.arena, exports, &finalized);
+    if (export_error.size) {
+      lnk_error(LNK_Error_ExportTable, "%S", export_error);
+      lnk_exit(1);
+    }
+
     String8 debug_symbols = lnk_make_linker_debug_symbols(scratch.arena, config->machine);
     output = pe_make_import_lib(scratch.arena, config->machine, config->time_stamp, dll_name, debug_symbols, finalized);
 
