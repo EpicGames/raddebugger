@@ -11029,6 +11029,14 @@ TEST(overflow_export_ordinals)
   T_Ok(match_count == 1);
 }
 
+TEST(force_missing_export)
+{
+  T_Ok(t_write_entry_obj());
+  t_invoke_linkerf("/force /dll /noentry entry.obj /export:foo");
+  T_Ok(g_last_exit_code == 0);
+  T_Ok(g_errors.size > t_find_matchf(g_errors, "Error(*): RADLINK: unresolved export symbol: foo"));
+}
+
 #if 0
 
 TEST(compressed_obj)
