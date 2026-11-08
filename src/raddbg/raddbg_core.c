@@ -13885,9 +13885,13 @@ rd_frame(void)
             // rjf: command has required query -> prep query
             else
             {
+              RD_CmdKind query_cmd_kind = rd_cmd_kind_from_string(cmd->regs->cmd_name);
               rd_cmd(RD_CmdKind_PushQuery,
                      .do_implicit_root = 1,
                      .do_lister = (info->query.expr.size != 0),
+                     .create_new = (rd_regs()->create_new ||
+                                    query_cmd_kind == RD_CmdKind_SaveProject ||
+                                    query_cmd_kind == RD_CmdKind_SaveUser),
                      .expr = info->query.expr);
             }
           }break;
