@@ -11019,14 +11019,160 @@ TEST(overflow_export_ordinals)
 
   t_invoke_linkerf("/subsystem:console /entry:foo test.obj @exports.rsp");
 
-  String8 output      = g_errors;
-  U64     match_count = 0;
-  while (output.size) {
-    if (t_match_line(&output, str8_lit("Error(*): exporting too many ordinals; PE doesn't support more than 0xffff ordinals"))) {
-      match_count += 1;
+  T_Ok(g_errors.size > t_find_matchf(g_errors, "Error(*): exporting too many ordinals; PE doesn't support more than 0xffff ordinals"));
+}
+
+TEST(ambiguous_export)
+{
+  T_Ok(t_write_file(str8_lit("test.obj"), t_coff_from_def_obj(arena,
+      (T_COFF_DefObj){
+        .machine = T_COFF_DefSetMachine(X64),
+        .sections = (T_COFF_DefSection[]){
+          { "targets", ".exptest", str8_lit("\xC3\x90\xC3"), .flags="rx:code@1" },
+          {0},
+        },
+        .symbols = (T_COFF_DefSymbol[]){
+          T_COFF_DefSymbol_Extern("foo", "targets", 0),
+          T_COFF_DefSymbol_Extern("bar", "targets", 2),
+          {0}
+        },
+      })));
+
+  enum {
+    Expected_Noname  = 1 << 0,
+    Expected_Private = 1 << 1,
+    Expected_Data    = 1 << 2,
+  };
+  struct {
+    char *directives;
+    U64   warning_count;
+    U64   target_offset;
+    U64   ordinal;
+    char *forwarder;
+    U32   flags;
+  } test_cases[] = {
+    { "/export:foo /export:foo",       0, 0, 1, "", 0 },
+    { "/export:foo,@3 /export:foo,@3", 0, 0, 3, "", 0 },
+
+    { "/export:foo /export:foo=bar", 1, 0, 1, "", 0 },
+    { "/export:foo=bar /export:foo", 1, 2, 1, "", 0 },
+
+    { "/export:foo /export:foo=KERNEL32.Sleep",                     1, 0, 1, "", 0 },
+    { "/export:foo=KERNEL32.Sleep /export:foo",                     1, 0, 1, "KERNEL32.Sleep", 0 },
+    { "/export:foo=KERNEL32.Sleep /export:foo=KERNEL32.LoadModule", 1, 0, 1, "KERNEL32.Sleep", 0 },
+    { "/export:foo=KERNEL32.LoadModule /export:foo=KERNEL32.Sleep", 1, 0, 1, "KERNEL32.LoadModule", 0 },
+    { "/export:foo=KERNEL32.Sleep /export:foo=KERNEL32.Sleep",      0, 0, 1, "KERNEL32.Sleep", 0 },
+
+    { "/export:foo /export:foo,PRIVATE",         1, 0, 1, "", 0 },
+    { "/export:foo,PRIVATE /export:foo",         1, 0, 1, "", Expected_Private },
+    { "/export:foo,PRIVATE /export:foo,PRIVATE", 0, 0, 1, "", Expected_Private },
+
+    { "/export:foo /export:foo,DATA",      1, 0, 1, "", 0 },
+    { "/export:foo,DATA /export:foo",      1, 0, 1, "", Expected_Data },
+    { "/export:foo,DATA /export:foo,DATA", 0, 0, 1, "", Expected_Data },
+
+    { "/export:foo,@3 /export:foo,@3,NONAME",        1, 0, 3, "", 0 },
+    { "/export:foo,@3,NONAME /export:foo,@3",        1, 0, 3, "", Expected_Noname },
+    { "/export:foo,@3,NONAME /export:foo,@3,NONAME", 0, 0, 3, "", Expected_Noname },
+
+    { "/export:foo /export:foo,@0", 1, 0, 1, "", 0 },
+    { "/export:foo /export:foo,@3", 1, 0, 1, "", 0 },
+    { "/export:foo,@3 /export:foo", 1, 0, 3, "", 0 },
+
+    { "/export:foo,@4 /export:foo,@3", 1, 0, 4, "", 0 },
+    { "/export:foo,@3 /export:foo,@4", 1, 0, 3, "", 0 },
+  };
+
+  for EachElement(i, test_cases) {
+    String8 dll_path = str8f(arena, "ambiguous_%llu.dll", i);
+    String8 lib_path = str8f(arena, "ambiguous_%llu.lib", i);
+
+    t_invoke_linkerf("test.obj /dll /noentry /nodefaultlib /opt:ref /opt:noicf /out:%S /implib:%S %s", dll_path, lib_path, test_cases[i].directives);
+    T_Ok(g_last_exit_code == 0);
+
+    // check both warning presence and absence
+    U64 warning_count = 0;
+    for (String8 text = g_errors; text.size; ) {
+      warning_count += t_match_line(&text, str8_lit("Warning(*): RADLINK: conflicting declarations for export \"foo\"; keeping first declaration"));
     }
+    if (warning_count != test_cases[i].warning_count) {
+      t_errorf("case %llu: expected %llu ambiguity warnings, got %llu: %s\n",
+               i, test_cases[i].warning_count, warning_count,
+               test_cases[i].directives);
+    }
+    T_Ok(warning_count == test_cases[i].warning_count);
+
+    if (test_cases[i].warning_count) {
+      T_Ok(t_find_matchf(g_errors, "  first /EXPORT declared at: Command Line") != max_U64);
+    } else {
+      T_Ok(g_errors.size == 0);
+    }
+
+    String8 dll = t_read_file(arena, dll_path);
+    T_Ok(dll.size != 0);
+
+    PE_BinInfo            pe       = pe_bin_info_from_data(arena, dll);
+    COFF_SectionHeader   *sections = (COFF_SectionHeader *)str8_substr(dll, pe.section_table_range).str;
+    PE_ParsedExportTable  exports  = pe_exports_from_data(arena, pe.section_count, sections, dll, pe.data_dir_franges[PE_DataDirectoryIndex_EXPORT], pe.data_dir_vranges[PE_DataDirectoryIndex_EXPORT]);
+
+    T_Ok(exports.export_count == 1);
+    if (exports.export_count != 1) { continue; }
+
+    PE_ParsedExport exp = exports.exports[0];
+    T_Ok(exp.ordinal == test_cases[i].ordinal);
+    if (test_cases[i].flags & Expected_Noname) {
+      T_Ok(exp.name.size == 0);
+    } else {
+      T_Ok(str8_match(exp.name, str8_lit("foo"), 0));
+    }
+
+    String8 expected_forwarder = str8_cstring(test_cases[i].forwarder);
+    T_Ok(str8_match(exp.forwarder, expected_forwarder, 0));
+    if (expected_forwarder.size == 0) {
+      COFF_SectionHeader *target_section = coff_section_header_from_name(str8_zero(), sections, pe.section_count, str8_lit(".exptest"));
+      T_Ok(target_section != 0);
+      if (target_section) {
+        T_Ok(exp.voff == target_section->voff + test_cases[i].target_offset);
+      }
+    }
+
+    // verify short imports
+    String8 lib        = t_read_file(arena, lib_path);
+    B32     is_archive = coff_is_regular_archive(lib);
+    T_Ok(is_archive);
+
+    U64 short_import_count = 0;
+    U64 foo_import_count = 0;
+    U64 cursor = coff_regular_archive_member_iter_init(lib);
+    COFF_ArchiveMember member = {0};
+    while (coff_regular_archive_member_iter_next(lib, &cursor, &member)) {
+      if ( ! coff_is_import(member.data)) {
+        continue;
+      }
+
+      COFF_ShortImport imp = {0};
+      U64              parsed_size = coff_parse_short_import(member.data, 0, &imp);
+      T_Ok(parsed_size != 0);
+
+      short_import_count += 1;
+      if (str8_match(imp.func_name, str8_lit("foo"), 0)) {
+        foo_import_count += 1;
+        COFF_ImportType expected_type = (test_cases[i].flags & Expected_Data)
+                                       ? COFF_ImportHeader_Data
+                                       : COFF_ImportHeader_Code;
+        T_Ok(imp.machine == COFF_MachineType_X64);
+        T_Ok(imp.type == expected_type);
+        if (test_cases[i].flags & Expected_Noname) {
+          T_Ok(imp.import_by == COFF_ImportBy_Ordinal);
+          T_Ok(imp.hint_or_ordinal == test_cases[i].ordinal);
+        }
+      }
+    }
+
+    U64 expected_import_count = (test_cases[i].flags & Expected_Private) ? 0 : 1;
+    T_Ok(short_import_count == expected_import_count);
+    T_Ok(foo_import_count == expected_import_count);
   }
-  T_Ok(match_count == 1);
 }
 
 TEST(force_missing_export)

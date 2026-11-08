@@ -766,25 +766,38 @@ lnk_push_export_to_config(LNK_Config *config, LNK_Obj *obj, PE_ExportParse expor
   String8             export_name = pe_name_from_export_parse(&export_parse);
   PE_ExportParseNode *exp_n       = hash_map_search_string_raw(&config->export_ht, export_name);
 
+  // register new export
   if (exp_n == 0) {
-    // Keep declarations independent of extraction. The linker adds a root
-    // after export matching has selected the canonical symbol spelling.
     exp_n = pe_export_parse_list_push(config->arena, &config->export_symbol_list, export_parse);
     hash_map_push_string_raw(config->arena, &config->export_ht, export_name, exp_n);
-  } else {
-    // merge duplicate export
+  }
+  // reconcile exports
+  else {
     PE_ExportParse *extant_export = &exp_n->data;
-    B32 alias_conflict = extant_export->alias.size &&
-                         export_parse.alias.size &&
-                         !str8_match(extant_export->alias, export_parse.alias, 0);
-    B32 ordinal_conflict = extant_export->ordinal != export_parse.ordinal;
 
-    if (alias_conflict || ordinal_conflict) {
-      lnk_error_obj(LNK_Error_IllExport, obj, "ambiguous symbol export %S", export_parse.name);
-    }
+    B32 target_conflict = extant_export->is_forwarder != export_parse.is_forwarder ||
+                          (extant_export->is_forwarder == export_parse.is_forwarder && !str8_match(extant_export->name, export_parse.name, 0));
 
-    if (!alias_conflict && !ordinal_conflict && extant_export->alias.size == 0 && export_parse.alias.size != 0) {
-      extant_export->alias = export_parse.alias;
+    B32 attrib_conflict = extant_export->is_private        != export_parse.is_private ||
+                          extant_export->type              != export_parse.type ||
+                          extant_export->is_noname_present != export_parse.is_noname_present;
+
+    B32 ordinal_conflict = extant_export->is_ordinal_assigned != export_parse.is_ordinal_assigned ||
+                           extant_export->ordinal != export_parse.ordinal;
+
+    if (ordinal_conflict || attrib_conflict || target_conflict) {
+      Temp scratch = scratch_begin(0,0);
+      String8 first_origin = extant_export->obj_path;
+      if (first_origin.size == 0) {
+        first_origin = str8_lit("Command Line");
+      } else if (extant_export->lib_path.size) {
+        first_origin = push_str8f(scratch.arena, "%S(%S)", extant_export->lib_path, str8_skip_last_slash(extant_export->obj_path));
+      }
+      lnk_error_with_loc(LNK_Warning_IllExport, export_parse.obj_path, export_parse.lib_path,
+                         "conflicting declarations for export \"%S\"; keeping first declaration\n"
+                         "  first /EXPORT declared at: %S",
+                         export_name, first_origin);
+      scratch_end(scratch);
     }
   }
 }

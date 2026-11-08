@@ -247,9 +247,9 @@ pe_make_edata_obj(Arena               *arena,
 
   ProfBegin("Named & Forwarder Exports");
   {
-    for (U64 arr_idx = 0; arr_idx < ArrayCount(finalized_exports.exports_with_names); arr_idx += 1) {
+    for EachElement(arr_idx, finalized_exports.exports_with_names) {
       PE_ExportParsePtrArray exports = finalized_exports.exports_with_names[arr_idx];
-      for (U64 exp_idx = 0; exp_idx < exports.count; exp_idx += 1) {
+      for EachIndex(exp_idx, exports.count) {
         PE_ExportParse *exp = exports.v[exp_idx];
 
         String8 name = pe_name_from_export_parse(exp);
@@ -282,7 +282,7 @@ pe_make_edata_obj(Arena               *arena,
 
   ProfBegin("Ordinal Exports");
   {
-    for (U64 exp_idx = 0; exp_idx < finalized_exports.ordinal_exports.count; exp_idx += 1) {
+    for EachIndex(exp_idx, finalized_exports.ordinal_exports.count) {
       // create and store export's ordinal
       PE_ExportParse *exp = finalized_exports.ordinal_exports.v[exp_idx];
       U16 *ordinal = push_array(obj_writer->arena, U16, 1);
@@ -298,6 +298,7 @@ pe_make_edata_obj(Arena               *arena,
   header->ordinal_base               = safe_cast_u16(finalized_exports.ordinal_low);
   header->export_address_table_count = safe_cast_u32(voff_table_sect->data.total_size / sizeof(U32));
   header->name_pointer_table_count   = safe_cast_u32(name_voff_table_sect->data.node_count);
+  AssertAlways(header->export_address_table_count > 0);
 
   // push header field's symbols
   COFF_ObjSymbol *image_name_symbol    = coff_obj_writer_push_symbol_static(obj_writer, str8_lit("EXPORT_HEADER_NAME_VOFF"),          0, image_name_sect);
@@ -312,7 +313,9 @@ pe_make_edata_obj(Arena               *arena,
   // patch export table header
   coff_obj_writer_section_push_reloc_voff(obj_writer, header_sect, OffsetOf(PE_ExportTableHeader, name_voff),                 image_name_symbol);
   coff_obj_writer_section_push_reloc_voff(obj_writer, header_sect, OffsetOf(PE_ExportTableHeader, export_address_table_voff), address_table_symbol);
-  coff_obj_writer_section_push_reloc_voff(obj_writer, header_sect, OffsetOf(PE_ExportTableHeader, name_pointer_table_voff),   name_table_symbol);
+  if (header->name_pointer_table_count) {
+    coff_obj_writer_section_push_reloc_voff(obj_writer, header_sect, OffsetOf(PE_ExportTableHeader, name_pointer_table_voff),   name_table_symbol);
+  }
   coff_obj_writer_section_push_reloc_voff(obj_writer, header_sect, OffsetOf(PE_ExportTableHeader, ordinal_table_voff),        ordinal_table_symbol);
 
   String8 obj = coff_obj_writer_serialize(arena, obj_writer);
@@ -356,4 +359,37 @@ pe_make_import_lib(Arena *arena, COFF_MachineType machine, COFF_TimeStamp time_s
   
   ProfEnd();
   return lib;
+}
+
+internal String8
+pe_string_from_export_parse(Arena *arena, PE_ExportParse v)
+{
+  Temp scratch = scratch_begin(&arena, 1);                             
+  String8List parts = {0};                                             
+
+  if (v.alias.size) {                                                  
+    str8_list_pushf(scratch.arena, &parts, "%S=%S", v.alias, v.name);  
+  } else {                                                             
+    str8_list_push(scratch.arena, &parts, v.name);                     
+  }                                                                    
+
+  if (v.is_ordinal_assigned) {                                         
+    str8_list_pushf(scratch.arena, &parts, ",@%llu", v.ordinal);    
+  }                                                                    
+  if (v.is_noname_present) {                                           
+    str8_list_push(scratch.arena, &parts, str8_lit(",NONAME"));        
+  }                                                                    
+  if (v.is_private) {                                                  
+    str8_list_push(scratch.arena, &parts, str8_lit(",PRIVATE"));       
+  }                                                                    
+
+  switch (v.type) {                                                    
+  case COFF_ImportHeader_Code:  break;                                 
+  case COFF_ImportHeader_Data:  str8_list_push(scratch.arena, &parts, str8_lit(",DATA"));  break;
+  case COFF_ImportHeader_Const: str8_list_push(scratch.arena, &parts, str8_lit(",CONST")); break;
+  }
+
+  String8 result = str8_list_join(arena, &parts, 0);
+  scratch_end(scratch);
+  return result;
 }

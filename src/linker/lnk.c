@@ -2106,11 +2106,7 @@ lnk_match_linker_exports(LNK_Config *config, LNK_SymbolTable *symtab, LNK_Link *
 
     case LNK_ExportMatch_Definition:
     case LNK_ExportMatch_ArchiveMember: {
-      lnk_export_apply_match(config->arena, &exp->data, match);
-
-      // include is idempotent; archive matches become ordinary canonical-name
-      // requests, and are extracted by the existing lazy library search
-      lnk_include_symbol(config, exp->data.name, 0);
+      lnk_include_symbol(config, match.canonical_name, 0);
     } break;
 
     case LNK_ExportMatch_Ambiguous: {
@@ -2363,42 +2359,46 @@ lnk_link_inputs(TP_Context      *tp,
 }
 
 internal PE_ExportParseList
-lnk_resolved_exports_from_config(LNK_Config *config, LNK_SymbolTable *symtab, LNK_ExportTable *exports)
+lnk_resolved_exports_from_config(Arena *arena, LNK_Config *config, LNK_SymbolTable *symtab, LNK_ExportTable *exports)
 {
-  PE_ExportParseList resolved_exports       = {0};
-  B32                has_unresolved_exports = 0;
-  for (PE_ExportParseNode *exp_n = config->export_symbol_list.first, *exp_n_next; exp_n != 0; exp_n = exp_n_next) {
-    exp_n_next = exp_n->next;
+  PE_ExportParseList result = {0};
 
-    PE_ExportParse *exp = &exp_n->data;
+  for EachNode(exp_n, PE_ExportParseNode, config->export_symbol_list.first) {
+    PE_ExportParse exp = exp_n->data;
 
-    if (exp->name.size && str8_match(exp->name, config->entry_point_name, 0)) {
-      lnk_error_with_loc(LNK_Warning_TryingToExportEntryPoint, exp->obj_path, exp->lib_path, "exported entry point \"%S\"", exp->name);
+    // guard against entry point export
+    if (exp.name.size && str8_match(exp.name, config->entry_point_name, 0)) {
+      Temp scratch = scratch_begin(&arena, 1);
+      lnk_error_with_loc(LNK_Warning_TryingToExportEntryPoint, exp.obj_path, exp.lib_path, "exported entry point \"%S\"", pe_string_from_export_parse(scratch.arena, exp));
+      scratch_end(scratch);
     }
-    if (exp->alias.size && str8_match(exp->alias, config->entry_point_name, 0)) {
-      lnk_error_with_loc(LNK_Warning_TryingToExportEntryPoint, exp->obj_path, exp->lib_path, "alias exports entry point \"%S=%S\"", exp->name, exp->alias);
+    if (exp.alias.size && str8_match(exp.alias, config->entry_point_name, 0)) {
+      Temp scratch = scratch_begin(&arena, 1);
+      lnk_error_with_loc(LNK_Warning_TryingToExportEntryPoint, exp.obj_path, exp.lib_path, "alias exports entry point \"%S\"", pe_string_from_export_parse(scratch.arena, exp));
+      scratch_end(scratch);
       continue;
     }
 
-    if (!exp->is_forwarder) {
-      // filter out unresolved exports
-      LNK_ExportMatch match = lnk_export_table_match(exports, symtab, config->machine, exp->name, 0);
+    if ( ! exp.is_forwarder) {
+      LNK_ExportMatch match = lnk_export_table_match(exports, symtab, config->machine, exp.name, 0);
 
+      // filter out unresolved exports
       if (match.kind != LNK_ExportMatch_Definition) {
-        lnk_error_with_loc(LNK_Error_UnresolvedSymbol, exp->obj_path, exp->lib_path, "unresolved export symbol %S", exp->name);
-        has_unresolved_exports = 1;
+        Temp scratch = scratch_begin(&arena, 1);
+        lnk_error_with_loc(LNK_Error_UnresolvedSymbol, exp.obj_path, exp.lib_path, "unresolved export symbol: %S", pe_string_from_export_parse(scratch.arena, exp));
+        if ( ! config->force) { lnk_exit(LNK_Error_UnresolvedSymbol); }
+        scratch_end(scratch);
         continue;
       }
 
-      lnk_export_apply_match(config->arena, exp, match);
+      lnk_export_apply_match(config->arena, &exp, match);
     }
 
     // push resolved export
-    pe_export_parse_list_push_node(&resolved_exports, exp_n);
+    pe_export_parse_list_push(arena, &result, exp);
   }
 
-  if (has_unresolved_exports && !config->force) { lnk_exit(LNK_Error_UnresolvedSymbol); }
-  return resolved_exports;
+  return result;
 }
 
 internal LNK_LinkResult
@@ -2563,15 +2563,17 @@ lnk_link_image(TP_Context *tp, TP_Arena *arena, LNK_Config *config, LNK_Inputer 
   PE_FinalizedExports finalized_exports = {0};
   if (config->export_symbol_list.count) {
     ProfBegin("Build Export Table");
+    PE_ExportParseList resolved_exports = lnk_resolved_exports_from_config(arena->v[0], config, symtab, link->exports);
+    if (resolved_exports.count) {
+      String8 finalize_error = pe_finalize_export_list(arena->v[0], resolved_exports, &finalized_exports);
+      if (finalize_error.size) {
+        lnk_error(LNK_Error_ExportTable, "%S", finalize_error);
+        lnk_exit(1);
+      }
 
-    PE_ExportParseList resolved_exports = lnk_resolved_exports_from_config(config, symtab, link->exports);
-    String8 finalize_error = pe_finalize_export_list(arena->v[0], resolved_exports, &finalized_exports);
-    if (finalize_error.size) {
-      lnk_error(LNK_Error_ExportTable, "%S", finalize_error);
-      lnk_exit(1);
+      String8 edata_obj = pe_make_edata_obj(arena->v[0], lnk_get_image_name(config), COFF_TimeStamp_Max, config->machine, finalized_exports);
+      lnk_inputer_push_obj_linkgen(inputer, 0, str8_lit("* Exports *"), edata_obj);
     }
-    String8 edata_obj = pe_make_edata_obj(arena->v[0], lnk_get_image_name(config), COFF_TimeStamp_Max, config->machine, finalized_exports);
-    lnk_inputer_push_obj_linkgen(inputer, 0, str8_lit("* Exports *"), edata_obj);
 
     ProfEnd();
   }

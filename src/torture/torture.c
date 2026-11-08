@@ -949,6 +949,28 @@ t_match_linef(String8 *output, char *fmt, ...)
   return is_match;
 }
 
+internal U64
+t_find_matchf(String8 output, char *fmt, ...)
+{
+  Temp scratch = scratch_begin(0, 0);
+  va_list args;
+  va_start(args, fmt);
+  String8 expected_line = push_str8fv(scratch.arena, fmt, args);
+
+  U64 offset = max_U64;
+  for (String8 i = output; i.size > 0; ) {
+    U64 line_start = 0;
+    if (t_match_line(&i, expected_line)) {
+      offset = line_start;
+      break;
+    }
+  }
+
+  va_end(args);
+  scratch_end(scratch);
+  return offset;
+}
+
 internal force_inline int
 t_test_info_is_before(void *a_, void *b_)
 {

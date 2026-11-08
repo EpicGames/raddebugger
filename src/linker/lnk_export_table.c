@@ -129,44 +129,45 @@ lnk_export_table_match(LNK_ExportTable *table, LNK_SymbolTable *symtab, COFF_Mac
     }
   }
 
-  if (machine != COFF_MachineType_X86) { return result; }
-  LNK_NameTrieNode *bucket = lnk_name_trie_search(table->undecorated, u64_hash_from_str8(name), name);
-  if (bucket) {
-    for EachNode(candidate, LNK_ExportCandidate, bucket->value) {
-      LNK_ExportDefinition *definition = candidate->definition->value;
-      LNK_ExportMatch       match      = lnk_export_match_definition(symtab, definition->name, definition->ref);
-      if (match.kind == LNK_ExportMatch_None) { continue; }
-      if (result.kind != LNK_ExportMatch_None && !str8_match(result.canonical_name, match.canonical_name, 0)) {
-        return (LNK_ExportMatch){ .kind = LNK_ExportMatch_Ambiguous };
-      }
-      result = match;
-    }
-  }
-  if (result.kind != LNK_ExportMatch_None) { return result; }
-
-  // only pending export requests need this scan; do not parse archive objects
-  // or allocate an export record for every indexed library symbol
-  if (libs) {
-    for EachNode(node, LNK_LibNode, libs->first) {
-      LNK_Lib *lib = &node->data;
-      for EachIndex(i, lib->symbol_count) {
-        String8 canonical   = lib->symbol_names.v[i];
-        String8 undecorated = lnk_export_undecorated_name(machine, canonical);
-
-        if (!undecorated.size || !str8_match(undecorated, name, 0)) { continue; }
-
-        if (result.kind != LNK_ExportMatch_None) {
-          if (!str8_match(result.canonical_name, canonical, 0)) {
-            return (LNK_ExportMatch){ .kind = LNK_ExportMatch_Ambiguous };
-          }
-          continue;
+  if (machine == COFF_MachineType_X86) {
+    LNK_NameTrieNode *bucket = lnk_name_trie_search(table->undecorated, u64_hash_from_str8(name), name);
+    if (bucket) {
+      for EachNode(candidate, LNK_ExportCandidate, bucket->value) {
+        LNK_ExportDefinition *definition = candidate->definition->value;
+        LNK_ExportMatch       match      = lnk_export_match_definition(symtab, definition->name, definition->ref);
+        if (match.kind == LNK_ExportMatch_None) { continue; }
+        if (result.kind != LNK_ExportMatch_None && !str8_match(result.canonical_name, match.canonical_name, 0)) {
+          return (LNK_ExportMatch){ .kind = LNK_ExportMatch_Ambiguous };
         }
+        result = match;
+      }
+    }
+    if (result.kind != LNK_ExportMatch_None) { return result; }
 
-        result = (LNK_ExportMatch){ .kind           = LNK_ExportMatch_ArchiveMember,
-                                    .canonical_name = canonical,
-                                    .lib            = lib,
-                                    .member_idx     = lib->symbol_indices[i] - 1
-        };
+    // only pending export requests need this scan; do not parse archive objects
+    // or allocate an export record for every indexed library symbol
+    if (libs) {
+      for EachNode(node, LNK_LibNode, libs->first) {
+        LNK_Lib *lib = &node->data;
+        for EachIndex(i, lib->symbol_count) {
+          String8 canonical   = lib->symbol_names.v[i];
+          String8 undecorated = lnk_export_undecorated_name(machine, canonical);
+
+          if (!undecorated.size || !str8_match(undecorated, name, 0)) { continue; }
+
+          if (result.kind != LNK_ExportMatch_None) {
+            if (!str8_match(result.canonical_name, canonical, 0)) {
+              return (LNK_ExportMatch){ .kind = LNK_ExportMatch_Ambiguous };
+            }
+            continue;
+          }
+
+          result = (LNK_ExportMatch){ .kind           = LNK_ExportMatch_ArchiveMember,
+                                      .canonical_name = canonical,
+                                      .lib            = lib,
+                                      .member_idx     = lib->symbol_indices[i] - 1
+          };
+        }
       }
     }
   }
