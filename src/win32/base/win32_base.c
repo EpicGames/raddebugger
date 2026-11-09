@@ -1603,6 +1603,63 @@ get_process_start_time_unix(void)
 ////////////////////////////////
 //~ rjf: @per_os_impl Child Processes
 
+internal String8
+win32_make_command_line_string(Arena *arena, String8List cmd_line)
+{
+  Temp scratch = scratch_begin(&arena, 1);
+
+  String8List escaped_args = {0};
+  for EachNode(n, String8Node, cmd_line.first)
+  {
+    String8  arg    = n->string;
+    U8      *buffer = push_array(scratch.arena, U8, arg.size*2+2);
+    U64      size   = 0;
+
+    buffer[size++] = '"';
+
+    for (U64 i = 0; i < arg.size; )
+    {
+      if (arg.str[i] == '\\')
+      {
+        U64 start = i;
+        while (i < arg.size && arg.str[i] == '\\')
+        {
+          i += 1;
+        }
+        U64 backslash_count = i - start;
+
+        U64 fill_count = backslash_count;
+        if (i == arg.size || arg.str[i] == '"')
+        {
+          fill_count *= 2;
+        }
+
+        for EachIndex(k, fill_count)
+        {
+          buffer[size++] = '\\';
+        }
+      }
+      else
+      {
+        if (arg.str[i] == '"')
+        {
+          buffer[size++] = '\\';
+        }
+        buffer[size++] = arg.str[i++];
+      }
+    }
+
+    buffer[size++] = '"';
+
+    str8_list_push(scratch.arena, &escaped_args, str8(buffer, size));
+  }
+
+  String8 cmd = str8_list_join(arena, &escaped_args, &(StringJoin){.sep = str8_lit(" ")});
+
+  scratch_end(scratch);
+  return cmd;
+}
+
 internal Process
 process_launch(ProcessLaunchParams *params)
 {
@@ -1610,14 +1667,7 @@ process_launch(ProcessLaunchParams *params)
   Temp scratch = scratch_begin(0, 0);
   
   //- rjf: form full command string
-  String8 cmd = {0};
-  {
-    StringJoin join_params = {0};
-    join_params.pre = str8_lit("\"");
-    join_params.sep = str8_lit("\" \"");
-    join_params.post = str8_lit("\"");
-    cmd = str8_list_join(scratch.arena, &params->cmd_line, &join_params);
-  }
+  String8 cmd = win32_make_command_line_string(scratch.arena, params->cmd_line);
   
   //- rjf: form environment
   B32 use_null_env_arg = 0;
