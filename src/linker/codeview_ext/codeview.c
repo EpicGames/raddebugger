@@ -84,7 +84,7 @@ internal U64
 cv_read_leaf(String8 raw_data, U64 off, U64 align, CV_Leaf *leaf_out)
 {
   // do we have enough bytes to read header?
-  if (raw_data.size < sizeof(CV_LeafHeader)) { return 0; }
+  if (off > raw_data.size || raw_data.size - off < sizeof(CV_LeafHeader)) { return 0; }
 
   U8 *leaf_ptr = raw_data.str + off;
 
@@ -95,14 +95,14 @@ cv_read_leaf(String8 raw_data, U64 off, U64 align, CV_Leaf *leaf_out)
   if (header.size < sizeof(CV_LeafKind)) { return 0; }
 
   // do we have enough bytes to read leaf data?
-  if (sizeof(CV_LeafSize) + header.size > raw_data.size) { return 0; }
+  if (sizeof(CV_LeafSize) + header.size > raw_data.size - off) { return 0; }
 
   // fill out leaf
   leaf_out->kind = header.kind;
   leaf_out->data = str8(leaf_ptr + sizeof(CV_LeafHeader), header.size - sizeof(CV_LeafKind));
 
   U64 leaf_size = AlignPow2(sizeof(CV_LeafHeader) + leaf_out->data.size, align);
-  if (leaf_size > raw_data.size) { return 0; }
+  if (leaf_size > raw_data.size - off) { return 0; }
 
   return leaf_size;
 }
@@ -250,23 +250,48 @@ cv_data_from_symbol(Arena *arena, CV_Symbol *symbol, U64 align)
   return result;
 }
 
-internal U64
-cv_read_symbol(String8 raw_data, U64 off, U64 align, CV_Symbol *symbol_out)
+internal B32
+cv_read_symbol_checked(String8 raw_data, U64 off, U64 align, CV_Symbol *symbol_out, U64 *bytes_read_out)
 {
-  Assert(raw_data.size >= sizeof(CV_SymbolHeader));
+  // is there enough bytes to read header?
+  if (raw_data.size < sizeof(CV_SymbolHeader)) {
+    return 0;
+  }
 
   U8 *symbol_ptr = raw_data.str + off;
   CV_SymbolHeader header = { .v = memory_read32(symbol_ptr) };
 
-  Assert(header.size >= sizeof(CV_SymKind));
-  Assert(sizeof(CV_SymSize) + header.size <= raw_data.size);
+  // symbol header must contain at least kind
+  if (header.size < sizeof(CV_SymKind)) {
+    return 0;
+  }
+  // verify header size
+  if (sizeof(CV_SymSize) + header.size > raw_data.size) {
+    return 0;
+  }
 
   symbol_out->kind = header.kind;
   symbol_out->data = str8(symbol_ptr + sizeof(CV_SymbolHeader), header.size - sizeof(CV_SymKind));
 
   U64 symbol_size = AlignPow2(sizeof(CV_SymSize) + header.size, align);
-  Assert(symbol_size <= raw_data.size);
-  return symbol_size;
+
+  // check for align overflow
+  if (symbol_size > raw_data.size) {
+    return 0;
+  }
+
+  *bytes_read_out = symbol_size;
+
+  return 1;
+}
+
+internal U64
+cv_read_symbol(String8 raw_data, U64 off, U64 align, CV_Symbol *symbol_out)
+{
+  U64 bytes_read = 0;
+  B32 is_ok = cv_read_symbol_checked(raw_data, off, align, symbol_out, &bytes_read);
+  Assert(is_ok);
+  return bytes_read;
 }
 
 internal U8 *
@@ -582,6 +607,7 @@ cv_obj_info_from_symbol(CV_Symbol symbol)
 internal String8
 cv_debug_s_alloc_subsection(Arena *arena, CV_DebugS *debug_s, CV_C13SubSectionKind kind, U64 size)
 {
+  debug_s->index = 0;
   CV_C13SubSectionHeader header = { .kind = kind, .size = safe_cast_u32(size) };
   U64  block_size = AlignPow2(sizeof(header) + size, CV_C13SubSectionAlign);
   U8  *block      = push_array(arena, U8, block_size);
@@ -593,6 +619,7 @@ cv_debug_s_alloc_subsection(Arena *arena, CV_DebugS *debug_s, CV_C13SubSectionKi
 internal void
 cv_debug_s_from_data_c13_(Arena *arena, CV_DebugS *debug_s, String8 raw_debug_s)
 {
+  debug_s->index = 0;
   CV_DebugS_Iter it = { .debug_s = debug_s, .block = raw_debug_s };
   while (cv_debug_s_iter_next(&it)) {}
   if (it.malformed) { raw_debug_s.size = it.cursor; }
@@ -600,59 +627,117 @@ cv_debug_s_from_data_c13_(Arena *arena, CV_DebugS *debug_s, String8 raw_debug_s)
 }
 
 internal void
-cv_debug_s_exclude_kind(CV_DebugS *debug_s, CV_C13SubSectionKind kind)
+cv_debug_s_ignore_kind(CV_DebugS *debug_s, CV_C13SubSectionKind kind)
 {
   U32 idx = cv_c13_sub_section_idx_from_kind(kind);
   Assert(idx != CV_C13SubSectionIdxKind_NULL && idx < 32);
-  debug_s->excluded_kinds |= 1u << idx;
+  debug_s->ignored_kinds |= 1u << idx;
+}
+
+internal CV_DebugS_Index *
+cv_debug_s_index_from_debug_s(CV_DebugS *debug_s)
+{
+  CV_DebugS_Index *index = debug_s->index;
+  if (index && (index->block_count != debug_s->data.node_count || index->last_block != debug_s->data.last || (debug_s->data.last && debug_s->data.last->next))) {
+    index = 0;
+  }
+  return index;
+}
+
+internal void
+cv_debug_s_stats_accumulate(CV_DebugS_Stats *stats, CV_C13SubSectionKind kind, U64 size)
+{
+  if (kind & CV_C13SubSectionKind_IgnoreFlag) {
+    return;
+  }
+  U32 idx = cv_c13_sub_section_idx_from_kind(kind);
+  stats->size[idx]  += size;
+  stats->count[idx] += 1;
+  if (kind == CV_C13SubSectionKind_Lines && size) {
+    stats->lines_size += AlignPow2(sizeof(CV_C13SubSectionHeader) + size, CV_C13SubSectionAlign);
+  }
 }
 
 internal CV_DebugS_Iter
 cv_debug_s_iter_init(CV_DebugS *debug_s)
 {
-  return (CV_DebugS_Iter){ .debug_s = debug_s, .next_block = debug_s->data.first };
+  return (CV_DebugS_Iter){ .debug_s = debug_s, .next_block = debug_s->data.first, .index = cv_debug_s_index_from_debug_s(debug_s) };
 }
 
 internal B32
 cv_debug_s_iter_next_block(CV_DebugS_Iter *it)
 {
-  it->block  = str8_zero();
-  it->cursor = 0;
-  if (it->next_block == 0) { return 0; }
+  it->block        = str8_zero();
+  it->cursor       = 0;
+  it->cached_block = 0;
+  if (it->next_block == 0) {
+    return 0;
+  }
+
   it->block      = it->next_block->string;
   it->next_block = it->next_block->next;
+  if (it->index && it->block_idx < it->index->block_count) {
+    CV_DebugS_BlockIndex block = it->index->blocks[it->block_idx];
+    if (block.subsection_base_idx != max_U32) {
+      it->cached_block   = 1;
+      it->subsection_idx = block.subsection_base_idx;
+      it->subsection_opl = it->subsection_idx + block.subsection_count;
+    }
+  }
+  it->block_idx += 1;
+  return 1;
+}
+
+internal B32
+cv_debug_s_iter_next_raw(CV_DebugS_Iter *it)
+{
+  if (it->cached_block) {
+    if (it->subsection_idx == it->subsection_opl) {
+      return 0;
+    }
+
+    CV_DebugS_Subsection subsection;
+    MemoryCopy(&subsection, it->index->subsections.str + it->subsection_idx * sizeof(subsection), sizeof(subsection));
+    Assert(subsection.data_offset <= it->block.size && subsection.data_size <= it->block.size - subsection.data_offset);
+    it->subsection_idx += 1;
+    it->kind            = subsection.kind;
+    it->data_offset     = subsection.data_offset;
+    it->data            = str8(it->block.str + subsection.data_offset, subsection.data_size);
+    it->cursor          = Min(AlignPow2((U64)subsection.data_offset + subsection.data_size, CV_C13SubSectionAlign), it->block.size);
+
+    return 1;
+  }
+  
+  CV_C13SubSection subsection;
+  if ( ! cv_c13_sub_section_from_data(it->block, it->cursor, &subsection)) {
+    return 0;
+  }
+  
+  if (subsection.truncated) {
+    it->malformed  = 1;
+    it->block.size = it->cursor;
+    return 0;
+  }
+  
+  it->cursor      = subsection.next_offset;
+  it->kind        = subsection.kind;
+  it->data        = subsection.data;
+  it->data_offset = subsection.data_offset;
+  
   return 1;
 }
 
 internal B32
 cv_debug_s_iter_next(CV_DebugS_Iter *it)
 {
-  String8 data = it->block;
-  while (it->cursor <= data.size && sizeof(CV_C13SubSectionHeader) <= data.size - it->cursor) {
-    CV_C13SubSectionHeader header;
-    str8_deserial_read_struct(data, it->cursor, &header);
-    U64 off = it->cursor + sizeof(header);
-    if (header.size > data.size - off) {
-      it->malformed = 1;
-      it->block.size = it->cursor;
-      return 0;
-    }
+  while (cv_debug_s_iter_next_raw(it)) {
+    if (it->kind & CV_C13SubSectionKind_IgnoreFlag) { continue; }
 
-    U64 end = off + header.size;
-    U64 pad = AlignPadPow2(end, CV_C13SubSectionAlign);
-
-    it->cursor = pad <= data.size - end ? end + pad : data.size;
-    if (header.kind & CV_C13SubSectionKind_IgnoreFlag) { continue; }
-
-    U32 idx = cv_c13_sub_section_idx_from_kind(header.kind);
-    if (it->debug_s->excluded_kinds & (1u << idx)) { continue; }
-
-    it->kind        = header.kind;
-    it->data        = str8(data.str + off, header.size);
-    it->data_offset = off;
+    U32 idx = cv_c13_sub_section_idx_from_kind(it->kind);
+    if (it->debug_s->ignored_kinds & (1u << idx)) { continue; }
+    
     return 1;
   }
-
   return 0;
 }
 
@@ -668,6 +753,13 @@ cv_debug_s_iter_next_kind(CV_DebugS_Iter *it, CV_C13SubSectionKind kind)
 internal B32
 cv_debug_s_find_first(CV_DebugS *debug_s, CV_C13SubSectionKind kind, String8 *out)
 {
+  CV_DebugS_Index *index = cv_debug_s_index_from_debug_s(debug_s);
+  if (index && (kind == CV_C13SubSectionKind_StringTable || kind == CV_C13SubSectionKind_FileChksms)) {
+    U32 idx = cv_c13_sub_section_idx_from_kind(kind);
+    if ((debug_s->ignored_kinds & (1u << idx)) || index->stats.count[idx] == 0) { return 0; }
+    *out = kind == CV_C13SubSectionKind_StringTable ? index->string_table : index->file_chksms;
+    return 1;
+  }
   CV_DebugS_Iter it = cv_debug_s_iter_init(debug_s);
   if (!cv_debug_s_iter_next_kind(&it, kind)) { return 0; }
   *out = it.data;
@@ -677,18 +769,20 @@ cv_debug_s_find_first(CV_DebugS *debug_s, CV_C13SubSectionKind kind, String8 *ou
 internal CV_DebugS_Stats
 cv_debug_s_stats(CV_DebugS *debug_s)
 {
+  CV_DebugS_Index *index = cv_debug_s_index_from_debug_s(debug_s);
+  if (index) {
+    CV_DebugS_Stats result = index->stats;
+    for EachElement(i, result.size) {
+      if (debug_s->ignored_kinds & (1u << i)) { result.size[i] = 0; result.count[i] = 0; }
+    }
+    if (debug_s->ignored_kinds & (1u << CV_C13SubSectionIdxKind_Lines)) { result.lines_size = 0; }
+    return result;
+  }
   CV_DebugS_Stats result = {0};
   CV_DebugS_Iter  it     = cv_debug_s_iter_init(debug_s);
   while (cv_debug_s_iter_next_block(&it)) {
     while (cv_debug_s_iter_next(&it)) {
-      U64 idx = cv_c13_sub_section_idx_from_kind(it.kind);
-
-      result.size[idx]  += it.data.size;
-      result.count[idx] += 1;
-
-      if (it.kind == CV_C13SubSectionKind_Lines && it.data.size) {
-        result.lines_size += AlignPow2(sizeof(CV_C13SubSectionHeader) + it.data.size, CV_C13SubSectionAlign);
-      }
+      cv_debug_s_stats_accumulate(&result, it.kind, it.data.size);
     }
   }
   return result;
@@ -710,29 +804,25 @@ cv_debug_s_from_data_c13(Arena *arena, String8 raw_debug_s)
   return debug_s;
 }
 
-internal CV_DebugS 
-cv_debug_s_from_data(Arena *arena, String8 raw_debug_s)
+internal B32 
+cv_debug_s_from_data_checked(Arena *arena, String8 raw_debug_s, CV_DebugS *debug_s_out)
 {
-  CV_DebugS result; MemoryZeroStruct(&result);
   if (raw_debug_s.size >= sizeof(CV_Signature)) {
     CV_Signature sig = cv_signature_from_debug_s(raw_debug_s);
-    switch (sig) {
-    case CV_Signature_C13: {
+    if (sig == CV_Signature_C13) {
       String8 raw_debug_s_past_sig = str8_substr(raw_debug_s, r1u64(sizeof(sig), raw_debug_s.size));
-      result = cv_debug_s_from_data_c13(arena, raw_debug_s_past_sig);
-    } break;
-    case CV_Signature_C6: {
-      Assert(!"TODO: handle C6");
-    } break;
-    case CV_Signature_C7: {
-      Assert(!"TODO: handle C7");
-    } break;
-    case CV_Signature_C11: {
-      Assert(!"TODO: handle C11");
-    } break;
-    default: Assert(!"invalid signature"); break;
+      *debug_s_out = cv_debug_s_from_data_c13(arena, raw_debug_s_past_sig);
+      return 1;
     }
   }
+  return 0;
+}
+
+internal CV_DebugS
+cv_debug_s_from_data(Arena *arena, String8 raw_debug_s)
+{
+  CV_DebugS result = {0};
+  AssertAlways(cv_debug_s_from_data_checked(arena, raw_debug_s, &result));
   return result;
 }
 
@@ -740,8 +830,13 @@ internal void
 cv_debug_s_concat_in_place(CV_DebugS *dst, CV_DebugS *src)
 {
   Assert(dst != src);
-  if (dst->data.node_count == 0) { dst->excluded_kinds = src->excluded_kinds; }
-  Assert(src->data.node_count == 0 || dst->excluded_kinds == src->excluded_kinds);
+  if (dst->data.node_count == 0) {
+    dst->ignored_kinds = src->ignored_kinds;
+    dst->index = cv_debug_s_index_from_debug_s(src);
+  } else if (src->data.node_count) {
+    dst->index = 0;
+  }
+  Assert(src->data.node_count == 0 || dst->ignored_kinds == src->ignored_kinds);
   str8_list_concat_in_place(&dst->data, &src->data);
   MemoryZeroStruct(src);
 }
@@ -940,7 +1035,6 @@ cv_string_hash_table_insert_or_update(CV_StringBucket **buckets, U64 cap, U64 ha
   return result;
 }
 
-internal
 THREAD_POOL_TASK_FUNC(cv_count_strings_in_debug_s_arr_task)
 {
   ProfBeginFunction();
@@ -969,7 +1063,6 @@ THREAD_POOL_TASK_FUNC(cv_count_strings_in_debug_s_arr_task)
   ProfEnd();
 }
 
-internal
 THREAD_POOL_TASK_FUNC(cv_dedup_strings_in_debug_s_arr_task)
 {
   ProfBeginFunction();
@@ -1151,12 +1244,11 @@ cv_string_hash_table_lookup(CV_StringHashTable ht, String8 string)
   return 0;
 }
 
-internal
 THREAD_POOL_TASK_FUNC(cv_pack_string_hash_table_task)
 {
   ProfBeginFunction();
   CV_PackStringHashTableTask *task  = raw_task;
-  Rng1U64                     range = task->ranges[task_id];
+  Rng1U64                     range = tp_work_range(task->bucket_cap, tp->worker_count, task_id);
   for (U64 bucket_idx = range.min; bucket_idx < range.max; ++bucket_idx) {
     CV_StringBucket *bucket = task->buckets[bucket_idx];
     if (bucket) {
@@ -1171,7 +1263,6 @@ internal String8
 cv_pack_string_hash_table(Arena *arena, TP_Context *tp, CV_StringHashTable string_ht)
 {
   ProfBeginFunction();
-  Temp scratch = scratch_begin(&arena, 1);
 
   U64  buffer_size = string_ht.total_string_size + /* nulls: */ string_ht.total_insert_count;
   U8  *buffer      = push_array_no_zero(arena, U8, buffer_size);
@@ -1179,11 +1270,10 @@ cv_pack_string_hash_table(Arena *arena, TP_Context *tp, CV_StringHashTable strin
   CV_PackStringHashTableTask task = {0};
   task.buckets                    = string_ht.buckets;
   task.buffer                     = buffer;
-  task.ranges                     = tp_divide_work(scratch.arena, string_ht.bucket_cap, tp->worker_count);
+  task.bucket_cap                 = string_ht.bucket_cap;
   tp_for_parallel(tp, 0, tp->worker_count, cv_pack_string_hash_table_task, &task);
 
   String8 result = str8(buffer, buffer_size);
-  scratch_end(scratch);
   ProfEnd();
   return result;
 }
@@ -1246,63 +1336,126 @@ cv_symbol_deduper_insert_or_update(void **buckets, U64 bucket_cap, U64 hash, voi
 ////////////////////////////////
 //~ .debug$T helpers
 
-internal CV_DebugT
-cv_debug_t_from_data(Arena *arena, String8 data, U64 align)
+internal B32
+cv_debug_t_from_data_checked(Arena *arena, String8 data, U64 align, U32 *offsets, U64 *source_counts, CV_DebugT *out)
 {
+  MemoryZeroStruct(out);
+
   CV_DebugT debug_t = { .data = data };
 
   U64 parse_start_offset = 0;
 
-  // strip LF_PRECOMP from .debug$T to exclude it from leaf arrays
-  B8             has_pch = 0;
-  CV_PrecompInfo precomp = {0};
+  // strip LF_PRECOMP from .debug$T to exclude it from the leaf arrays;
+  // (we don't need to adjust type indices because compiler already did this for us)
   {
     CV_Leaf leaf        = {0};
     U64     leaf_size   = cv_read_leaf(data, 0, CV_LeafAlign, &leaf);
-    if (leaf.kind == CV_LeafKind_PRECOMP) {
+    if (leaf_size && leaf.kind == CV_LeafKind_PRECOMP) {
       debug_t.has_pch = 1;
       debug_t.precomp = cv_precomp_info_from_leaf(leaf);
       parse_start_offset = leaf_size;
     }
   }
 
-  ProfBegin("Upfront parse for counts");
-  for (U64 cursor = parse_start_offset, prev_cursor = parse_start_offset, ti = CV_MinComplexTypeIndex; cursor < data.size; ti += 1) {
-    CV_Leaf leaf = {0};
-    TryRead(cv_read_leaf(data, cursor, align, &leaf), cursor, count_stop);
-    debug_t.source_counts[cv_type_index_source_from_leaf_kind(leaf.kind)] += 1;
+  //
+  // init from cache
+  //
+  if (offsets || source_counts) {
+    AssertAlways(offsets && source_counts);
+    debug_t.offsets = offsets;
+    MemoryCopy(debug_t.source_counts, source_counts, sizeof(debug_t.source_counts));
+    for EachElement(i, debug_t.source_counts) {
+      debug_t.count += debug_t.source_counts[i];
+    }
   }
-count_stop:
-  ProfEnd();
+  //
+  // full parse
+  //
+  else {
+    ProfBegin("Upfront Leaf Parse");
+    for (U64 cursor = parse_start_offset; cursor < data.size;) {
+      CV_Leaf leaf = {0};
+      TryRead(cv_read_leaf(data, cursor, align, &leaf), cursor, count_stop);
+      debug_t.source_counts[cv_type_index_source_from_leaf_kind(leaf.kind)] += 1;
+    }
+    count_stop:;
+    ProfEnd();
 
-  for EachElement(i, debug_t.source_counts) { debug_t.count += debug_t.source_counts[i]; }
+    for EachElement(i, debug_t.source_counts) {
+      debug_t.count += debug_t.source_counts[i];
+    }
 
-  ProfBegin("store leaf offsets");
-  debug_t.offsets = push_array_no_zero(arena, U32, debug_t.count);
-  for (U64 cursor = parse_start_offset, idx = 0; cursor < data.size && idx < debug_t.count; idx += 1) {
-    debug_t.offsets[idx] = cursor;
-    TryRead(cv_read_leaf(data, cursor, align, &(CV_Leaf){0}), cursor, store_stop);
+    debug_t.offsets = push_array_no_zero(arena, U32, debug_t.count);
+    if (debug_t.offsets) {
+      if (debug_t.count && debug_t.source_counts[CV_TypeIndexSource_NULL] == 0) {
+        debug_t.ipi_bits = bit_array_init32(arena, debug_t.count);
+        if (debug_t.ipi_bits.v == NULL) { return 0; }
+      }
+      ProfBegin("Assign Leaf Offsets");
+      for (U64 cursor = parse_start_offset, idx = 0; cursor < data.size && idx < debug_t.count; idx += 1) {
+        debug_t.offsets[idx] = cursor;
+        CV_Leaf leaf = {0};
+        TryRead(cv_read_leaf(data, cursor, align, &leaf), cursor, store_stop);
+        if (debug_t.ipi_bits.v && cv_type_index_source_from_leaf_kind(leaf.kind) == CV_TypeIndexSource_IPI) {
+          bit_array_set_bit32(debug_t.ipi_bits, idx, 1);
+        }
+      }
+      store_stop:;
+      ProfEnd();
+    } else { return 0; }
   }
-store_stop:
 
-  for EachElement(i, debug_t.ti_ranges) { debug_t.ti_ranges[i] = r1u64(CV_MinComplexTypeIndex, CV_MinComplexTypeIndex + debug_t.count + debug_t.precomp.leaf_count); }
+  // assign type index ranges
+  for EachElement(i, debug_t.ti_ranges) {
+    debug_t.ti_ranges[i] = r1u64s(CV_MinComplexTypeIndex, debug_t.count + debug_t.precomp.leaf_count);
+  }
 
-  for (U64 i = 1; i < CV_TypeIndexSource_COUNT; i += 1) { debug_t.pch_ti_range[i] = r1u64s(debug_t.precomp.start_index, debug_t.precomp.leaf_count); }
+  // assign PCH type index ranges
+  for EachElement(i, debug_t.pch_ti_range) {
+    debug_t.pch_ti_range[i] = r1u64s(debug_t.precomp.start_index, debug_t.precomp.leaf_count);
+  }
 
-  ProfEnd();
-  return debug_t;
+  *out = debug_t;
+  return 1;
+}
+
+internal CV_DebugT
+cv_debug_t_from_data(Arena *arena, String8 data, U64 align)
+{
+  CV_DebugT result = {0};
+  B32 ok = cv_debug_t_from_data_checked(arena, data, align, 0, 0, &result);
+  AssertAlways(ok);
+  return result;
+}
+
+internal B32
+cv_debug_t_get_leaf_checked(CV_DebugT *debug_t, U64 leaf_idx, CV_Leaf *leaf_out)
+{
+  if (debug_t->count > 0 && leaf_idx < debug_t->count) {
+    cv_read_leaf(debug_t->data, debug_t->offsets[leaf_idx], 1, leaf_out);
+    return cv_header_struct_size_from_leaf_kind(leaf_out->kind) <= leaf_out->data.size;
+  }
+  return 0;
 }
 
 internal CV_Leaf
 cv_debug_t_get_leaf(CV_DebugT *debug_t, U64 leaf_idx)
 {
-  CV_Leaf leaf = {0};
-  if (debug_t->count > 0) {
-    Assert(leaf_idx < debug_t->count);
-    cv_read_leaf(debug_t->data, debug_t->offsets[leaf_idx], 1, &leaf);
-    Assert(cv_header_struct_size_from_leaf_kind(leaf.kind) <= leaf.data.size);
+  CV_Leaf result;
+  AssertAlways(cv_debug_t_get_leaf_checked(debug_t, leaf_idx, &result));
+  return result;
+}
+
+internal CV_TypeIndexSource
+cv_type_index_source_from_debug_t(CV_DebugT *debug_t, U64 leaf_idx)
+{
+  Assert(leaf_idx < debug_t->count);
+  if (debug_t->ipi_bits.v) {
+    return bit_array_get_bit32(debug_t->ipi_bits, leaf_idx) ? CV_TypeIndexSource_IPI : CV_TypeIndexSource_TPI;
   }
-  return leaf;
+  CV_LeafHeader *header = cv_debug_t_get_leaf_header(debug_t, leaf_idx);
+  CV_LeafKind    kind   = memory_read16(MemberFromPtr(CV_LeafHeader, header, kind));
+  return cv_type_index_source_from_leaf_kind(kind);
 }
 
 internal U64
@@ -1388,7 +1541,12 @@ cv_debug_t_is_pch(CV_DebugT *debug_t)
 internal B32
 cv_debug_t_is_type_server_ref(CV_DebugT *debug_t)
 {
-  return cv_is_leaf_type_server(cv_debug_t_get_leaf(debug_t, 0).kind);
+  B32 is_type_server = 0;
+  CV_Leaf leaf;
+  if (cv_debug_t_get_leaf_checked(debug_t, 0, &leaf)) {
+    is_type_server = cv_is_leaf_type_server(leaf.kind);
+  }
+  return is_type_server;
 }
 
 // $$Symbols
@@ -1411,23 +1569,24 @@ cv_symbol_list_push(Arena *arena, CV_SymbolList *list, CV_Symbol v)
   return node;
 }
 
-internal U64
-cv_patch_symbol_tree_offsets(String8 raw_symbols, U64 base_offset, U64 align)
+internal B32
+cv_patch_symbol_tree_offsets(String8 raw_symbols, U64 base_offset, U64 align, U64 *tree_size_out)
 {
   Temp scratch = scratch_begin(0, 0);
 
   struct Stack { struct Stack *next; U64 symbol_pos; };
   struct Stack *stack = 0, *free_list = 0;
 
-  U64 cursor = 0;
+  B32 is_patched = 0;
+  U64 cursor     = 0;
 
   for (;;) {
     CV_SymbolHeader symbol_header;
     if (str8_deserial_read_struct(raw_symbols, cursor, &symbol_header) != sizeof(symbol_header)) { break; }
+
     U64 symbol_size = sizeof(CV_SymSize) + symbol_header.size;
     if (symbol_size < sizeof(symbol_header) || symbol_size > raw_symbols.size - cursor) {
-      Assert(0 && "malformed symbol stream");
-      break;
+      goto exit;
     }
 
     if (cv_is_scope_symbol(symbol_header.kind)) {
@@ -1452,7 +1611,7 @@ cv_patch_symbol_tree_offsets(String8 raw_symbols, U64 base_offset, U64 align)
       SLLStackPush(stack, frame);
 
     } else if (cv_is_end_symbol(symbol_header.kind)) {
-      if (stack == 0) { Assert(0 && "malformed symbol stream"); break; }
+      if (stack == 0) { goto exit; }
 
       // patch symbol end
       U32 end_offset = safe_cast_u32(base_offset + cursor);
@@ -1469,8 +1628,14 @@ cv_patch_symbol_tree_offsets(String8 raw_symbols, U64 base_offset, U64 align)
     cursor += AlignPow2(symbol_size, align);
   }
 
+  if (tree_size_out) {
+    *tree_size_out = cursor;
+  }
+
+  is_patched = 1;
+  exit:;
   scratch_end(scratch);
-  return cursor;
+  return is_patched;
 }
 
 // $$FileChksms
@@ -1922,7 +2087,7 @@ cv_c13_make_inlinee_lines_accel(Arena *arena, CV_C13InlineeLinesParsedList inlin
   // alloc hash table
   CV_InlineeLinesAccel *accel = push_array(arena, CV_InlineeLinesAccel, 1);
   accel->bucket_count = 0;
-  accel->bucket_max   = (U64)((F64)inlinee_lines.count * 2.5);
+  accel->bucket_max   = Max((U64)((F64)inlinee_lines.count * 2.5), 1);
   accel->buckets      = push_array(arena, CV_C13InlineeLinesParsed *, accel->bucket_max);
 
   // push parsed inlinees
@@ -1940,9 +2105,15 @@ internal CV_InlineBinaryAnnotsParsed
 cv_c13_parse_inline_binary_annots(Arena                    *arena,
                                   U64                       parent_voff,
                                   CV_C13InlineeLinesParsed *inlinee_parsed,
-                                  String8                   binary_annots)
+                                  String8                   binary_annots,
+                                  U64Array                  separated_code_voffs)
 {
   Temp scratch = scratch_begin(&arena, 1);
+
+  CV_InlineBinaryAnnotsParsed result = {0};
+  if (inlinee_parsed == 0) {
+    goto exit;
+  }
 
   struct CodeRange {
     struct CodeRange *next;
@@ -1971,8 +2142,13 @@ cv_c13_parse_inline_binary_annots(Arena                    *arena,
   U64                file_count  = 0;
 
   CV_C13InlineSiteDecoder decoder = cv_c13_inline_site_decoder_init(inlinee_parsed->file_off, inlinee_parsed->first_source_ln, parent_voff);
+  decoder.separated_code_voffs = separated_code_voffs;
   for (;;) {
     CV_C13InlineSiteDecoderStep step = cv_c13_inline_site_decoder_step(&decoder, binary_annots);
+    if (decoder.error || (step.flags & CV_C13InlineSiteDecoderStepFlag_Error)) {
+      goto exit;
+    }
+
     if (step.flags == 0) {
       break;
     }
@@ -1984,13 +2160,23 @@ cv_c13_parse_inline_binary_annots(Arena                    *arena,
         code_ranges.last->v = step.range;
       }
     }
+
+    // a file change can also finish the preceding sequence's range
+    if (file_last && (step.flags & (CV_C13InlineSiteDecoderStepFlag_EmitRange | CV_C13InlineSiteDecoderStepFlag_ExtendLastRange))) {
+      file_last->last_code_range = step.range;
+    }
+
     if (step.flags & CV_C13InlineSiteDecoderStepFlag_EmitFile) {
       struct SourceFile *file = push_array(scratch.arena, struct SourceFile, 1);
       file->checksum_off      = step.file_off;
       SLLQueuePush(file_first, file_last, file);
       ++file_count;
     }
+
     if (step.flags & CV_C13InlineSiteDecoderStepFlag_EmitLine) {
+      if (step.flags & (CV_C13InlineSiteDecoderStepFlag_EmitRange | CV_C13InlineSiteDecoderStepFlag_ExtendLastRange)) {
+        file_last->last_code_range = step.range;
+      }
       struct SourceLine *line = push_array(scratch.arena, struct SourceLine, 1);
       line->voff              = step.line_voff;
       line->ln                = step.ln;
@@ -2028,11 +2214,11 @@ cv_c13_parse_inline_binary_annots(Arena                    *arena,
   }
 
   // fill out result
-  CV_InlineBinaryAnnotsParsed result = {0};
-  result.lines_count                 = file_count;
-  result.lines                       = lines;
-  result.code_ranges                 = code_ranges;
+  result.lines_count = file_count;
+  result.lines       = lines;
+  result.code_ranges = code_ranges;
 
+exit:;
   scratch_end(scratch);
   return result;
 }

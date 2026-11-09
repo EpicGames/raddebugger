@@ -255,7 +255,7 @@ internal DMN_EventList dmn_ctrl_run(Arena *arena, DMN_CtrlCtx *ctx, DMN_RunCtrls
 ////////////////////////////////
 //~ rjf: @dmn_os_hooks Halting (Implemented Per-OS)
 
-internal void dmn_halt(U64 code, U64 user_data);
+internal B32 dmn_halt(U64 code, U64 user_data);
 
 ////////////////////////////////
 //~ rjf: @dmn_os_hooks Introspection Functions (Implemented Per-OS)

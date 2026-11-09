@@ -4,18 +4,29 @@
 #pragma once
 
 // entry points
-#define LNK_BootMode_XList \
-  X(Linker)     \
-  X(TypeServer) \
-  X(Lib)        \
+#define LNK_Tool_XList             \
+  X(Linker,     "radlink")         \
+  X(TypeServer, "rad-type-server") \
+  X(Lib,        "lib")             \
+  X(Compress,   "rad-compress")    \
+  X(Decompress, "rad-decompress")  \
   /* end */
 
 typedef enum
 {
-#define X(n,...) LNK_BootMode_##n,
-  LNK_BootMode_XList
+#define X(n, ...) LNK_ToolIdx_##n,
+  LNK_Tool_XList
 #undef X
-} LNK_BootMode;
+} LNK_ToolIdx;
+
+typedef enum
+{
+  LNK_Tool_Null,
+#define X(n, ...) LNK_Tool_##n = (1 << LNK_ToolIdx_##n),
+  LNK_Tool_XList
+#undef X
+  LNK_Tool_All = ~0
+} LNK_Tool;
 
 #if OS_WINDOWS
 # define LNK_MANIFEST_MERGE_TOOL_NAME "mt.exe"
@@ -110,7 +121,7 @@ typedef enum
   LNK_CmdSwitch_WholeArchive,
 
   LNK_CmdSwitch_Rad_Age,
-  LNK_CmdSwitch_Rad_BootMode,
+  LNK_CmdSwitch_Rad_Tool,
   LNK_CmdSwitch_Rad_BuildExp,
   LNK_CmdSwitch_Rad_BuildImpLib,
   LNK_CmdSwitch_Rad_BuildInfo,
@@ -146,17 +157,24 @@ typedef enum
   LNK_CmdSwitch_Rad_SortImports,
   LNK_CmdSwitch_Rad_TimeStamp,
   LNK_CmdSwitch_Rad_DebugTypeHash,
+  LNK_CmdSwitch_Rad_FastExit,
   LNK_CmdSwitch_Rad_UnresolvedSymbolLimit,
   LNK_CmdSwitch_Rad_UnresolvedSymbolRefLimit,
   LNK_CmdSwitch_Rad_Version,
   LNK_CmdSwitch_Rad_WorkDir,
   LNK_CmdSwitch_Rad_Workers,
   LNK_CmdSwitch_Rad_WriteTempFiles,
-
   LNK_CmdSwitch_RadTypeServer,
   LNK_CmdSwitch_RadTypeServer_MatchObj,
-
   LNK_CmdSwitch_LLVM_AddrSig,
+
+  LNK_CmdSwitch_Rad_Oodle2,
+  LNK_CmdSwitch_Rad_ObjSegmentSize,
+  LNK_CmdSwitch_Rad_CfmCacheCap,
+  LNK_CmdSwitch_Rad_CfmPrefetchSize,
+  LNK_CmdSwitch_Rad_CfmWorkerCount,
+  LNK_CmdSwitch_Compress,
+  LNK_CmdSwitch_Decompress,
 
   LNK_CmdSwitch_Help,
 
@@ -172,12 +190,13 @@ typedef enum LNK_CmdValueKind
 
 typedef struct LNK_CmdSwitch
 {
-  LNK_CmdSwitchType type;
-  B32               is_legal_directive;
-  LNK_CmdValueKind  value_kind;
-  char             *name;
-  char             *args;
-  char             *desc;
+  LNK_Tool             tool;
+  LNK_CmdSwitchType    type;
+  B32                  is_legal_directive;
+  LNK_CmdValueKind     value_kind;
+  char                *name;
+  char                *args;
+  char                *desc;
 } LNK_CmdSwitch;
 
 typedef enum 
@@ -325,7 +344,7 @@ typedef enum
 typedef struct LNK_Config
 {
   Arena                      *arena;
-  LNK_BootMode                boot_mode;
+  LNK_Tool                    tool;
   LNK_ConfigFlags             flags;
   LNK_DebugMode               debug_mode;
   B32                         ghash;
@@ -408,6 +427,7 @@ typedef struct LNK_Config
   B32                         build_imp_lib;
   B32                         build_exp;
   LNK_SwitchState             write_temp_files;
+  LNK_SwitchState             fast_exit;
   String8                     temp_out_path;
   String8                     temp_pdb_name;
   String8                     temp_rad_debug_name;
@@ -436,6 +456,13 @@ typedef struct LNK_Config
 
   // LIB
   String8List def_paths;
+
+  // COMPRESS
+  String8 oodle2_path;
+  U64     obj_segment_size;
+  U64     cfm_cache_cap;
+  U64     cfm_prefetch_size;
+  U64     cfm_worker_count;
 } LNK_Config;
 
 // --- MSVC Error Codes --------------------------------------------------------
@@ -567,6 +594,7 @@ typedef enum
 
 // --- Enum <-> String ---------------------------------------------------------
 
+internal LNK_Tool             lnk_tool_from_string(String8 string);
 internal String8              lnk_string_cmd_switch_type(LNK_CmdSwitchType type);
 internal LNK_CmdSwitchType    lnk_cmd_switch_type_from_string(String8 string);
 internal LNK_CmdSwitch *      lnk_cmd_switch_from_string(String8 string);
@@ -632,6 +660,6 @@ internal void lnk_whole_archive(LNK_Config *config, String8 lib_name);
 // --- Config ------------------------------------------------------------------
 
 internal void lnk_apply_cmd_option_to_config(LNK_Config *config, String8 name, String8 value, struct LNK_Obj *obj);
-internal LNK_Config * lnk_config_init(U64 argc, char **argv);
-internal void lnk_config_apply_cmd_line(LNK_Config *config, LNK_CmdLine input_cmd_line);
+internal LNK_Config * lnk_config_init(String8 exe_name, U64 argc, char **argv);
+internal void lnk_config_apply_cmd_line(LNK_Config *config, String8 exe_name, LNK_CmdLine input_cmd_line);
 

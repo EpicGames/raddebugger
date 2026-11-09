@@ -88,9 +88,9 @@ typedef enum MSF_Error
 
 typedef struct MSF_WriteTask
 {
-  U8      *dst;
-  U8      *src;
-  Rng1U64 *ranges;
+  U8  *dst;
+  U8  *src;
+  U64  size;
 } MSF_WriteTask;
 
 internal MSF_Context *msf_alloc(MSF_UInt page_size, MSF_UInt active_fpm);
@@ -114,6 +114,7 @@ internal MSF_StreamNumber msf_stream_alloc(MSF_Context *msf);
 internal B32              msf_stream_free(MSF_Context *msf, MSF_StreamNumber sn);
 internal B32              msf_stream_resize(MSF_Context *msf, MSF_StreamNumber sn, MSF_UInt size);
 internal B32              msf_stream_resize_ex(MSF_Context *msf, MSF_Stream *stream, MSF_UInt size);
+internal B32              msf_stream_reserve_backing(MSF_Context *msf, MSF_Stream *stream, U64 size);
 internal MSF_UInt         msf_stream_get_size(MSF_Context *msf, MSF_StreamNumber sn);
 internal MSF_UInt         msf_stream_get_pos(MSF_Context *msf, MSF_StreamNumber sn);
 internal B32              msf_stream_reserve(MSF_Context *msf, MSF_StreamNumber sn, MSF_UInt size);

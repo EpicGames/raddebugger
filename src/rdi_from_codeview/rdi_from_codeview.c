@@ -66,6 +66,108 @@ cv2r_voff_from_soff(CV2R_Section *sections, U64 sections_count, U64 sec_num, U64
   return result;
 }
 
+internal B32
+cv2r_rec_has_header(CV_RecIter *iter, U64 size)
+{
+  return ((U8 *)iter->struct_base <= (U8 *)iter->opl &&
+          size <= (U64)((U8 *)iter->opl - (U8 *)iter->struct_base));
+}
+
+internal CV2R_SeparatedCode *
+cv2r_separated_code_from_parent(CV2R_SeparatedCodeMap *map, U16 sec, U32 off)
+{
+  CV2R_SeparatedCode *result = 0;
+  if(map->slots_count != 0)
+  {
+    U64 slot = cv2r_hash_from_voff(((U64)sec << 32) | off)%map->slots_count;
+    for EachNode(n, CV2R_SeparatedCode, map->slots[slot])
+    {
+      if(n->parent_sec == sec && n->parent_off == off)
+      {
+        result = n;
+        break;
+      }
+    }
+  }
+  return result;
+}
+
+internal CV2R_SeparatedCodeMap
+cv2r_separated_code_map_from_sym(Arena *arena, CV_SymParsed *sym, CV2R_Section *sections, U64 sections_count)
+{
+  CV2R_SeparatedCodeMap result = {0};
+  // SEPCODE can follow the procedure's END and have parent == 0; scan the
+  // entire stream, matching section/offset rather than lexical record offsets
+  for EachIndex(idx, sym->sym_ranges.count)
+  {
+    CV_RecRange *range = &sym->sym_ranges.ranges[idx];
+    U64 off = range->off;
+    U64 size = range->hdr.size;
+    if(range->hdr.kind != CV_SymKind_SEPCODE || size < 2 + sizeof(CV_SymSepcode) ||
+       off > sym->data.size || size > sym->data.size - off)
+    {
+      continue;
+    }
+    CV_SymSepcode *sep = (CV_SymSepcode *)(sym->data.str + off + 2);
+    if(result.slots_count == 0)
+    {
+      result.slots_count = 1024;
+      result.slots = push_array(arena, CV2R_SeparatedCode *, result.slots_count);
+    }
+    CV2R_SeparatedCode *parent = cv2r_separated_code_from_parent(&result, sep->sec_parent, sep->sec_parent_off);
+    if(parent == 0)
+    {
+      U64 slot = cv2r_hash_from_voff(((U64)sep->sec_parent << 32) | sep->sec_parent_off)%result.slots_count;
+      parent = push_array(arena, CV2R_SeparatedCode, 1);
+      parent->parent_sec = sep->sec_parent;
+      parent->parent_off = sep->sec_parent_off;
+      SLLStackPush(result.slots[slot], parent);
+    }
+    CV2R_SeparatedCodeChunk *chunk = push_array(arena, CV2R_SeparatedCodeChunk, 1);
+    chunk->sym = sep;
+    chunk->voff = max_U64;
+    if(0 < sep->sec && sep->sec <= sections_count)
+    {
+      CV2R_Section *section = &sections[sep->sec-1];
+      if(sep->sec_off < section->vsize && sep->len <= section->vsize - sep->sec_off &&
+         section->voff < max_U64 - sep->sec_off &&
+         sep->len <= max_U64 - section->voff - sep->sec_off)
+      {
+        chunk->voff = cv2r_voff_from_soff(sections, sections_count, sep->sec, sep->sec_off);
+      }
+    }
+    // keep invalid addresses as sentinels: dropping a slot renumbers selectors
+    SLLQueuePush(parent->first, parent->last, chunk);
+    parent->voffs.count += 1;
+  }
+  for EachIndex(slot, result.slots_count)
+  {
+    for EachNode(parent, CV2R_SeparatedCode, result.slots[slot])
+    {
+      parent->voffs.v = push_array_no_zero(arena, U64, parent->voffs.count);
+      U64 idx = 0;
+      for EachNode(chunk, CV2R_SeparatedCodeChunk, parent->first)
+      {
+        parent->voffs.v[idx++] = chunk->voff;
+      }
+    }
+  }
+  return result;
+}
+
+internal B32
+cv2r_inline_site_decoder_is_valid(CV_C13InlineSiteDecoder decoder, String8 binary_annots)
+{
+  // validate before committing line sequences, whose counters are shared with
+  // the unit's other tables; decode a copy so the caller can then emit normally
+  for(;;)
+  {
+    CV_C13InlineSiteDecoderStep step = cv_c13_inline_site_decoder_step(&decoder, binary_annots);
+    if(step.flags & CV_C13InlineSiteDecoderStepFlag_Error) { return 0; }
+    if(step.flags == 0) { return !decoder.error; }
+  }
+}
+
 ////////////////////////////////
 //~ rjf: String Table Functions
 
@@ -669,7 +771,6 @@ cv2r_convert(Arena *arena, CV2R_ConvertParams *params)
   CV_LeafParsed *tpi_leaf = params->tpi_leaf;
   CV_LeafParsed *ipi_leaf = params->ipi_leaf;
   CV2R_TPIHash *tpi_hash = params->tpi_hash;
-  CV2R_TPIHash *ipi_hash = params->ipi_hash;
   
   //////////////////////////////////////////////////////////////
   //- rjf: hash EXE
@@ -846,6 +947,8 @@ cv2r_convert(Arena *arena, CV2R_ConvertParams *params)
         CV2R_SrcFileStubNode *last_src_file_stub = 0;
         U64 src_file_stub_count = 0;
         U64 base_voff = 0;
+        CV2R_SeparatedCodeMap separated_code_map = cv2r_separated_code_map_from_sym(scratch2.arena, sym, sections, sections_count);
+        U64Array separated_code_voffs = {0};
         for(CV_RecIter iter = {0}; cv_rec_next(sym->data, &sym->sym_ranges, 0, &iter);)
         {
           switch(iter.kind)
@@ -856,19 +959,38 @@ cv2r_convert(Arena *arena, CV2R_ConvertParams *params)
             case CV_SymKind_LPROC32:
             case CV_SymKind_GPROC32:
             {
+              if( ! cv2r_rec_has_header(&iter, sizeof(CV_SymProc32))) { break; }
               CV_SymProc32 *proc32 = (CV_SymProc32 *)iter.struct_base;
               base_voff = cv2r_voff_from_soff(sections, sections_count, proc32->sec, proc32->off);
+              CV2R_SeparatedCode *chunks = cv2r_separated_code_from_parent(&separated_code_map, proc32->sec, proc32->off);
+              MemoryZeroStruct(&separated_code_voffs);
+              if(chunks != 0) { separated_code_voffs = chunks->voffs; }
+            }break;
+            
+            case CV_SymKind_SEPCODE:
+            {
+              if( ! cv2r_rec_has_header(&iter, sizeof(CV_SymSepcode))) { break; }
+              CV_SymSepcode *sep = (CV_SymSepcode *)iter.struct_base;
+              base_voff = cv2r_voff_from_soff(sections, sections_count, sep->sec_parent, sep->sec_parent_off);
+              CV2R_SeparatedCode *chunks = cv2r_separated_code_from_parent(&separated_code_map, sep->sec_parent, sep->sec_parent_off);
+              MemoryZeroStruct(&separated_code_voffs);
+              if(chunks != 0) { separated_code_voffs = chunks->voffs; }
             }break;
             
             //- rjf: INLINESITE
             case CV_SymKind_INLINESITE:
+            case CV_SymKind_INLINESITE2:
             {
               // rjf: unpack sym
+              U64 header_size = iter.kind == CV_SymKind_INLINESITE2 ? sizeof(CV_SymInlineSite2) : sizeof(CV_SymInlineSite);
+              if( ! cv2r_rec_has_header(&iter, header_size)) { break; }
               CV_SymInlineSite *sym = (CV_SymInlineSite *)iter.struct_base;
-              String8 binary_annots = str8((U8 *)(sym+1), (U64)((U8 *)iter.opl - (U8 *)(sym+1)));
+              U8 *annots_first = (U8 *)iter.struct_base + header_size;
+              String8 binary_annots = str8(annots_first, (U64)((U8 *)iter.opl - annots_first));
               
               // rjf: map inlinee -> parsed cv c13 inlinee line info
               CV_C13InlineeLinesParsed *inlinee_lines_parsed = 0;
+              if(c13 != 0 && c13->inlinee_lines_parsed_slots_count != 0)
               {
                 U64 hash = cv_hash_from_item_id(sym->inlinee);
                 U64 slot_idx = hash%c13->inlinee_lines_parsed_slots_count;
@@ -893,10 +1015,12 @@ cv2r_convert(Arena *arena, CV2R_ConvertParams *params)
                 U32 curr_file_off = max_U32;
                 U64 line_count = 0;
                 CV_C13InlineSiteDecoder decoder = cv_c13_inline_site_decoder_init(inlinee_lines_parsed->file_off, inlinee_lines_parsed->first_source_ln, base_voff);
+                decoder.separated_code_voffs = separated_code_voffs;
                 for(;;)
                 {
                   // rjf: step & update
                   CV_C13InlineSiteDecoderStep step = cv_c13_inline_site_decoder_step(&decoder, binary_annots);
+                  if(step.flags & CV_C13InlineSiteDecoderStepFlag_Error) { break; }
                   if(step.flags & CV_C13InlineSiteDecoderStepFlag_EmitFile)
                   {
                     last_file_off = curr_file_off;
@@ -909,12 +1033,13 @@ cv2r_convert(Arena *arena, CV2R_ConvertParams *params)
                   }
                   
                   // rjf: file updated -> gather new file name
-                  if(last_file_off != max_U32 && last_file_off != curr_file_off)
+                  if(last_file_off != max_U32 && line_count != 0 &&
+                     ((step.flags & CV_C13InlineSiteDecoderStepFlag_EmitFile) || step.flags == 0))
                   {
                     String8 seq_file_name = {0};
                     CV_C13ChecksumKind checksum_kind = CV_C13ChecksumKind_Null;
                     String8 checksum_value = {0};
-                    if(last_file_off + sizeof(CV_C13Checksum) <= file_chksms->size)
+                    if(file_chksms != 0 && last_file_off + sizeof(CV_C13Checksum) <= file_chksms->size)
                     {
                       CV_C13Checksum *checksum = (CV_C13Checksum *)(c13->data.str + file_chksms->off + last_file_off);
                       U32 name_off = checksum->name_off;
@@ -1312,6 +1437,8 @@ cv2r_convert(Arena *arena, CV2R_ConvertParams *params)
         if(params->subset_flags & RDIM_SubsetFlag_InlineLineInfo) ProfScope("build per-inline-site line tables")
         {
           U64 base_voff = 0;
+          CV2R_SeparatedCodeMap separated_code_map = cv2r_separated_code_map_from_sym(scratch.arena, src_unit_sym, sections, sections_count);
+          U64Array separated_code_voffs = {0};
           for(CV_RecIter iter = {0}; cv_rec_next(src_unit_sym->data, &src_unit_sym->sym_ranges, 0, &iter);)
           {
             switch(iter.kind)
@@ -1322,19 +1449,45 @@ cv2r_convert(Arena *arena, CV2R_ConvertParams *params)
               case CV_SymKind_LPROC32:
               case CV_SymKind_GPROC32:
               {
+                if( ! cv2r_rec_has_header(&iter, sizeof(CV_SymProc32))) { break; }
                 CV_SymProc32 *proc32 = (CV_SymProc32 *)iter.struct_base;
                 base_voff = cv2r_voff_from_soff(sections, sections_count, proc32->sec, proc32->off);
+                CV2R_SeparatedCode *chunks = cv2r_separated_code_from_parent(&separated_code_map, proc32->sec, proc32->off);
+                MemoryZeroStruct(&separated_code_voffs);
+                if(chunks != 0) { separated_code_voffs = chunks->voffs; }
+              }break;
+              
+              case CV_SymKind_SEPCODE:
+              {
+                if( ! cv2r_rec_has_header(&iter, sizeof(CV_SymSepcode))) { break; }
+                CV_SymSepcode *sep = (CV_SymSepcode *)iter.struct_base;
+                base_voff = cv2r_voff_from_soff(sections, sections_count, sep->sec_parent, sep->sec_parent_off);
+                CV2R_SeparatedCode *chunks = cv2r_separated_code_from_parent(&separated_code_map, sep->sec_parent, sep->sec_parent_off);
+                MemoryZeroStruct(&separated_code_voffs);
+                if(chunks != 0) { separated_code_voffs = chunks->voffs; }
               }break;
               
               //- rjf: INLINESITE
               case CV_SymKind_INLINESITE:
+              case CV_SymKind_INLINESITE2:
               {
+                // reserve the entry even for a truncated header
+                RDIM_LineTable *line_table = rdim_line_table_chunk_list_push(arena, dst_line_tables, 256);
+                if(units_first_inline_site_line_tables[unit_idx] == 0)
+                {
+                  units_first_inline_site_line_tables[unit_idx] = line_table;
+                }
+                
                 // rjf: unpack sym
+                U64 header_size = iter.kind == CV_SymKind_INLINESITE2 ? sizeof(CV_SymInlineSite2) : sizeof(CV_SymInlineSite);
+                if( ! cv2r_rec_has_header(&iter, header_size)) { break; }
                 CV_SymInlineSite *sym = (CV_SymInlineSite *)iter.struct_base;
-                String8 binary_annots = str8((U8 *)(sym+1), (U64)((U8 *)iter.opl - (U8 *)(sym+1)));
+                U8 *annots_first = (U8 *)iter.struct_base + header_size;
+                String8 binary_annots = str8(annots_first, (U64)((U8 *)iter.opl - annots_first));
                 
                 // rjf: map inlinee -> parsed cv c13 inlinee line info
                 CV_C13InlineeLinesParsed *inlinee_lines_parsed = 0;
+                if(src_unit_c13 != 0 && src_unit_c13->inlinee_lines_parsed_slots_count != 0)
                 {
                   U64 hash = cv_hash_from_item_id(sym->inlinee);
                   U64 slot_idx = hash%src_unit_c13->inlinee_lines_parsed_slots_count;
@@ -1370,13 +1523,25 @@ cv2r_convert(Arena *arena, CV2R_ConvertParams *params)
                   U64              total_line_chunk_line_count = 0;
                   U32              last_file_off               = max_U32;
                   U32              curr_file_off               = max_U32;
-                  RDIM_LineTable*  line_table                  = 0;
                   
                   CV_C13InlineSiteDecoder decoder = cv_c13_inline_site_decoder_init(inlinee_lines_parsed->file_off, inlinee_lines_parsed->first_source_ln, base_voff);
+                  decoder.separated_code_voffs = separated_code_voffs;
+                  if(!cv2r_inline_site_decoder_is_valid(decoder, binary_annots)) { break; }
                   for(;;)
                   {
                     // rjf: step & update
                     CV_C13InlineSiteDecoderStep step = cv_c13_inline_site_decoder_step(&decoder, binary_annots);
+                    if(step.flags & CV_C13InlineSiteDecoderStepFlag_Error) { break; }
+                    
+                    // a range can finish after its last line was emitted; update
+                    // the pending sequence before EmitFile flushes it: ChangeFile
+                    // can emit the previous file's final range in the same step
+                    if((step.flags & (CV_C13InlineSiteDecoderStepFlag_EmitRange |
+                                      CV_C13InlineSiteDecoderStepFlag_ExtendLastRange)) &&
+                       last_line_chunk != 0 && last_line_chunk->count != 0)
+                    {
+                      last_line_chunk->voffs[last_line_chunk->count] = step.range.max;
+                    }
                     if(step.flags & CV_C13InlineSiteDecoderStepFlag_EmitFile)
                     {
                       last_file_off = curr_file_off;
@@ -1389,10 +1554,11 @@ cv2r_convert(Arena *arena, CV2R_ConvertParams *params)
                     }
                     
                     // rjf: file updated -> push line chunks gathered for this file
-                    if(last_file_off != max_U32 && last_file_off != curr_file_off)
+                    if(last_file_off != max_U32 && total_line_chunk_line_count != 0 &&
+                       ((step.flags & CV_C13InlineSiteDecoderStepFlag_EmitFile) || step.flags == 0))
                     {
                       String8 seq_file_name = {0};
-                      if(last_file_off + sizeof(CV_C13Checksum) <= file_chksms->size)
+                      if(file_chksms != 0 && last_file_off + sizeof(CV_C13Checksum) <= file_chksms->size)
                       {
                         CV_C13Checksum *checksum = (CV_C13Checksum*)(src_unit_c13->data.str + file_chksms->off + last_file_off);
                         U32 name_off = checksum->name_off;
@@ -1450,14 +1616,6 @@ cv2r_convert(Arena *arena, CV2R_ConvertParams *params)
                       // rjf: push
                       if(line_count != 0)
                       {
-                        if(line_table == 0)
-                        {
-                          line_table = rdim_line_table_chunk_list_push(arena, dst_line_tables, 256);
-                          if(units_first_inline_site_line_tables[unit_idx] == 0)
-                          {
-                            units_first_inline_site_line_tables[unit_idx] = line_table;
-                          }
-                        }
                         rdim_line_table_push_sequence(arena, dst_line_tables, line_table, src_file_node->src_file, voffs, line_nums, 0, line_count);
                       }
                       
@@ -1594,24 +1752,29 @@ cv2r_convert(Arena *arena, CV2R_ConvertParams *params)
             case CV_LeafKind_CLASS:
             case CV_LeafKind_STRUCTURE:
             {
-              // rjf: unpack leaf header
+              // rjf: unpack leaf
               CV_LeafStruct *lf_struct = (CV_LeafStruct *)itype_leaf_first;
+              U8 *numeric_ptr = (U8 *)(lf_struct + 1);
+              CV_NumericParsed size = cv_numeric_from_data_range(numeric_ptr, itype_leaf_opl);
+              U8 *name_ptr = numeric_ptr + size.encoded_size;
+              String8 name = str8_cstring_capped(name_ptr, itype_leaf_opl);
+              U8 *unique_name_ptr = name_ptr + name.size + 1;
+              String8 unique_name = str8_cstring_capped(unique_name_ptr, itype_leaf_opl);
               
-              // rjf: has fwd ref flag -> lookup itype that this itype resolves to
+              // rjf: lookup
+              B32 do_unique_name_lookup = (((lf_struct->props & CV_TypeProp_Scoped) != 0) &&
+                                           ((lf_struct->props & CV_TypeProp_HasUniqueName) != 0));
+              CV_TypeId itype_fwd_maybe = cv2r_first_itype_from_name(tpi_hash, tpi_leaf, do_unique_name_lookup?unique_name:name, do_unique_name_lookup);
+              
+              // rjf: if this is a forward reference -> always equip. otherwise, only equip
+              // IF the lookup *does not match* our current type ID (stale types).
               if(lf_struct->props & CV_TypeProp_FwdRef)
               {
-                // rjf: unpack rest of leaf
-                U8 *numeric_ptr = (U8 *)(lf_struct + 1);
-                CV_NumericParsed size = cv_numeric_from_data_range(numeric_ptr, itype_leaf_opl);
-                U8 *name_ptr = numeric_ptr + size.encoded_size;
-                String8 name = str8_cstring_capped(name_ptr, itype_leaf_opl);
-                U8 *unique_name_ptr = name_ptr + name.size + 1;
-                String8 unique_name = str8_cstring_capped(unique_name_ptr, itype_leaf_opl);
-                
-                // rjf: lookup
-                B32 do_unique_name_lookup = (((lf_struct->props & CV_TypeProp_Scoped) != 0) &&
-                                             ((lf_struct->props & CV_TypeProp_HasUniqueName) != 0));
-                itype_fwd = cv2r_first_itype_from_name(tpi_hash, tpi_leaf, do_unique_name_lookup?unique_name:name, do_unique_name_lookup);
+                itype_fwd = itype_fwd_maybe;
+              }
+              else if(itype_fwd_maybe != itype)
+              {
+                itype_fwd = itype_fwd_maybe;
               }
             }break;
             
@@ -1691,7 +1854,6 @@ cv2r_convert(Arena *arena, CV2R_ConvertParams *params)
     }
   }
   lane_sync();
-  
   
   //////////////////////////////////////////////////////////////
   //- rjf: types pass 2: produce per-itype itype chain
@@ -3187,6 +3349,7 @@ cv2r_convert(Arena *arena, CV2R_ConvertParams *params)
                 scope_record_count += 1;
               }break;
               case CV_SymKind_INLINESITE:
+              case CV_SymKind_INLINESITE2:
               {
                 scope_record_count += 1;
                 inline_site_record_count += 1;
@@ -3244,6 +3407,7 @@ cv2r_convert(Arena *arena, CV2R_ConvertParams *params)
               case CV_SymKind_LPROC32:
               case CV_SymKind_GPROC32:
               {
+                if( ! cv2r_rec_has_header(&iter, sizeof(CV_SymProc32))) { break; }
                 procedure_num += 1;
               }break;
             }
@@ -3260,6 +3424,9 @@ cv2r_convert(Arena *arena, CV2R_ConvertParams *params)
           RDIM_Symbol *defrange_target = 0;
           U64 procedure_num = 0;
           U64 procedure_base_voff = 0;
+          CV2R_SeparatedCodeMap separated_code_map = cv2r_separated_code_map_from_sym(scratch.arena, sym, sections, sections_count);
+          U64Array separated_code_voffs = {0};
+          U64 next_procedure_num = 0;
           CV_ProcFlags proc_flags = 0;
           U64 regrel_idx = 0;
           RDIM_Symbol *curr_proc_symbol = 0;
@@ -3271,7 +3438,7 @@ cv2r_convert(Arena *arena, CV2R_ConvertParams *params)
           };
           CV2R_ScopeNode *top_scope_node = 0;
           CV2R_ScopeNode *free_scope_node = 0;
-          RDIM_LineTable *inline_site_line_table = sym_idx > 0 ? units_first_inline_site_line_tables[sym_idx-1] : 0;
+          RDIM_LineTable *inline_site_line_table = units_first_inline_site_line_tables[sym_idx];
           for(CV_RecIter iter = {0}; cv_rec_next(sym->data, &sym->sym_ranges, 0, &iter);)
           {
             switch(iter.kind)
@@ -3288,6 +3455,47 @@ cv2r_convert(Arena *arena, CV2R_ConvertParams *params)
                   SLLStackPush(free_scope_node, n);
                 }
                 defrange_target = 0;
+              }break;
+              
+              // a separated chunk has its own END, even when it follows the
+              // parent's END; reopen the root for its locals and nested scopes
+              case CV_SymKind_SEPCODE:
+              {
+                if( ! cv2r_rec_has_header(&iter, sizeof(CV_SymSepcode))) { break; }
+                CV_SymSepcode      *sep    = (CV_SymSepcode *)iter.struct_base;
+                CV2R_SeparatedCode *chunks = cv2r_separated_code_from_parent(&separated_code_map, sep->sec_parent, sep->sec_parent_off);
+                
+                procedure_base_voff = cv2r_voff_from_soff(sections, sections_count, sep->sec_parent, sep->sec_parent_off);
+                MemoryZeroStruct(&separated_code_voffs);
+                procedure_num       = 0;
+                proc_flags          = 0;
+                curr_proc_symbol    = 0;
+                defrange_target     = 0;
+                regrel_idx          = 0;
+                
+                RDIM_Scope *root_scope = 0;
+                if(chunks != 0)
+                {
+                  separated_code_voffs = chunks->voffs;
+                  root_scope           = chunks->root_scope;
+                  procedure_num        = chunks->procedure_num;
+                  proc_flags           = chunks->proc_flags;
+                  if(root_scope != 0) { curr_proc_symbol = root_scope->symbol; }
+                }
+                if(params->subset_flags & RDIM_SubsetFlag_Scopes)
+                {
+                  if(root_scope == 0)
+                  {
+                    // an unresolved parent still needs a stack entry to balance
+                    // END; its empty scope must not acquire a made-up address
+                    root_scope = rdim_scope_chunk_list_push(arena, sym_scopes, sym_scopes_chunk_cap);
+                  }
+                  CV2R_ScopeNode *node = free_scope_node;
+                  if(node != 0) { SLLStackPop(free_scope_node); }
+                  else { node = push_array_no_zero(scratch.arena, CV2R_ScopeNode, 1); }
+                  node->scope = root_scope;
+                  SLLStackPush(top_scope_node, node);
+                }
               }break;
               
               //- rjf: BLOCK32
@@ -3437,9 +3645,14 @@ cv2r_convert(Arena *arena, CV2R_ConvertParams *params)
               case CV_SymKind_GPROC32:
               {
                 // rjf: unpack sym
+                if( ! cv2r_rec_has_header(&iter, sizeof(CV_SymProc32))) { break; }
                 CV_SymProc32 *proc32 = (CV_SymProc32 *)iter.struct_base;
                 String8 name = str8_cstring_capped(proc32+1, iter.opl);
                 RDIM_Type *type = p2r_type_ptr_from_itype(proc32->itype);
+                procedure_base_voff = cv2r_voff_from_soff(sections, sections_count, proc32->sec, proc32->off);
+                CV2R_SeparatedCode *chunks = cv2r_separated_code_from_parent(&separated_code_map, proc32->sec, proc32->off);
+                MemoryZeroStruct(&separated_code_voffs);
+                if(chunks != 0) { separated_code_voffs = chunks->voffs; }
                 
                 // rjf: unpack proc's container type
                 B32 got_container = 0;
@@ -3489,21 +3702,32 @@ cv2r_convert(Arena *arena, CV2R_ConvertParams *params)
                 if(params->subset_flags & RDIM_SubsetFlag_Scopes)
                 {
                   procedure_root_scope = rdim_scope_chunk_list_push(arena, sym_scopes, sym_scopes_chunk_cap);
-                  U64 voff_first = cv2r_voff_from_soff(sections, sections_count, proc32->sec, proc32->off);
+                  U64 voff_first = procedure_base_voff;
                   if(voff_first != 0)
                   {
                     U64 voff_last = voff_first + proc32->len;
                     RDIM_Rng1U64 voff_range = {voff_first, voff_last};
                     rdim_scope_push_voff_range(arena, sym_scopes, procedure_root_scope, voff_range);
-                    procedure_base_voff = voff_first;
+                  }
+                  if(chunks != 0)
+                  {
+                    for EachNode(chunk, CV2R_SeparatedCodeChunk, chunks->first)
+                    {
+                      if(chunk->voff != max_U64 && chunk->sym->len != 0)
+                      {
+                        RDIM_Rng1U64 range = {chunk->voff, chunk->voff + chunk->sym->len};
+                        rdim_scope_push_voff_range(arena, sym_scopes, procedure_root_scope, range);
+                      }
+                    }
                   }
                 }
                 
-                // rjf: root scope voff minimum range -> link name
+                // procedure entry address -> link name (a separated chunk
+                // may precede the main chunk in virtual address order)
                 String8 link_name = {0};
-                if(procedure_root_scope && procedure_root_scope->voff_ranges.min != 0)
+                if(procedure_root_scope && procedure_base_voff != 0)
                 {
-                  U64 voff = procedure_root_scope->voff_ranges.min;
+                  U64 voff = procedure_base_voff;
                   U64 hash = cv2r_hash_from_voff(voff);
                   U64 bucket_idx = hash%link_name_map->buckets_count;
                   CV2R_LinkNameNode *node = 0;
@@ -3573,7 +3797,13 @@ cv2r_convert(Arena *arena, CV2R_ConvertParams *params)
                 }
                 
                 // rjf: increment procedure counter
-                procedure_num += 1;
+                procedure_num = ++next_procedure_num;
+                if(chunks != 0)
+                {
+                  chunks->root_scope = procedure_root_scope;
+                  chunks->procedure_num = procedure_num;
+                  chunks->proc_flags = proc32->flags;
+                }
                 
                 // reset S_REGREL32 index
                 regrel_idx = 0;
@@ -3630,7 +3860,8 @@ cv2r_convert(Arena *arena, CV2R_ConvertParams *params)
                   U32 var_off = regrel32->reg_off;
                   
                   // rjf: determine if this is a parameter
-                  B32 is_param = (regrel_idx < curr_proc_symbol->type->count);
+                  B32 is_param = (curr_proc_symbol != 0 && curr_proc_symbol->type != 0 &&
+                                  regrel_idx < curr_proc_symbol->type->count);
                   
                   // rjf: determine if we need an extra indirection to the value
                   B32 extra_indirection_to_value = 0;
@@ -4014,17 +4245,25 @@ cv2r_convert(Arena *arena, CV2R_ConvertParams *params)
               
               //- rjf: INLINESITE
               case CV_SymKind_INLINESITE:
+              case CV_SymKind_INLINESITE2:
               if(params->subset_flags & (RDIM_SubsetFlag_Scopes))
               {
                 // rjf: unpack sym
+                U64 header_size = iter.kind == CV_SymKind_INLINESITE2 ? sizeof(CV_SymInlineSite2) : sizeof(CV_SymInlineSite);
+                B32 header_is_valid = cv2r_rec_has_header(&iter, header_size);
                 CV_SymInlineSite *sym = (CV_SymInlineSite *)iter.struct_base;
-                String8 binary_annots = str8((U8 *)(sym+1), (U64)((U8 *)iter.opl - (U8 *)(sym+1)));
+                String8 binary_annots = {0};
+                if(header_is_valid)
+                {
+                  U8 *annots_first = (U8 *)iter.struct_base + header_size;
+                  binary_annots = str8(annots_first, (U64)((U8 *)iter.opl - annots_first));
+                }
                 
                 // rjf: extract external info about inline site
                 String8    name = {0};
                 RDIM_Type *type = 0;
                 RDIM_Type *owner = 0;
-                if(ipi_leaf != 0 && ipi_leaf->itype_first <= sym->inlinee && sym->inlinee < ipi_leaf->itype_opl)
+                if(header_is_valid && ipi_leaf != 0 && ipi_leaf->itype_first <= sym->inlinee && sym->inlinee < ipi_leaf->itype_opl)
                 {
                   CV_RecRange rec_range = ipi_leaf->leaf_ranges.ranges[sym->inlinee - ipi_leaf->itype_first];
                   String8     rec_data  = str8_substr(ipi_leaf->data, rng_1u64(rec_range.off, rec_range.off + rec_range.hdr.size));
@@ -4103,24 +4342,28 @@ cv2r_convert(Arena *arena, CV2R_ConvertParams *params)
                 }
                 
                 // rjf: parse offset ranges of this inline site - attach to scope
+                if(header_is_valid)
                 {
                   CV_C13InlineSiteDecoder decoder = cv_c13_inline_site_decoder_init(0, 0, procedure_base_voff);
+                  decoder.separated_code_voffs = separated_code_voffs;
+                  RDIM_Rng1U64List ranges = {0};
                   for(;;)
                   {
                     CV_C13InlineSiteDecoderStep step = cv_c13_inline_site_decoder_step(&decoder, binary_annots);
+                    if(step.flags & CV_C13InlineSiteDecoderStepFlag_Error) { break; }
                     
                     if(step.flags & CV_C13InlineSiteDecoderStepFlag_EmitRange)
                     {
                       // rjf: build new range & add to scope
                       RDIM_Rng1U64 voff_range = { step.range.min, step.range.max };
-                      rdim_scope_push_voff_range(arena, sym_scopes, scope, voff_range);
+                      rdim_rng1u64_list_push(scratch.arena, &ranges, voff_range);
                     }
                     
                     if(step.flags & CV_C13InlineSiteDecoderStepFlag_ExtendLastRange)
                     {
-                      if(scope->voff_ranges.last != 0) 
+                      if(ranges.last != 0)
                       {
-                        scope->voff_ranges.last->v.max = step.range.max;
+                        ranges.last->v.max = step.range.max;
                       }
                     }
                     
@@ -4128,6 +4371,17 @@ cv2r_convert(Arena *arena, CV2R_ConvertParams *params)
                     {
                       break;
                     }
+                  }
+                  if( ! decoder.error)
+                  {
+                    for EachNode(n, RDIM_Rng1U64Node, ranges.first)
+                    {
+                      rdim_scope_push_voff_range(arena, sym_scopes, scope, n->v);
+                    }
+                  }
+                  else
+                  {
+                    inline_site->line_table = 0;
                   }
                 }
               }break;

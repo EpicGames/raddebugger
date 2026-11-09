@@ -283,7 +283,7 @@ rd_target_from_cfg(Arena *arena, CFG_Node *cfg)
   if(is_remote)
   {
     target.remote_address = cfg_node_child_from_string(cfg, s("address"))->first->string;
-    target.deploy         = !!e_value_from_string(cfg_node_child_from_string(cfg, s("deploy"))->first->string).u64;\
+    target.deploy         = !!e_value_from_string(cfg_node_child_from_string(cfg, s("deploy"))->first->string).u64;
   }
   return target;
 }
@@ -3177,7 +3177,7 @@ rd_view_ui(Rng2F32 rect)
                 {
                   for EachEnumVal(Axis2, axis)
                   {
-                    cursor_tbl.v[axis] = (delta.v[0]>0 ? cursor_tbl_range.max.v[axis] : delta.v[0]<0 ? cursor_tbl_range.min.v[axis] + !!cursor_tbl_min_is_empty_selection[axis] : cursor_tbl.v[axis]);
+                    cursor_tbl.v[axis] = (delta.v[axis]>0 ? cursor_tbl_range.max.v[axis] : delta.v[axis]<0 ? cursor_tbl_range.min.v[axis] + !!cursor_tbl_min_is_empty_selection[axis] : cursor_tbl.v[axis]);
                   }
                 }break;
               }
@@ -4457,7 +4457,7 @@ rd_view_ui(Rng2F32 rect)
                           if(ui_hovering(sig) && row_depth == 0) UI_Tooltip RD_Font(RD_FontSlot_Code)
                           {
                             String8 expr = cell->eval.string;
-                            D_Eval eval = d_eval_from_string(scratch.arena, expr);
+                            D_Eval eval = d_eval_from_string(expr);
                             String8 indent = s("                                                                ");
                             
                             // rjf: log string
@@ -4487,7 +4487,19 @@ rd_view_ui(Rng2F32 rect)
                                 if(top_task->last_child == 0)
                                 {
                                   String8 expr_kind_name = e2_expr_kind_string_table[expr->kind];
-                                  ui_labelf("%.*s%S", top_task->depth, indent.str, expr_kind_name);
+                                  String8 string_ext = {0};
+                                  if(expr->string.size != 0)
+                                  {
+                                    string_ext = sf(" \"%S\"", expr->string);
+                                  }
+                                  ui_labelf("%.*s%S%S", top_task->depth, indent.str, expr_kind_name, string_ext);
+                                  if(expr->kind == E2_ExprKind_Identifier)
+                                  {
+                                    for EachNode(n, String8Node, expr->qualifiers.first)
+                                    {
+                                      ui_labelf("%.*squalifier: %S", top_task->depth+1, indent.str, n->string);
+                                    }
+                                  }
                                 }
                                 
                                 // rjf: try to push a child
@@ -8127,7 +8139,7 @@ rd_window_frame(void)
           dr_fstrs_push_new(scratch.arena, &status_fstrs, &params, rd_icon_kind_text_table[RD_IconKind_Play],
                             .font = rd_font_from_slot(RD_FontSlot_Icons),
                             .raster_flags = rd_raster_flags_from_slot(RD_FontSlot_Icons));
-          dr_fstrs_push_new(scratch.arena, &status_fstrs, &params, str8_lit("  Running..."));
+          dr_fstrs_push_new(scratch.arena, &status_fstrs, &params, d_user_state->last_ctrl_status.size != 0 ? str8f(scratch.arena, "  %S", d_user_state->last_ctrl_status) : s("  Running..."));
           if(long_running_tasks.count != 0)
           {
             String8 string = push_str8f(scratch.arena, "  Loading %I64u debug information file%s...", long_running_tasks.count, long_running_tasks.count == 1 ? "" : "s");
@@ -11460,6 +11472,7 @@ rd_init(CmdLine *cmdln)
   rd_state->num_frames_requested = 2;
   rd_state->seconds_until_autosave = 0.5f;
   rd_state->eval_cache = e_cache_alloc();
+  rd_state->eval2_cache = d_eval_cache_alloc();
   for(U64 idx = 0; idx < ArrayCount(rd_state->cmds_arenas); idx += 1)
   {
     rd_state->cmds_arenas[idx] = arena_alloc();
@@ -12290,8 +12303,6 @@ rd_frame(void)
     {
       if(event->kind == WM_EventKind_Press &&
          event->key != WM_Key_Esc &&
-         event->key != WM_Key_Return &&
-         event->key != WM_Key_Backspace &&
          event->key != WM_Key_Delete &&
          event->key != WM_Key_LeftMouseButton &&
          event->key != WM_Key_RightMouseButton &&
@@ -12538,7 +12549,7 @@ rd_frame(void)
     Arch arch = thread->arch;
     E_Space primary_space = rd_eval_space_from_ctrl_entity(process, D_EvalSpaceKind_Entity);
     U64 unwind_count = rd_regs()->unwind_count;
-    U64 rip_vaddr = d_query_cached_rip_from_thread_unwind(thread, unwind_count);
+    U64 rip_vaddr = d_cached_rip_from_thread_unwind(thread, unwind_count);
     D_Entity *module = d_module_from_process_vaddr(process, rip_vaddr);
     U64 rip_voff = d_voff_from_vaddr(module, rip_vaddr);
     U64 tls_root_vaddr = thread->tls_root_vaddr;
@@ -13499,8 +13510,8 @@ rd_frame(void)
     {
       E_IRCtx *ctx = ir_ctx;
       ctx->regs_map       = d_string2reg_from_arch(arch);
-      ctx->locals_map     = d_query_cached_locals_map_from_dbgi_key_voff(eval_base_ctx->primary_dbg_info->dbgi_key, rip_voff);
-      ctx->member_map     = d_query_cached_member_map_from_dbgi_key_voff(eval_base_ctx->primary_dbg_info->dbgi_key, rip_voff);
+      ctx->locals_map     = d_cached_locals_map_from_dbgi_key_voff(eval_base_ctx->primary_dbg_info->dbgi_key, rip_voff);
+      ctx->member_map     = d_cached_member_map_from_dbgi_key_voff(eval_base_ctx->primary_dbg_info->dbgi_key, rip_voff);
       ctx->macro_map      = macro_map;
       ctx->auto_hook_map  = auto_hook_map;
     }
@@ -13521,9 +13532,14 @@ rd_frame(void)
       ctx->frame_base                  = push_array(scratch.arena, U64, 1);
       ctx->tls_base                    = push_array(scratch.arena, U64, 1);
       ctx->tls_base[0]                 = d_cached_tls_vaddr_from_thread_module(thread->handle, module->handle, rd_state->frame_eval_memread_endt_us, 0);
-      ctx->cfa                         = d_query_cached_cfa_from_thread_unwind(thread, unwind_count);
+      ctx->cfa                         = d_cached_cfa_from_thread_unwind(thread, unwind_count);
     }
     e_select_interpret_ctx(interpret_ctx, eval_dbg_infos_primary->rdi, rip_voff);
+    
+    ////////////////////////////
+    //- rjf: begin evaluation @eval2
+    //
+    d_eval_cache_select(rd_state->eval2_cache);
     
     ////////////////////////////
     //- rjf: evaluate unpacked settings (must be used earlier than this point in the frame,
@@ -14031,7 +14047,7 @@ rd_frame(void)
                 str8_list_pushf(scratch.arena, &state_parts, "  {\n");
                 str8_list_pushf(scratch.arena, &state_parts, "   name: \"%S\"\n", escaped_from_raw_str8(scratch.arena, thread->string));
                 str8_list_pushf(scratch.arena, &state_parts, "   id:   %I64u\n", thread->id);
-                str8_list_pushf(scratch.arena, &state_parts, "   ip:   0x%I64x\n", d_query_cached_rip_from_thread(thread));
+                str8_list_pushf(scratch.arena, &state_parts, "   ip:   0x%I64x\n", d_cached_rip_from_thread(thread));
                 str8_list_pushf(scratch.arena, &state_parts, "  }\n");
               }
               str8_list_pushf(scratch.arena, &state_parts, " }\n");
@@ -14046,6 +14062,23 @@ rd_frame(void)
                 str8_list_pushf(scratch.arena, &state_parts, "   name:        \"%S\"\n", escaped_from_raw_str8(scratch.arena, module->string));
                 str8_list_pushf(scratch.arena, &state_parts, "   vaddr_range: [0x%I64x, 0x%I64x)\n",  module->vaddr_range.min, module->vaddr_range.max);
                 str8_list_pushf(scratch.arena, &state_parts, "  }\n");
+              }
+              str8_list_pushf(scratch.arena, &state_parts, " }\n");
+            }
+            {
+              str8_list_pushf(scratch.arena, &state_parts, " breakpoints:\n {\n");
+              CFG_NodePtrList bps = cfg_node_top_level_list_from_string(scratch.arena, str8_lit("breakpoint"));
+              for EachNode(n, CFG_NodePtrNode, bps.first)
+              {
+                RD_Location loc = rd_location_from_cfg(n->v);
+                if(loc.expr.size != 0)
+                {
+                  str8_list_pushf(scratch.arena, &state_parts, "  {address: \"%S\"}\n", escaped_from_raw_str8(scratch.arena, loc.expr));
+                }
+                else if(loc.file_path.size != 0)
+                {
+                  str8_list_pushf(scratch.arena, &state_parts, "  {file: \"%S\", line: %I64d}\n", escaped_from_raw_str8(scratch.arena, loc.file_path), loc.pt.line);
+                }
               }
               str8_list_pushf(scratch.arena, &state_parts, " }\n");
             }
@@ -15445,12 +15478,12 @@ rd_frame(void)
           case RD_CmdKind_TabBarTop:
           {
             CFG_Node *panel = cfg_node_from_id(rd_regs()->panel);
-            cfg_node_release(rd_state->cfg, cfg_node_child_from_string(panel, str8_lit("tabs_on_bottom")));
+            cfg_node_release(rd_state->cfg, cfg_node_child_from_string(panel, s("tabs_on_bottom")));
           }break;
           case RD_CmdKind_TabBarBottom:
           {
             CFG_Node *panel = cfg_node_from_id(rd_regs()->panel);
-            cfg_node_child_from_string_or_alloc(rd_state->cfg, panel, str8_lit("tabs_on_bottom"));
+            cfg_node_child_from_string_or_alloc(rd_state->cfg, panel, s("tabs_on_bottom"));
           }break;
           case RD_CmdKind_TabSettings:
           {
@@ -15466,7 +15499,7 @@ rd_frame(void)
             FileProperties props = properties_from_file_path(path);
             if(props.created != 0)
             {
-              rd_cmd(RD_CmdKind_BuildTab, .string = str8_lit("pending"), .expr = rd_eval_string_from_file_path(scratch.arena, path));
+              rd_cmd(RD_CmdKind_BuildTab, .string = s("pending"), .expr = rd_eval_string_from_file_path(scratch.arena, path));
             }
             else
             {
@@ -15533,7 +15566,7 @@ rd_frame(void)
             }
             if(vaddr == 0)
             {
-              vaddr = d_query_cached_rip_from_thread_unwind(thread, rd_regs()->unwind_count);
+              vaddr = d_cached_rip_from_thread_unwind(thread, rd_regs()->unwind_count);
             }
             rd_cmd(RD_CmdKind_FindCodeLocation, .process = d_entity_ancestor_from_kind(thread, D_EntityKind_Process)->handle, .vaddr = vaddr, .prefer_disasm = 1);
           }break;
@@ -15699,7 +15732,7 @@ rd_frame(void)
             D_Entity *process = d_entity_ancestor_from_kind(thread, D_EntityKind_Process);
             U64 unwind_index = rd_regs()->unwind_count;
             U64 inline_depth = rd_regs()->inline_depth;
-            U64 rip_vaddr = d_query_cached_rip_from_thread_unwind(thread, unwind_index);
+            U64 rip_vaddr = d_cached_rip_from_thread_unwind(thread, unwind_index);
             
             //- rjf: determine if any disassembly is open
             B32 any_disasm_is_open = 0;

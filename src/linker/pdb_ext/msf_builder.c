@@ -134,14 +134,35 @@ msf_free_pages(MSF_Context *msf, MSF_PageList *pages)
 ////////////////////////////////
 
 internal B32
-msf_stream_reserve_capacity(MSF_Context *msf, MSF_Stream *stream, U64 size)
+msf_stream_reserve_backing(MSF_Context *msf, MSF_Stream *stream, U64 size)
 {
   if (size >= MSF_DELETED_STREAM_STAMP) { return 0; }
 
-  U64      capacity   = AlignPow2(size, (U64)msf->page_size);
+  U64 capacity = AlignPow2(size, (U64)msf->page_size);
+  if (capacity > stream->capacity) {
+    U8 *data = push_array(msf->arena, U8, capacity);
+    if (stream->size > 0) {
+      MemoryCopy(data, stream->data, stream->size);
+    }
+    stream->data     = data;
+    stream->capacity = capacity;
+    U64 offset = 0;
+    for EachNode(page, MSF_PageNode, stream->page_list.first) {
+      *msf_page_data_slot(msf, page->pn) = data + offset;
+      offset += msf->page_size;
+    }
+  }
+
+  return 1;
+}
+
+internal B32
+msf_stream_reserve_capacity(MSF_Context *msf, MSF_Stream *stream, U64 size)
+{
+  if (size >= MSF_DELETED_STREAM_STAMP) { return 0; }
+  
   MSF_UInt page_count = msf_count_pages(msf->page_size, size);
   B32      remap      = 0;
-
   if (page_count > stream->page_list.count) {
     MSF_UInt     count = page_count - stream->page_list.count;
     MSF_PageList pages = msf_alloc_pages(msf, count);
@@ -150,17 +171,11 @@ msf_stream_reserve_capacity(MSF_Context *msf, MSF_Stream *stream, U64 size)
     remap = 1;
   }
 
-  if (capacity > stream->capacity) {
-    // sized callers allocate once. Incremental writers must reserve before
-    // retaining views; arena growth leaves previous views obsolete
-    U8 *data = push_array(msf->arena, U8, capacity);
-    if (stream->size != 0) { MemoryCopy(data, stream->data, stream->size); }
-    stream->data = data;
-    stream->capacity = capacity;
-    remap = 1;
-  }
+  U64 old_capacity = stream->capacity;
+  if ( ! msf_stream_reserve_backing(msf, stream, size)) { return 0; }
 
-  if (remap) {
+  // backing growth already remapped every page, including new allocations
+  if (remap && stream->capacity == old_capacity) {
     U64 offset = 0;
     for EachNode(page, MSF_PageNode, stream->page_list.first) {
       *msf_page_data_slot(msf, page->pn) = stream->data + offset;
@@ -354,11 +369,10 @@ msf_stream_align(MSF_Context *msf, MSF_StreamNumber sn, MSF_UInt align)
   msf_stream_write(msf, sn, 0, AlignPadPow2(pos, align));
 }
 
-internal
 THREAD_POOL_TASK_FUNC(msf_write_task)
 {
   MSF_WriteTask *task = raw_task;
-  Rng1U64 range = task->ranges[task_id];
+  Rng1U64 range = tp_work_range(task->size, tp->worker_count, task_id);
   if (dim_1u64(range) != 0) { MemoryCopy(task->dst + range.min, task->src + range.min, dim_1u64(range)); }
 }
 
@@ -369,13 +383,11 @@ msf_stream_write_parallel(TP_Context *tp, MSF_Context *msf, MSF_StreamNumber sn,
 
   if (!msf_stream_reserve(msf, sn, size)) { return 0; }
 
-  Temp scratch = scratch_begin(0, 0);
-
   MSF_Stream *stream = msf_find_stream(msf, sn);
   MSF_WriteTask task = {
     .dst    = stream->data + stream->pos,
     .src    = buffer,
-    .ranges = tp_divide_work(scratch.arena, size, tp->worker_count),
+    .size   = size,
   };
 
   tp_for_parallel(tp, 0, tp->worker_count, msf_write_task, &task);
@@ -383,7 +395,6 @@ msf_stream_write_parallel(TP_Context *tp, MSF_Context *msf, MSF_StreamNumber sn,
   stream->pos += size;
   stream->size = Max(stream->size, stream->pos);
 
-  scratch_end(scratch);
   return 1;
 }
 

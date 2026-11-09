@@ -1,6 +1,9 @@
 // Copyright (c) Epic Games Tools
 // Licensed under the MIT license (https://opensource.org/license/mit/)
 
+#ifndef COFF_C
+#define COFF_C
+
 internal U64
 coff_align_size_from_section_flags(COFF_SectionFlags flags)
 {
@@ -55,10 +58,10 @@ internal String8
 coff_name_from_section_header(String8 string_table, COFF_SectionHeader *header)
 {
   String8 name = str8_cstring_capped(header->name, header->name + sizeof(header->name));
-
+  
   if (name.size > 0 && name.str[0] == '/') {
     U64 name_off = max_U64;
-
+    
     // LLVM/GNU Base64 offset encoding, most significant digit first
     if (name.size > 1 && name.str[1] == '/') {
       if (name.size > 2) {
@@ -82,14 +85,14 @@ coff_name_from_section_header(String8 string_table, COFF_SectionHeader *header)
       // parse standard COFF long name encoding
       name_off = u64_from_str8(str8_skip(name, 1), 10);
     }
-
+    
     if (name_off < string_table.size) {
       name = str8_cstring_capped(string_table.str + name_off, string_table.str+string_table.size);
     } else {
       name = str8_zero();
     }
   }
-
+  
   return name;
 }
 
@@ -133,12 +136,12 @@ coff_is_addr_reloc(COFF_MachineType machine, U32 type)
 {
   U64 is_addr = 0;
   switch (machine) {
-  case COFF_MachineType_Unknown: is_addr = 0; break;
-  case COFF_MachineType_X64: {
-    if (type == COFF_Reloc_X64_Addr32)      is_addr = 4;
-    else if (type == COFF_Reloc_X64_Addr64) is_addr = 8;
-  } break;
-  default: NotImplemented; break;
+    case COFF_MachineType_Unknown: is_addr = 0; break;
+    case COFF_MachineType_X64: {
+      if (type == COFF_Reloc_X64_Addr32)      is_addr = 4;
+      else if (type == COFF_Reloc_X64_Addr64) is_addr = 8;
+    } break;
+    default: NotImplemented; break;
   }
   return is_addr;
 }
@@ -485,12 +488,12 @@ coff_machine_from_arch(Arch arch)
 {
   COFF_MachineType machine = COFF_MachineType_Unknown;
   switch (arch) {
-  case Arch_Null:  machine = COFF_MachineType_Unknown; break;
-  case Arch_x86:   machine = COFF_MachineType_X86;     break;
-  case Arch_x64:   machine = COFF_MachineType_X64;     break;
-  case Arch_arm64: machine = COFF_MachineType_Arm64;   break;
-  case Arch_arm32: machine = COFF_MachineType_Arm;     break;
-  default: InvalidPath; break;
+    case Arch_Null:  machine = COFF_MachineType_Unknown; break;
+    case Arch_x86:   machine = COFF_MachineType_X86;     break;
+    case Arch_x64:   machine = COFF_MachineType_X64;     break;
+    case Arch_arm64: machine = COFF_MachineType_Arm64;   break;
+    case Arch_arm32: machine = COFF_MachineType_Arm;     break;
+    default: InvalidPath; break;
   }
   return machine;
 }
@@ -992,3 +995,4 @@ coff_import_header_type_from_string(String8 name)
   return COFF_ImportType_Invalid;
 }
 
+#endif // COFF_C

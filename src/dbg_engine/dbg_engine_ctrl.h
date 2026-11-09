@@ -268,6 +268,35 @@ struct D_DumpCache
 };
 
 ////////////////////////////////
+//~ rjf: Opened Server ID -> Endpoint Cache
+
+typedef struct D_OpenServerNode D_OpenServerNode;
+struct D_OpenServerNode
+{
+  D_OpenServerNode *next;
+  D_OpenServerNode *prev;
+  D_ServerID server_id;
+  SOCK_Endpoint endpoint;
+};
+
+typedef struct D_OpenServerSlot D_OpenServerSlot;
+struct D_OpenServerSlot
+{
+  D_OpenServerNode *first;
+  D_OpenServerNode *last;
+};
+
+typedef struct D_OpenServerCache D_OpenServerCache;
+struct D_OpenServerCache
+{
+  Arena *arena;
+  D_OpenServerSlot *slots;
+  D_OpenServerNode *free_node;
+  U64 slots_count;
+  RWMutex rw_mutex;
+};
+
+////////////////////////////////
 //~ rjf: Touched Debug Info Directory Cache
 
 typedef struct D_DbgDirNode D_DbgDirNode;
@@ -316,12 +345,20 @@ typedef D_WAKEUP_FUNCTION_DEF(D_WakeupFunctionType);
 ////////////////////////////////
 //~ rjf: Cross-Server Run Controls
 
+typedef struct D_ServerRunCtrls D_ServerRunCtrls;
+struct D_ServerRunCtrls
+{
+  DMN_HandleArray run_entities;
+  DMN_TrapChunkList traps;
+  B8 ignore_previous_exception;
+};
+
 typedef struct D_ServerRunCtrlsNode D_ServerRunCtrlsNode;
 struct D_ServerRunCtrlsNode
 {
   D_ServerRunCtrlsNode *next;
   D_ServerID server_id;
-  DMN_RunCtrls run_ctrls;
+  D_ServerRunCtrls v;
 };
 
 typedef struct D_ServerRunCtrlsSlot D_ServerRunCtrlsSlot;
@@ -336,6 +373,10 @@ struct D_RunCtrls
 {
   D_ServerRunCtrlsSlot *slots;
   U64 slots_count;
+  D_Handle priority_thread;
+  D_Handle single_step_thread;
+  B8 run_entities_are_unfrozen;
+  B8 run_entities_are_processes;
 };
 
 ////////////////////////////////
@@ -363,6 +404,10 @@ struct D_ServerState
   // rjf: server identifier
   D_ServerID server_id;
   
+  // rjf: schedule state (any launches / attaches / entities?)
+  U64 launch_or_attach_counter;
+  U64 process_counter;
+  
   // rjf: run state
   B32 run_state;
   B32 group_halt;
@@ -382,6 +427,17 @@ struct D_ServerSlot
 };
 
 ////////////////////////////////
+//~ rjf: Socket Receiving Rings
+
+typedef struct D_SockRingSlot D_SockRingSlot;
+struct D_SockRingSlot
+{
+  D_SockRingSlot *next;
+  GuardedRing *recv_ring;
+  GuardedRing *completion_ring;
+};
+
+////////////////////////////////
 //~ rjf: Main State Types
 
 typedef struct D_CtrlState D_CtrlState;
@@ -390,6 +446,16 @@ struct D_CtrlState
   Arena *arena;
   D_WakeupFunctionType *wakeup_hook;
   SOCK_Session sock_session;
+  Thread sock_recv_thread;
+  RWMutex sock_send_mutex;
+  
+  // rjf: network response receiving ring buffers
+  GuardedRing *sock_event_ring;
+  U64 sock_rings_count;
+  D_SockRingSlot *sock_rings;
+  D_SockRingSlot *free_sock_ring;
+  RWMutex sock_ring_alloc_rw_mutex;
+  CondVar sock_ring_alloc_cv;
   
   // rjf: name -> register hash tables for eval
   E_String2NumMap arch_string2reg_tables[Arch_COUNT];
@@ -398,6 +464,7 @@ struct D_CtrlState
   D_ThreadRegCache thread_reg_cache;
   D_ModuleInfoCache module_info_cache;
   D_DumpCache dump_cache;
+  D_OpenServerCache open_server_cache;
   
   // rjf: generations
   U64 run_gen;
@@ -437,7 +504,8 @@ struct D_CtrlState
   D_ServerState *last_server;
   D_ServerState *free_server;
   D_ServerState *next_dequeue_server;
-  B32 ctrl_thread_dmn_run_block;
+  B32 ctrl_thread_local_server_group_halt;
+  B32 ctrl_thread_local_server_group_halt_guard;
   Arena *user_entry_point_arena;
   String8List user_entry_points;
   U64 exception_code_filters[(D_ExceptionCodeKind_COUNT+63)/64];
@@ -490,7 +558,7 @@ internal D_BreakpointFlags d_breakpoint_flags_from_dmn_trap_flags(DMN_TrapFlags 
 
 internal D_Handle d_handle_zero(void);
 internal B32 d_handle_match(D_Handle a, D_Handle b);
-internal void d_handle_list_push(Arena *arena, D_HandleList *list, D_Handle *pair);
+internal void d_handle_list_push(Arena *arena, D_HandleList *list, D_Handle pair);
 internal D_HandleList d_handle_list_copy(Arena *arena, D_HandleList *src);
 internal D_HandleArray d_handle_array_from_list(Arena  *arena, D_HandleList *src);
 internal String8 d_string_from_handle(Arena *arena, D_Handle handle);
@@ -498,6 +566,7 @@ internal D_Handle d_handle_from_string(String8 string);
 internal DMN_Handle d_dmn_from_handle(D_Handle handle);
 internal D_Handle d_handle_from_dmn(D_ServerID server_id, DMN_Handle handle);
 internal D_Handle d_dump_handle_make(D_ServerID server_id, U64 id);
+internal D_Handle d_handle_from_server_id(D_ServerID server_id);
 
 ////////////////////////////////
 //~ rjf: Trap Type Functions
@@ -631,6 +700,27 @@ internal U64 d_raddbg_attached_marker_voff_from_module(D_Handle module_handle);
 internal String8 d_initial_debug_info_path_from_module(Arena *arena, D_Handle module_handle);
 
 ////////////////////////////////
+//~ rjf: Server Cache Lookups
+
+internal SOCK_Endpoint d_endpoint_from_server_id(D_ServerID server_id);
+
+////////////////////////////////
+//~ rjf: Server Sends/Receives
+
+typedef struct D_ServerIOCtx D_ServerIOCtx;
+struct D_ServerIOCtx
+{
+  U16 ring_id;
+};
+
+internal D_ServerIOCtx d_server_io_begin(void);
+internal B32 d_server_io_send_msg(D_ServerIOCtx ctx, SOCK_Endpoint endpoint, DS_Msg *msg);
+internal DS_Response d_server_io_recv_response(Arena *arena, D_ServerIOCtx ctx);
+internal void d_server_io_end(D_ServerIOCtx ctx);
+
+internal DS_Response d_server_msg(Arena *arena, SOCK_Endpoint endpoint, DS_Msg *msg);
+
+////////////////////////////////
 //~ rjf: Unwinding Functions
 
 internal D_Unwind d_unwind_from_thread(Arena *arena, D_Handle thread, U64 endt_us);
@@ -681,11 +771,12 @@ internal void d_ctrl_thread__close_dump_process(D_MsgID msg_id, D_Handle process
 
 //- rjf: run controls building
 internal D_RunCtrls *d_ctrl_thread__run_ctrls(Arena *arena);
-internal void d_ctrl_thread__run_ctrls_set_server(Arena *arena, D_RunCtrls *ctrls, D_ServerID server_id, DMN_RunCtrls *server_ctrls);
-internal DMN_RunCtrls *d_ctrl_thread__server_run_ctrls_from_id(D_RunCtrls *ctrls, D_ServerID server_id);
+internal D_ServerRunCtrls *d_ctrl_thread__server_run_ctrls_from_id_or_push(Arena *arena, D_RunCtrls *ctrls, D_ServerID server_id);
+internal D_ServerRunCtrls *d_ctrl_thread__server_run_ctrls_from_id(D_RunCtrls *ctrls, D_ServerID server_id);
+internal B32 d_ctrl_thread__server_is_scheduled(D_ServerState *ss, D_ServerRunCtrls *ctrls);
 
 //- rjf: attached process running/event gathering
-internal DMN_Event *d_ctrl_thread__next_dmn_event(Arena *arena, DMN_CtrlCtx *ctrl_ctx, D_Msg *msg, DMN_RunCtrls *run_ctrls, D_Spoof *spoof);
+internal DMN_Event *d_ctrl_thread__next_dmn_event(Arena *arena, DMN_CtrlCtx *ctrl_ctx, D_Msg *msg, D_RunCtrls *run_ctrls, D_Spoof *spoof, D_ServerID *server_id_out);
 
 //- rjf: eval helpers
 internal U64 d_ctrl_eval_space_gen(E_Space space);
@@ -697,12 +788,16 @@ internal void d_ctrl_thread__eval_scope_end(D_EvalScope *scope);
 
 //- rjf: server connection lookups
 internal D_Handle d_ctrl_thread__handle_from_addr_or_connect(String8 addr);
-
-//- rjf: control system socket wakeup function
-internal void d_ctrl_sock_wakeup(void);
+internal D_ServerState *d_server_state_from_id(D_ServerID id);
 
 //- rjf: log flusher
 internal void d_ctrl_thread__end_and_flush_log(void);
+
+//- rjf: status event helper
+internal void d_ctrl_thread__status(String8 string);
+internal void d_ctrl_thread__statusf(char *fmt, ...);
+#define D_CtrlThread_Status(string) DeferLoop(d_ctrl_thread__status(string), d_ctrl_thread__status(s("")))
+#define D_CtrlThread_StatusF(...) DeferLoop(d_ctrl_thread__statusf(__VA_ARGS__), d_ctrl_thread__status(s("")))
 
 //- rjf: msg kind implementations
 internal void d_ctrl_thread__open_remote_server(DMN_CtrlCtx *ctrl_ctx, D_Msg *msg);
@@ -755,5 +850,10 @@ internal D_CallStack d_call_stack_from_thread(Access *access, D_Handle thread_ha
 internal AC_Artifact d_call_stack_tree_artifact_create(String8 key, B32 *cancel_signal, AC_Status *status_out, U64 *gen_out);
 internal void d_call_stack_tree_artifact_destroy(AC_Artifact artifact);
 internal D_CallStackTree d_call_stack_tree(Access *access, U64 endt_us);
+
+////////////////////////////////
+//~ rjf: Socket Traffic Distribution Threads
+
+internal void d_sock_recv_thread_entry_point(void *p);
 
 #endif // DBG_ENGINE_CTRL_H

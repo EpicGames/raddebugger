@@ -1,6 +1,9 @@
 // Copyright (c) Epic Games Tools
 // Licensed under the MIT license (https://opensource.org/license/mit/)
 
+#ifndef PE_C
+#define PE_C
+
 ////////////////////////////////
 //~ rjf: Basic Enum Functions
 
@@ -1843,3 +1846,5 @@ pe_pdata_sort(COFF_MachineType machine, String8 raw_pdata)
   }
   ProfEnd();
 }
+
+#endif // PE_C

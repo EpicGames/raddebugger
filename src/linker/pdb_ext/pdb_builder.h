@@ -106,7 +106,6 @@ typedef struct
   U8            **leaf_arr;
   U64            *udt_counts;
   U64            *udt_offsets;
-  Rng1U64        *ranges;
   PDB_TypeServer *type_server;
   PDB_TypeBucket *udt_buckets;
   U64             base_type_index;
@@ -126,7 +125,6 @@ typedef struct
   U64             hint_count;
   PDB_TpiOffHint *hint_arr;
   String8Node   **lf_arr;
-  Rng1U64        *lf_range_arr;
   U64            *lf_cursor_arr;
   U8             *lf_buf;
   U64             lf_buf_size;
@@ -325,7 +323,7 @@ typedef struct PDB_BuildHooks
 typedef struct
 {
   PDB_GsiContext *gsi;
-  Rng1U64        *ranges;
+  U64             symbol_count;
   CV_SymbolNode **symbols;
   U32            *hashes;
 } GSI_SymbolHasherTask;

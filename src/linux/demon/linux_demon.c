@@ -2,6 +2,15 @@
 // Licensed under the MIT license (https://opensource.org/license/mit/)
 
 ////////////////////////////////
+//~ rjf: Implicit Layer Dependencies
+
+#include "elf/elf.c"
+#include "gnu/gnu.c"
+#include "gnu/gnu_parse.c"
+#include "elf/elf_parse.c"
+#include "stap/stap_parse.c"
+
+////////////////////////////////
 //~ rjf: Generated Code
 
 #include "generated/linux_demon.meta.c"
@@ -1434,1860 +1443,1862 @@ dmn_ctrl_run(Arena *arena, DMN_CtrlCtx *ctx, DMN_RunCtrls *ctrls)
   mutex_take(lnx_dmn_state->halter_mutex);
   
   //////////////////////////////
-  //- rjf: wait for signals from the running threads
+  //- rjf: wait for signals from the running threads, generate events
   //
   if(lnx_dmn_state->process_count > 0)
   {
     ARCH_Info *arch_info = arch_info_from_arch(Arch_CURRENT);
-    
-    ////////////////////////////
-    //- rjf: read initial bytes at all trap locations
-    //
-    U64 bytes_per_trap = arch_info->trap_instruction.size;
-    U8 *trap_swap_bytes = push_array(scratch.arena, U8, ctrls->traps.trap_count * bytes_per_trap);
+    for(;events.count == 0;)
     {
-      U64 trap_idx = 0;
-      for EachNode(n, DMN_TrapChunkNode, ctrls->traps.first)
+      ////////////////////////////
+      //- rjf: read initial bytes at all trap locations
+      //
+      U64 bytes_per_trap = arch_info->trap_instruction.size;
+      U8 *trap_swap_bytes = push_array(scratch.arena, U8, ctrls->traps.trap_count * bytes_per_trap);
       {
-        for EachIndex(n_idx, n->count)
+        U64 trap_idx = 0;
+        for EachNode(n, DMN_TrapChunkNode, ctrls->traps.first)
         {
-          DMN_Trap *trap = n->v+n_idx;
-          if(trap->flags == 0)
+          for EachIndex(n_idx, n->count)
           {
-            dmn_process_read(trap->process, r1u64(trap->vaddr, trap->vaddr + bytes_per_trap), trap_swap_bytes + trap_idx*bytes_per_trap);
-          }
-          trap_idx += 1;
-        }
-      }
-    }
-    
-    ////////////////////////////
-    //- rjf: write all trap instructions
-    //
-    {
-      for EachNode(n, DMN_TrapChunkNode, ctrls->traps.first)
-      {
-        for EachIndex(n_idx, n->count)
-        {
-          DMN_Trap *trap = n->v+n_idx;
-          if(trap->flags == 0)
-          {
-            dmn_process_write(trap->process, r1u64(trap->vaddr, trap->vaddr + bytes_per_trap), arch_info->trap_instruction.str);
-          }
-        }
-      }
-    }
-    
-    ////////////////////////////
-    //- rjf: enable single stepping
-    //
-    if(!dmn_handle_match(ctrls->single_step_thread, dmn_handle_zero()))
-    {
-      LNX_DMN_Thread *single_step_thread = lnx_dmn_thread_from_handle(ctrls->single_step_thread);
-      if(single_step_thread)
-      {
-        lnx_dmn_set_single_step_flag(single_step_thread, 1);
-      }
-    }
-    
-    ////////////////////////////
-    //- rjf: schedule threads to run
-    //
-    typedef struct ThreadNode ThreadNode;
-    struct ThreadNode
-    {
-      ThreadNode *next;
-      LNX_DMN_Thread *v;
-    };
-    ThreadNode *first_scheduled_thread = 0;
-    ThreadNode *last_scheduled_thread = 0;
-    U64 scheduled_thread_count = 0;
-    U64 running_thread_count = 0;
-    {
-      for EachNode(process, LNX_DMN_Process, lnx_dmn_state->first_process)
-      {
-        //- rjf: determine if this process is frozen
-        B32 process_is_frozen = 0;
-        if(ctrls->run_entities_are_processes)
-        {
-          for EachIndex(idx, ctrls->run_entity_count)
-          {
-            if(dmn_handle_match(ctrls->run_entities[idx], lnx_dmn_handle_from_process(process)))
+            DMN_Trap *trap = n->v+n_idx;
+            if(trap->flags == 0)
             {
-              process_is_frozen = 1;
-              break;
+              dmn_process_read(trap->process, r1u64(trap->vaddr, trap->vaddr + bytes_per_trap), trap_swap_bytes + trap_idx*bytes_per_trap);
+            }
+            trap_idx += 1;
+          }
+        }
+      }
+      
+      ////////////////////////////
+      //- rjf: write all trap instructions
+      //
+      {
+        for EachNode(n, DMN_TrapChunkNode, ctrls->traps.first)
+        {
+          for EachIndex(n_idx, n->count)
+          {
+            DMN_Trap *trap = n->v+n_idx;
+            if(trap->flags == 0)
+            {
+              dmn_process_write(trap->process, r1u64(trap->vaddr, trap->vaddr + bytes_per_trap), arch_info->trap_instruction.str);
             }
           }
         }
-        
-        //- rjf: schedule threads in this process
-        for EachNode(thread, LNX_DMN_Thread, process->first_thread)
+      }
+      
+      ////////////////////////////
+      //- rjf: enable single stepping
+      //
+      if(!dmn_handle_match(ctrls->single_step_thread, dmn_handle_zero()))
+      {
+        LNX_DMN_Thread *single_step_thread = lnx_dmn_thread_from_handle(ctrls->single_step_thread);
+        if(single_step_thread)
         {
-          //- rjf: determine if this thread is frozen
-          B32 is_frozen = 0;
-          
-          // rjf: not single-stepping? determine based on run controls freezing info
-          if(dmn_handle_match(dmn_handle_zero(), ctrls->single_step_thread))
+          lnx_dmn_set_single_step_flag(single_step_thread, 1);
+        }
+      }
+      
+      ////////////////////////////
+      //- rjf: schedule threads to run
+      //
+      typedef struct ThreadNode ThreadNode;
+      struct ThreadNode
+      {
+        ThreadNode *next;
+        LNX_DMN_Thread *v;
+      };
+      ThreadNode *first_scheduled_thread = 0;
+      ThreadNode *last_scheduled_thread = 0;
+      U64 scheduled_thread_count = 0;
+      U64 running_thread_count = 0;
+      {
+        for EachNode(process, LNX_DMN_Process, lnx_dmn_state->first_process)
+        {
+          //- rjf: determine if this process is frozen
+          B32 process_is_frozen = 0;
+          if(ctrls->run_entities_are_processes)
           {
-            if(ctrls->run_entities_are_processes)
+            for EachIndex(idx, ctrls->run_entity_count)
             {
-              is_frozen = process_is_frozen;
-            }
-            else 
-            {
-              for EachIndex(idx, ctrls->run_entity_count)
+              if(dmn_handle_match(ctrls->run_entities[idx], lnx_dmn_handle_from_process(process)))
               {
-                if(dmn_handle_match(ctrls->run_entities[idx], lnx_dmn_handle_from_thread(thread)))
+                process_is_frozen = 1;
+                break;
+              }
+            }
+          }
+          
+          //- rjf: schedule threads in this process
+          for EachNode(thread, LNX_DMN_Thread, process->first_thread)
+          {
+            //- rjf: determine if this thread is frozen
+            B32 is_frozen = 0;
+            
+            // rjf: not single-stepping? determine based on run controls freezing info
+            if(dmn_handle_match(dmn_handle_zero(), ctrls->single_step_thread))
+            {
+              if(ctrls->run_entities_are_processes)
+              {
+                is_frozen = process_is_frozen;
+              }
+              else 
+              {
+                for EachIndex(idx, ctrls->run_entity_count)
                 {
-                  is_frozen = 1;
-                  break;
+                  if(dmn_handle_match(ctrls->run_entities[idx], lnx_dmn_handle_from_thread(thread)))
+                  {
+                    is_frozen = 1;
+                    break;
+                  }
                 }
               }
-            }
-            if(ctrls->run_entities_are_unfrozen)
-            {
-              is_frozen ^= 1;
-            }
-          }
-          
-          // rjf: single-step? freeze if not the single-step thread.
-          else
-          {
-            is_frozen = !dmn_handle_match(lnx_dmn_handle_from_thread(thread), ctrls->single_step_thread);
-          }
-          
-          // resume thread
-          if(!is_frozen)
-          {
-            AssertAlways(thread->state == LNX_DMN_ThreadState_Stopped);
-            
-            // write registers
-            if(thread->is_reg_block_dirty)
-            {
-              thread->is_reg_block_dirty = !lnx_dmn_thread_write_reg_block(thread);
-            }
-            
-            // pass signal to the child process
-            void *sig_code = 0;
-            if(thread->pass_through_signal)
-            {
-              thread->pass_through_signal = 0;
-              if(!ctrls->ignore_previous_exception)
+              if(ctrls->run_entities_are_unfrozen)
               {
-                sig_code = (void *)(uintptr_t)thread->pass_through_signo;
+                is_frozen ^= 1;
               }
+            }
+            
+            // rjf: single-step? freeze if not the single-step thread.
+            else
+            {
+              is_frozen = !dmn_handle_match(lnx_dmn_handle_from_thread(thread), ctrls->single_step_thread);
             }
             
             // resume thread
-            if(LNX_RETRY_ON_EINTR(ptrace(PTRACE_CONT, thread->tid, 0, sig_code)) >= 0)
+            if(!is_frozen)
             {
-              thread->state = LNX_DMN_ThreadState_Running;
-              thread->is_reg_block_dirty = 1;
-              ThreadNode *n = push_array(scratch.arena, ThreadNode, 1);
-              SLLQueuePush(first_scheduled_thread, last_scheduled_thread, n);
-              n->v = thread;
-              scheduled_thread_count += 1;
-              running_thread_count += 1;
+              AssertAlways(thread->state == LNX_DMN_ThreadState_Stopped);
+              
+              // write registers
+              if(thread->is_reg_block_dirty)
+              {
+                thread->is_reg_block_dirty = !lnx_dmn_thread_write_reg_block(thread);
+              }
+              
+              // pass signal to the child process
+              void *sig_code = 0;
+              if(thread->pass_through_signal)
+              {
+                thread->pass_through_signal = 0;
+                if(!ctrls->ignore_previous_exception)
+                {
+                  sig_code = (void *)(uintptr_t)thread->pass_through_signo;
+                }
+              }
+              
+              // resume thread
+              if(LNX_RETRY_ON_EINTR(ptrace(PTRACE_CONT, thread->tid, 0, sig_code)) >= 0)
+              {
+                thread->state = LNX_DMN_ThreadState_Running;
+                thread->is_reg_block_dirty = 1;
+                ThreadNode *n = push_array(scratch.arena, ThreadNode, 1);
+                SLLQueuePush(first_scheduled_thread, last_scheduled_thread, n);
+                n->v = thread;
+                scheduled_thread_count += 1;
+                running_thread_count += 1;
+              }
+              else
+              {
+                if(errno == ESRCH)
+                {
+                  // Race note: In multithreaded programs, ptrace(PTRACE_CONT) may fail if a running thread calls
+                  // exit_group while we are resuming threads. The kernel begins tearing down the thread group so
+                  // the target might not be in a ptrace-soppped state anymore. Handle this by ignoring, on waitpid
+                  // we will get chance to report exit event.
+                  //
+                  // TODO: unfortunatley, kernel also sends us ESRCH whenever ptrace(PTRACE_CONT) is sent to a tracee
+                  // that is not in a ptace-stop, so how can we tell these errors apart?
+                }
+                else
+                {
+                  InvalidPath;
+                }
+              }
+            }
+          }
+        }
+      }
+      
+      ////////////////////////////
+      //- rjf: wait for the next signal & generate events
+      //
+      typedef struct StoppedPreCloneThreadID StoppedPreCloneThreadID;
+      struct StoppedPreCloneThreadID
+      {
+        StoppedPreCloneThreadID *next;
+        StoppedPreCloneThreadID *prev;
+        pid_t tid;
+      };
+      StoppedPreCloneThreadID *first_stopped_pre_clone_thread_id = 0;
+      StoppedPreCloneThreadID *last_stopped_pre_clone_thread_id = 0;
+      B32 is_halt_done = 0;
+      for(;;)
+      {
+        //////////////////////////
+        //- rjf: wait for a signal (unblock halts)
+        //
+        int status = 0;
+        pid_t wait_id = 0;
+        {
+          mutex_drop(lnx_dmn_state->halter_mutex);
+          wait_id = LNX_RETRY_ON_EINTR(waitpid(-1, &status, __WALL|__WNOTHREAD));
+          mutex_take(lnx_dmn_state->halter_mutex);
+        }
+        
+        //////////////////////////
+        //- rjf: unpack signal
+        //
+        LNX_DMN_Process *process = lnx_dmn_process_from_pid(wait_id);
+        LNX_DMN_Thread *thread = lnx_dmn_thread_from_pid(wait_id);
+        if(process == 0 && thread != 0)
+        {
+          process = thread->process;
+        }
+        int wifexited   = WIFEXITED(status);
+        int wifsignaled = WIFSIGNALED(status);
+        int wifstopped  = WIFSTOPPED(status);
+        int wstopsig    = WSTOPSIG(status);
+        int event_code  = (status >> 16);
+        
+        //////////////////////////
+        //- rjf: set up signal handling outputs (top-level handling bit)
+        //
+        B32 signal_handled = 0;
+        
+        //////////////////////////
+        //- rjf: set up signal handling outputs (process exits / creation)
+        //
+        B32 process_done = 0;
+        B32 process_new = 0;
+        LNX_DMN_CreateProcessFlags process_new_flags = 0;
+        
+        //////////////////////////
+        //- rjf: set up signal handling outputs (thread exits / creation / stops)
+        //
+        B32 thread_done = 0;
+        B32 thread_done_report_events = 0;
+        U64 thread_done_exit_code = 0;
+        B32 thread_new = 0;
+        pid_t thread_new_pid = 0;
+        LNX_DMN_ThreadState thread_new_state = LNX_DMN_ThreadState_Null;
+        B32 thread_new_report_events = 0;
+        LNX_DMN_Process *thread_new_parent = process;
+        B32 thread_stop = 0;
+        B32 thread_initial_stop = 0;
+        
+        //////////////////////////
+        //- rjf: handle signals from initializing processes
+        //
+        if(process && process->state != LNX_DMN_ProcessState_Normal)
+        {
+          //- rjf: advance process initialization state
+          switch(process->state)
+          {
+            default:{}break;
+            case LNX_DMN_ProcessState_Launch:
+            {
+              if(wstopsig == SIGSTOP)
+              {
+                if(LNX_RETRY_ON_EINTR(ptrace(PTRACE_CONT, process->pid, 0, 0)) >= 0)
+                {
+                  process->state = LNX_DMN_ProcessState_WaitForExec;
+                  signal_handled = 1;
+                }
+                else
+                {
+                  log_infof("ptrace error: Failed to resume tracee.");
+                }
+              }
+            }break;
+            case LNX_DMN_ProcessState_WaitForExec:
+            if(wstopsig == SIGTRAP && event_code == PTRACE_EVENT_EXEC)
+            {
+              process_done = 1;
+              process_new = 1;
+              process_new_flags = process->debug_subprocesses ? LNX_DMN_CreateProcessFlag_DebugSubprocesses : 0;
+              signal_handled = 1;
+            }break;
+            case LNX_DMN_ProcessState_ExecFailedDoExit:
+            if(wifexited)
+            {
+              process_done = 1;
+              signal_handled = 1;
+            }break;
+            case LNX_DMN_ProcessState_Attach:
+            if(wstopsig == SIGSTOP)
+            {
+              process_done = 1;
+              process_new = 1;
+              process_new_flags = process->debug_subprocesses ? LNX_DMN_CreateProcessFlag_DebugSubprocesses : 0;
+              signal_handled = 1;
+            }break;
+          }
+          
+          //- rjf: if signal was unhandled at this point -> kill process
+          if(!signal_handled)
+          {
+            signal_handled = 1;
+            if(LNX_RETRY_ON_EINTR(kill(wait_id, SIGKILL)) >= 0)
+            {
+              process->state = LNX_DMN_ProcessState_ExecFailedDoExit;
             }
             else
             {
-              if(errno == ESRCH)
-              {
-                // Race note: In multithreaded programs, ptrace(PTRACE_CONT) may fail if a running thread calls
-                // exit_group while we are resuming threads. The kernel begins tearing down the thread group so
-                // the target might not be in a ptrace-soppped state anymore. Handle this by ignoring, on waitpid
-                // we will get chance to report exit event.
-                //
-                // TODO: unfortunatley, kernel also sends us ESRCH whenever ptrace(PTRACE_CONT) is sent to a tracee
-                // that is not in a ptace-stop, so how can we tell these errors apart?
-              }
-              else
-              {
-                InvalidPath;
-              }
+              log_infof("ptrace error: Couldn't successfully kill process; releasing debugger state.");
+              process_done = 1;
             }
           }
         }
-      }
-    }
-    
-    ////////////////////////////
-    //- rjf: wait the next signal & generate events
-    //
-    typedef struct StoppedPreCloneThreadID StoppedPreCloneThreadID;
-    struct StoppedPreCloneThreadID
-    {
-      StoppedPreCloneThreadID *next;
-      StoppedPreCloneThreadID *prev;
-      pid_t tid;
-    };
-    StoppedPreCloneThreadID *first_stopped_pre_clone_thread_id = 0;
-    StoppedPreCloneThreadID *last_stopped_pre_clone_thread_id = 0;
-    B32 is_halt_done = 0;
-    for(;;)
-    {
-      //////////////////////////
-      //- rjf: wait for a signal (unblock halts)
-      //
-      int status = 0;
-      pid_t wait_id = 0;
-      {
-        mutex_drop(lnx_dmn_state->halter_mutex);
-        wait_id = LNX_RETRY_ON_EINTR(waitpid(-1, &status, __WALL|__WNOTHREAD));
-        mutex_take(lnx_dmn_state->halter_mutex);
-      }
-      
-      //////////////////////////
-      //- rjf: unpack signal
-      //
-      LNX_DMN_Process *process = lnx_dmn_process_from_pid(wait_id);
-      LNX_DMN_Thread *thread = lnx_dmn_thread_from_pid(wait_id);
-      if(process == 0 && thread != 0)
-      {
-        process = thread->process;
-      }
-      int wifexited   = WIFEXITED(status);
-      int wifsignaled = WIFSIGNALED(status);
-      int wifstopped  = WIFSTOPPED(status);
-      int wstopsig    = WSTOPSIG(status);
-      int event_code  = (status >> 16);
-      
-      //////////////////////////
-      //- rjf: set up signal handling outputs (top-level handling bit)
-      //
-      B32 signal_handled = 0;
-      
-      //////////////////////////
-      //- rjf: set up signal handling outputs (process exits / creation)
-      //
-      B32 process_done = 0;
-      B32 process_new = 0;
-      LNX_DMN_CreateProcessFlags process_new_flags = 0;
-      
-      //////////////////////////
-      //- rjf: set up signal handling outputs (thread exits / creation / stops)
-      //
-      B32 thread_done = 0;
-      B32 thread_done_report_events = 0;
-      U64 thread_done_exit_code = 0;
-      B32 thread_new = 0;
-      pid_t thread_new_pid = 0;
-      LNX_DMN_ThreadState thread_new_state = LNX_DMN_ThreadState_Null;
-      B32 thread_new_report_events = 0;
-      LNX_DMN_Process *thread_new_parent = process;
-      B32 thread_stop = 0;
-      B32 thread_initial_stop = 0;
-      
-      //////////////////////////
-      //- rjf: handle signals from initializing processes
-      //
-      if(process && process->state != LNX_DMN_ProcessState_Normal)
-      {
-        //- rjf: advance process initialization state
-        switch(process->state)
+        
+        //////////////////////////
+        //- rjf: any thread stop -> update thread state, halt other threads if needed
+        //
+        if(!signal_handled && (wifexited || wifsignaled || wifstopped))
         {
-          default:{}break;
-          case LNX_DMN_ProcessState_Launch:
+          B32 thread_running = (thread && thread->state == LNX_DMN_ThreadState_Running);
+          
+          // rjf: update thread running state
+          if(thread_running)
           {
-            if(wstopsig == SIGSTOP)
+            if(wifstopped && !wifsignaled && !wifexited)
             {
-              if(LNX_RETRY_ON_EINTR(ptrace(PTRACE_CONT, process->pid, 0, 0)) >= 0)
+              thread->state = LNX_DMN_ThreadState_Stopped;
+            }
+            else if(!wifstopped && (wifsignaled || wifexited))
+            {
+              thread->state = LNX_DMN_ThreadState_Exited;
+            }
+          }
+          
+          // rjf: if this is the first thread to stop out of all we scheduled -> interrupt
+          // all other scheduled threads
+          if(scheduled_thread_count != 0 && running_thread_count == scheduled_thread_count)
+          {
+            for EachNode(n, ThreadNode, first_scheduled_thread)
+            {
+              if(n->v != thread && n->v->state == LNX_DMN_ThreadState_Running)
               {
-                process->state = LNX_DMN_ProcessState_WaitForExec;
-                signal_handled = 1;
-              }
-              else
-              {
-                log_infof("ptrace error: Failed to resume tracee.");
+                n->v->ghost_trap = 1;
+                if(LNX_RETRY_ON_EINTR(ptrace(PTRACE_INTERRUPT, n->v->tid, 0, 0)) < 0)
+                {
+                  log_infof("ptrace error: Couldn't send PTRACE_INTERRUPT to TID %I64u.", n->v->tid);
+                }
               }
             }
-          }break;
-          case LNX_DMN_ProcessState_WaitForExec:
-          if(wstopsig == SIGTRAP && event_code == PTRACE_EVENT_EXEC)
+          }
+          
+          // rjf: decrement running thread count
+          if(thread_running)
           {
-            process_done = 1;
-            process_new = 1;
-            process_new_flags = process->debug_subprocesses ? LNX_DMN_CreateProcessFlag_DebugSubprocesses : 0;
-            signal_handled = 1;
-          }break;
-          case LNX_DMN_ProcessState_ExecFailedDoExit:
-          if(wifexited)
-          {
-            process_done = 1;
-            signal_handled = 1;
-          }break;
-          case LNX_DMN_ProcessState_Attach:
-          if(wstopsig == SIGSTOP)
-          {
-            process_done = 1;
-            process_new = 1;
-            process_new_flags = process->debug_subprocesses ? LNX_DMN_CreateProcessFlag_DebugSubprocesses : 0;
-            signal_handled = 1;
-          }break;
+            running_thread_count -= 1;
+          }
         }
         
-        //- rjf: if signal was unhandled at this point -> kill process
-        if(!signal_handled)
+        //////////////////////////
+        //- rjf: wifexited / wifsignaled -> thread exits
+        //
+        // wifexited -> normal process exit via _exit or exit()
+        // wifsignaled -> exit because child did not handle a signal
+        //
+        B32 is_exception = 0;
+        if(!signal_handled && (wifexited || wifsignaled))
+        {
+          thread_done = 1;
+          thread_done_exit_code = wifexited ? WEXITSTATUS(status) : WTERMSIG(status);
+          thread_done_report_events = 1;
+          signal_handled = 1;
+        }
+        
+        //////////////////////////
+        //- rjf: wifstopped -> thread or group stop
+        //
+        else if(!signal_handled && wifstopped)
         {
           signal_handled = 1;
-          if(LNX_RETRY_ON_EINTR(kill(wait_id, SIGKILL)) >= 0)
+          
+          ////////////////////////
+          //- rjf: read stop thread's new registers
+          //
+          if(thread && thread->state != LNX_DMN_ThreadState_PendingCreation)
           {
-            process->state = LNX_DMN_ProcessState_ExecFailedDoExit;
+            thread->is_reg_block_dirty = !lnx_dmn_thread_read_reg_block(thread);
           }
-          else
+          
+          ////////////////////////
+          //- rjf: trap signal
+          //
+          if(wstopsig == SIGTRAP)
           {
-            log_infof("ptrace error: Couldn't successfully kill process; releasing debugger state.");
-            process_done = 1;
-          }
-        }
-      }
-      
-      //////////////////////////
-      //- rjf: any thread stop -> update thread state, halt other threads if needed
-      //
-      if(!signal_handled && (wifexited || wifsignaled || wifstopped))
-      {
-        B32 thread_running = (thread && thread->state == LNX_DMN_ThreadState_Running);
-        
-        // rjf: update thread running state
-        if(thread_running)
-        {
-          if(wifstopped && !wifsignaled && !wifexited)
-          {
-            thread->state = LNX_DMN_ThreadState_Stopped;
-          }
-          else if(!wifstopped && (wifsignaled || wifexited))
-          {
-            thread->state = LNX_DMN_ThreadState_Exited;
-          }
-        }
-        
-        // rjf: if this is the first thread to stop out of all we scheduled -> interrupt
-        // all other scheduled threads
-        if(scheduled_thread_count != 0 && running_thread_count == scheduled_thread_count)
-        {
-          for EachNode(n, ThreadNode, first_scheduled_thread)
-          {
-            if(n->v != thread && n->v->state == LNX_DMN_ThreadState_Running)
+            switch(event_code)
             {
-              n->v->ghost_trap = 1;
-              if(LNX_RETRY_ON_EINTR(ptrace(PTRACE_INTERRUPT, n->v->tid, 0, 0)) < 0)
+              default:{}break;
+              
+              ////////////////////
+              //- rjf: 0 -> general trap path
+              //
+              case 0:
               {
-                log_infof("ptrace error: Couldn't send PTRACE_INTERRUPT to TID %I64u.", n->v->tid);
-              }
-            }
-          }
-        }
-        
-        // rjf: decrement running thread count
-        if(thread_running)
-        {
-          running_thread_count -= 1;
-        }
-      }
-      
-      //////////////////////////
-      //- rjf: wifexited / wifsignaled -> thread exits
-      //
-      // wifexited -> normal process exit via _exit or exit()
-      // wifsignaled -> exit because child did not handle a signal
-      //
-      B32 is_exception = 0;
-      if(!signal_handled && (wifexited || wifsignaled))
-      {
-        thread_done = 1;
-        thread_done_exit_code = wifexited ? WEXITSTATUS(status) : WTERMSIG(status);
-        thread_done_report_events = 1;
-        signal_handled = 1;
-      }
-      
-      //////////////////////////
-      //- rjf: wifstopped -> thread or group stop
-      //
-      else if(!signal_handled && wifstopped)
-      {
-        signal_handled = 1;
-        
-        ////////////////////////
-        //- rjf: read stop thread's new registers
-        //
-        if(thread && thread->state != LNX_DMN_ThreadState_PendingCreation)
-        {
-          thread->is_reg_block_dirty = !lnx_dmn_thread_read_reg_block(thread);
-        }
-        
-        ////////////////////////
-        //- rjf: trap signal
-        //
-        if(wstopsig == SIGTRAP)
-        {
-          switch(event_code)
-          {
-            default:{}break;
-            
-            ////////////////////
-            //- rjf: 0 -> general trap path
-            //
-            case 0:
-            {
-              siginfo_t siginfo = {0};
-              if(LNX_RETRY_ON_EINTR(ptrace(PTRACE_GETSIGINFO, wait_id, 0, &siginfo)) >= 0)
-              {
-                switch(siginfo.si_code)
+                siginfo_t siginfo = {0};
+                if(LNX_RETRY_ON_EINTR(ptrace(PTRACE_GETSIGINFO, wait_id, 0, &siginfo)) >= 0)
                 {
-                  //- rjf: regular traps or breakpoints
-                  case SI_KERNEL:
-                  case TRAP_BRKPT:
+                  switch(siginfo.si_code)
                   {
-                    //- rjf: unpack thread IP / process
-                    U64 ip = lnx_dmn_ip_from_thread(thread);
-                    DMN_Handle process_handle = lnx_dmn_handle_from_process(process);
-                    
-                    //- rjf: IP -> find associated user trap
-                    DMN_Trap *hit_user_trap = 0;
+                    //- rjf: regular traps or breakpoints
+                    case SI_KERNEL:
+                    case TRAP_BRKPT:
                     {
-                      for EachNode(n, DMN_TrapChunkNode, ctrls->traps.first)
+                      //- rjf: unpack thread IP / process
+                      U64 ip = lnx_dmn_ip_from_thread(thread);
+                      DMN_Handle process_handle = lnx_dmn_handle_from_process(process);
+                      
+                      //- rjf: IP -> find associated user trap
+                      DMN_Trap *hit_user_trap = 0;
                       {
-                        for EachIndex(n_idx, n->count)
+                        for EachNode(n, DMN_TrapChunkNode, ctrls->traps.first)
                         {
-                          DMN_Trap *trap = n->v+n_idx;
-                          if(trap->flags == 0 && dmn_handle_match(trap->process, process_handle) && trap->vaddr == ip - bytes_per_trap)
+                          for EachIndex(n_idx, n->count)
                           {
-                            hit_user_trap = trap;
-                            goto dbl_break_find_user_trap;
+                            DMN_Trap *trap = n->v+n_idx;
+                            if(trap->flags == 0 && dmn_handle_match(trap->process, process_handle) && trap->vaddr == ip - bytes_per_trap)
+                            {
+                              hit_user_trap = trap;
+                              goto dbl_break_find_user_trap;
+                            }
+                          }
+                        }
+                        dbl_break_find_user_trap:;
+                      }
+                      
+                      //- rjf: no user trap -> correllate w/ probe
+                      LNX_DMN_ProbeKind probe_kind = LNX_DMN_ProbeKind_Null;
+                      if(hit_user_trap == 0)
+                      {
+                        for EachNode(active_trap, LNX_DMN_ActiveTrap, process->ctx->first_probe_trap)
+                        {
+                          if(active_trap->trap->vaddr == ip-1)
+                          {
+                            probe_kind = active_trap->trap->id;
+                            break;
                           }
                         }
                       }
-                      dbl_break_find_user_trap:;
-                    }
-                    
-                    //- rjf: no user trap -> correllate w/ probe
-                    LNX_DMN_ProbeKind probe_kind = LNX_DMN_ProbeKind_Null;
-                    if(hit_user_trap == 0)
-                    {
-                      for EachNode(active_trap, LNX_DMN_ActiveTrap, process->ctx->first_probe_trap)
+                      
+                      //- rjf: probe trap: (module) initialization / relocation complete
+                      if(probe_kind == LNX_DMN_ProbeKind_InitComplete || probe_kind == LNX_DMN_ProbeKind_RelocComplete)
                       {
-                        if(active_trap->trap->vaddr == ip-1)
+                        // rjf: unpack probe arguments
+                        LNX_DMN_Probe *probe = process->ctx->probes[probe_kind];
+                        U64 name_space_id = 0;
+                        U64 addr = 0;
+                        stap_read_arg_u(probe->args.v[0], process->ctx->arch, thread->reg_block, lnx_dmn_stap_memory_read, process, &name_space_id);
+                        stap_read_arg_u(probe->args.v[probe_kind == LNX_DMN_ProbeKind_InitComplete ? 1 : 2], process->ctx->arch, thread->reg_block, lnx_dmn_stap_memory_read, process, &addr);
+                        
+                        // rjf: init complete probe -> read rdebug for link map addr
+                        U64 new_link_map_vaddr = addr;
+                        if(probe_kind == LNX_DMN_ProbeKind_InitComplete)
                         {
-                          probe_kind = active_trap->trap->id;
-                          break;
+                          GNU_RDebugInfo64 rdebug = {0};
+                          gnu_read_r_debug(lnx_dmn_machine_op_mem_read, &process->fd, addr, process->ctx->arch, &rdebug);
+                          new_link_map_vaddr = rdebug.r_map;
+                        }
+                        
+                        // rjf: new module loaded
+                        {
+                          LNX_DMN_Process *process = thread->process;
+                          GNU_LinkMap64 map = {0};
+                          for(U64 map_vaddr = new_link_map_vaddr; map_vaddr != 0; map_vaddr = map.next_vaddr)
+                          {
+                            // read out new link map item
+                            if(gnu_read_link_map(lnx_dmn_machine_op_mem_read, &process->fd, map_vaddr, process->ctx->dl_class, &map) != MachineOpResult_Ok) { break; }
+                            
+                            // was module already loaded?
+                            LNX_DMN_Module *module = 0;
+                            {
+                              U64 hash = u64_hash_from_str8(str8_struct(&map.addr_vaddr));
+                              U64 slot_idx = hash%process->ctx->module_slots_count;
+                              for(LNX_DMN_Module *m = process->ctx->module_slots[slot_idx].first; m != 0; m = m->hash_next)
+                              {
+                                if(m->base_vaddr == map.addr_vaddr)
+                                {
+                                  module = m;
+                                  break;
+                                }
+                              }
+                            }
+                            
+                            // rjf: load module
+                            if(module == 0)
+                            {
+                              // clone process ctx
+                              if(process->is_cow)
+                              {
+                                process->is_cow = 0;
+                                process->ctx = lnx_dmn_process_ctx_clone(process, process->ctx);
+                              }
+                              
+                              // alloc module
+                              module = lnx_dmn_module_alloc(process->ctx, process->fd, map.addr_vaddr, map.name_vaddr, name_space_id, 0);
+                              
+                              // rjf: report
+                              lnx_dmn_push_event_load_module(arena, &events, thread, module);
+                            }
+                          }
                         }
                       }
-                    }
-                    
-                    //- rjf: probe trap: (module) initialization / relocation complete
-                    if(probe_kind == LNX_DMN_ProbeKind_InitComplete || probe_kind == LNX_DMN_ProbeKind_RelocComplete)
-                    {
-                      // rjf: unpack probe arguments
-                      LNX_DMN_Probe *probe = process->ctx->probes[probe_kind];
-                      U64 name_space_id = 0;
-                      U64 addr = 0;
-                      stap_read_arg_u(probe->args.v[0], process->ctx->arch, thread->reg_block, lnx_dmn_stap_memory_read, process, &name_space_id);
-                      stap_read_arg_u(probe->args.v[probe_kind == LNX_DMN_ProbeKind_InitComplete ? 1 : 2], process->ctx->arch, thread->reg_block, lnx_dmn_stap_memory_read, process, &addr);
                       
-                      // rjf: init complete probe -> read rdebug for link map addr
-                      U64 new_link_map_vaddr = addr;
-                      if(probe_kind == LNX_DMN_ProbeKind_InitComplete)
+                      //- rjf: probe trap: (module) unmap complete
+                      else if(probe_kind == LNX_DMN_ProbeKind_UnmapComplete)
                       {
-                        GNU_RDebugInfo64 rdebug = {0};
-                        gnu_read_r_debug(lnx_dmn_machine_op_mem_read, &process->fd, addr, process->ctx->arch, &rdebug);
-                        new_link_map_vaddr = rdebug.r_map;
-                      }
-                      
-                      // rjf: new module loaded
-                      {
-                        LNX_DMN_Process *process = thread->process;
-                        GNU_LinkMap64 map = {0};
-                        for(U64 map_vaddr = new_link_map_vaddr; map_vaddr != 0; map_vaddr = map.next_vaddr)
+                        B32 is_unmap_completed = 0;
+                        
+                        LNX_DMN_Probe *probe = process->ctx->probes[LNX_DMN_ProbeKind_UnmapComplete];
+                        U64 name_space_id = 0, rdebug_vaddr = 0;
+                        if(!stap_read_arg_u(probe->args.v[0], process->ctx->arch, thread->reg_block, lnx_dmn_stap_memory_read, process, &name_space_id)) { goto unmap_complete_exit; }
+                        if(!stap_read_arg_u(probe->args.v[1], process->ctx->arch, thread->reg_block, lnx_dmn_stap_memory_read, process, &rdebug_vaddr))  { goto unmap_complete_exit; }
+                        
                         {
-                          // read out new link map item
-                          if(gnu_read_link_map(lnx_dmn_machine_op_mem_read, &process->fd, map_vaddr, process->ctx->dl_class, &map) != MachineOpResult_Ok) { break; }
+                          Temp scratch = scratch_begin(&arena, 1);
                           
-                          // was module already loaded?
-                          LNX_DMN_Module *module = 0;
+                          LNX_DMN_ProcessCtx *ctx = process->ctx;
+                          
+                          // flag every module as inactive
+                          for(LNX_DMN_Module *module = ctx->first_module; module != 0; module = module->order_next)
                           {
-                            U64 hash = u64_hash_from_str8(str8_struct(&map.addr_vaddr));
-                            U64 slot_idx = hash%process->ctx->module_slots_count;
-                            for(LNX_DMN_Module *m = process->ctx->module_slots[slot_idx].first; m != 0; m = m->hash_next)
+                            module->is_live = 0;
+                          }
+                          
+                          // mark live modules
+                          B32 is_64bit = ctx->dl_class == ELF_Class_64;
+                          GNU_RDebugInfoList rdebug_list = gnu_parse_rdebug(scratch.arena, is_64bit, rdebug_vaddr, lnx_dmn_machine_op_mem_read, &process->fd);
+                          for EachNode(rdebug_n, GNU_RDebugInfoNode, rdebug_list.first)
+                          {
+                            GNU_LinkMapList link_map_list = gnu_parse_link_map_list(scratch.arena, is_64bit, rdebug_n->v.r_map, lnx_dmn_machine_op_mem_read, &process->fd);
+                            for EachNode(link_map_n, GNU_LinkMapNode, link_map_list.first)
                             {
-                              if(m->base_vaddr == map.addr_vaddr)
+                              U64 hash = u64_hash_from_str8(str8_struct(&link_map_n->v.addr_vaddr));
+                              U64 slot_idx = hash%ctx->module_slots_count;
+                              for(LNX_DMN_Module *m = ctx->module_slots[slot_idx].first; m != 0; m = m->hash_next)
                               {
-                                module = m;
-                                break;
+                                if(m->base_vaddr == link_map_n->v.addr_vaddr)
+                                {
+                                  m->is_live = 1;
+                                  break;
+                                }
                               }
                             }
                           }
                           
-                          // rjf: load module
-                          if(module == 0)
+                          // collect unloaded modules
+                          typedef struct ModuleNode ModuleNode;
+                          struct ModuleNode
                           {
-                            // clone process ctx
+                            ModuleNode *next;
+                            LNX_DMN_Module *m;
+                          };
+                          ModuleNode *first_module_to_release = 0;
+                          ModuleNode *last_module_to_release = 0;
+                          for(LNX_DMN_Module *module = ctx->first_module; module != 0; module = module->order_next)
+                          {
+                            if(!module->is_live)
+                            {
+                              ModuleNode *n = push_array(scratch.arena, ModuleNode, 1);
+                              SLLQueuePush(first_module_to_release, last_module_to_release, n);
+                              n->m = module;
+                            }
+                          }
+                          
+                          // clone process context
+                          if(first_module_to_release != 0)
+                          {
                             if(process->is_cow)
                             {
                               process->is_cow = 0;
                               process->ctx = lnx_dmn_process_ctx_clone(process, process->ctx);
                             }
-                            
-                            // alloc module
-                            module = lnx_dmn_module_alloc(process->ctx, process->fd, map.addr_vaddr, map.name_vaddr, name_space_id, 0);
-                            
-                            // rjf: report
-                            lnx_dmn_push_event_load_module(arena, &events, thread, module);
                           }
-                        }
-                      }
-                    }
-                    
-                    //- rjf: probe trap: (module) unmap complete
-                    else if(probe_kind == LNX_DMN_ProbeKind_UnmapComplete)
-                    {
-                      B32 is_unmap_completed = 0;
-                      
-                      LNX_DMN_Probe *probe = process->ctx->probes[LNX_DMN_ProbeKind_UnmapComplete];
-                      U64 name_space_id = 0, rdebug_vaddr = 0;
-                      if(!stap_read_arg_u(probe->args.v[0], process->ctx->arch, thread->reg_block, lnx_dmn_stap_memory_read, process, &name_space_id)) { goto unmap_complete_exit; }
-                      if(!stap_read_arg_u(probe->args.v[1], process->ctx->arch, thread->reg_block, lnx_dmn_stap_memory_read, process, &rdebug_vaddr))  { goto unmap_complete_exit; }
-                      
-                      {
-                        Temp scratch = scratch_begin(&arena, 1);
-                        
-                        LNX_DMN_ProcessCtx *ctx = process->ctx;
-                        
-                        // flag every module as inactive
-                        for(LNX_DMN_Module *module = ctx->first_module; module != 0; module = module->order_next)
-                        {
-                          module->is_live = 0;
-                        }
-                        
-                        // mark live modules
-                        B32 is_64bit = ctx->dl_class == ELF_Class_64;
-                        GNU_RDebugInfoList rdebug_list = gnu_parse_rdebug(scratch.arena, is_64bit, rdebug_vaddr, lnx_dmn_machine_op_mem_read, &process->fd);
-                        for EachNode(rdebug_n, GNU_RDebugInfoNode, rdebug_list.first)
-                        {
-                          GNU_LinkMapList link_map_list = gnu_parse_link_map_list(scratch.arena, is_64bit, rdebug_n->v.r_map, lnx_dmn_machine_op_mem_read, &process->fd);
-                          for EachNode(link_map_n, GNU_LinkMapNode, link_map_list.first)
+                          
+                          // push events and clean up unloaded modules
+                          for EachNode(module_n, ModuleNode, first_module_to_release)
                           {
-                            U64 hash = u64_hash_from_str8(str8_struct(&link_map_n->v.addr_vaddr));
-                            U64 slot_idx = hash%ctx->module_slots_count;
-                            for(LNX_DMN_Module *m = ctx->module_slots[slot_idx].first; m != 0; m = m->hash_next)
-                            {
-                              if(m->base_vaddr == link_map_n->v.addr_vaddr)
-                              {
-                                m->is_live = 1;
-                                break;
-                              }
-                            }
+                            lnx_dmn_push_event_unload_module(arena, &events, process, module_n->m);
+                            lnx_dmn_module_release(process->ctx, module_n->m);
                           }
+                          
+                          scratch_end(scratch);
                         }
                         
-                        // collect unloaded modules
-                        typedef struct ModuleNode ModuleNode;
-                        struct ModuleNode
-                        {
-                          ModuleNode *next;
-                          LNX_DMN_Module *m;
-                        };
-                        ModuleNode *first_module_to_release = 0;
-                        ModuleNode *last_module_to_release = 0;
-                        for(LNX_DMN_Module *module = ctx->first_module; module != 0; module = module->order_next)
-                        {
-                          if(!module->is_live)
-                          {
-                            ModuleNode *n = push_array(scratch.arena, ModuleNode, 1);
-                            SLLQueuePush(first_module_to_release, last_module_to_release, n);
-                            n->m = module;
-                          }
-                        }
-                        
-                        // clone process context
-                        if(first_module_to_release != 0)
-                        {
-                          if(process->is_cow)
-                          {
-                            process->is_cow = 0;
-                            process->ctx = lnx_dmn_process_ctx_clone(process, process->ctx);
-                          }
-                        }
-                        
-                        // push events and clean up unloaded modules
-                        for EachNode(module_n, ModuleNode, first_module_to_release)
-                        {
-                          lnx_dmn_push_event_unload_module(arena, &events, process, module_n->m);
-                          lnx_dmn_module_release(process->ctx, module_n->m);
-                        }
-                        
-                        scratch_end(scratch);
+                        is_unmap_completed = 1;
+                        unmap_complete_exit:;
+                        AssertAlways(is_unmap_completed);
                       }
                       
-                      is_unmap_completed = 1;
-                      unmap_complete_exit:;
-                      AssertAlways(is_unmap_completed);
-                    }
-                    
-                    //- rjf: no associated probe -> either trap or breakpoint
-                    if(probe_kind == LNX_DMN_ProbeKind_Null)
-                    {
-                      // rjf: on user breakpoint trap -> roll back IP
-                      if(hit_user_trap)
+                      //- rjf: no associated probe -> either trap or breakpoint
+                      if(probe_kind == LNX_DMN_ProbeKind_Null)
                       {
-                        U64 ip = lnx_dmn_ip_from_thread(thread);
-                        lnx_dmn_thread_write_ip(thread, ip - arch_info->trap_instruction.size);
-                      }
-                      
-                      // rjf: generate event, if this isn't a ghost trap
-                      if(thread->ghost_trap)
-                      {
-                        thread->ghost_trap = 0;
-                      }
-                      else
-                      {
-                        DMN_Event *e = dmn_event_list_push(arena, &events);
-                        e->kind                = hit_user_trap ? DMN_EventKind_Breakpoint : DMN_EventKind_Trap;
-                        e->process             = lnx_dmn_handle_from_process(process);
-                        e->thread              = lnx_dmn_handle_from_thread(thread);
-                        e->instruction_pointer = lnx_dmn_ip_from_thread(thread);
-                        e->user_data           = hit_user_trap ? hit_user_trap->id : 0;
-                      }
-                    }
-                  }break;
-                  
-                  //- rjf: single-step completions
-                  case TRAP_TRACE:
-                  {
-                    lnx_dmn_set_single_step_flag(thread, 0);
-                    DMN_Event *e = dmn_event_list_push(arena, &events);
-                    e->kind                = DMN_EventKind_SingleStep;
-                    e->process             = lnx_dmn_handle_from_process(thread->process);
-                    e->thread              = lnx_dmn_handle_from_thread(thread);
-                    e->instruction_pointer = lnx_dmn_ip_from_thread(thread);
-                    e->address             = e->instruction_pointer;
-                  }break;
-                  
-                  //- rjf: data breakpoints
-                  case TRAP_HWBKPT:
-                  {
-                    B32 is_valid = 1;
-                    U64 address  = 0;
-                    switch(thread->process->ctx->arch)
-                    {
-                      default:{}break;
-                      case Arch_x64:
-                      {
-                        X64_RegBlock *regs_x64 = thread->reg_block;
-                        if(regs_x64->dr6 & X64_DebugStatusFlag_B0)
+                        // rjf: on user breakpoint trap -> roll back IP
+                        if(hit_user_trap)
                         {
-                          address = regs_x64->dr0;
+                          U64 ip = lnx_dmn_ip_from_thread(thread);
+                          lnx_dmn_thread_write_ip(thread, ip - arch_info->trap_instruction.size);
                         }
-                        else if(regs_x64->dr6 & X64_DebugStatusFlag_B1)
+                        
+                        // rjf: generate event, if this isn't a ghost trap
+                        if(thread->ghost_trap)
                         {
-                          address = regs_x64->dr1;
-                        }
-                        else if(regs_x64->dr6 & X64_DebugStatusFlag_B2)
-                        {
-                          address = regs_x64->dr2;
-                        }
-                        else if(regs_x64->dr6 & X64_DebugStatusFlag_B3)
-                        {
-                          address = regs_x64->dr3;
+                          thread->ghost_trap = 0;
                         }
                         else
                         {
-                          is_valid = 0;
+                          DMN_Event *e = dmn_event_list_push(arena, &events);
+                          e->kind                = hit_user_trap ? DMN_EventKind_Breakpoint : DMN_EventKind_Trap;
+                          e->process             = lnx_dmn_handle_from_process(process);
+                          e->thread              = lnx_dmn_handle_from_thread(thread);
+                          e->instruction_pointer = lnx_dmn_ip_from_thread(thread);
+                          e->user_data           = hit_user_trap ? hit_user_trap->id : 0;
                         }
-                      }break;
-                    }
+                      }
+                    }break;
                     
-                    if(is_valid)
+                    //- rjf: single-step completions
+                    case TRAP_TRACE:
                     {
+                      lnx_dmn_set_single_step_flag(thread, 0);
                       DMN_Event *e = dmn_event_list_push(arena, &events);
-                      e->kind                = DMN_EventKind_Breakpoint;
+                      e->kind                = DMN_EventKind_SingleStep;
                       e->process             = lnx_dmn_handle_from_process(thread->process);
                       e->thread              = lnx_dmn_handle_from_thread(thread);
-                      e->instruction_pointer = address;
-                      e->address             = address;
-                    }
-                  }break;
-                  case TRAP_BRANCH: { NotImplemented; }break;
-                  case TRAP_UNK:    { NotImplemented; }break;
-                  default: { InvalidPath; } break;
-                }
-              }
-              else
-              {
-                log_infof("ptrace error: Failed to get signal info via PTRACE_GETSIGINFO.");
-              }
-            }break;
-            
-            ////////////////////
-            //- rjf: fork / vforks
-            //
-            case PTRACE_EVENT_FORK:
-            {
-              NotImplemented;
-            }break;
-            case PTRACE_EVENT_VFORK:
-            {
-              NotImplemented;
-            }break;
-            case PTRACE_EVENT_VFORK_DONE:
-            {
-              NotImplemented;
-            }break;
-            
-            ////////////////////
-            //- rjf: clone
-            //
-            // NOTE(rjf): we get this event from the creator thread when it has
-            // cloned itself to create a child. immediately after creation, the
-            // child will raise a stop event. but importantly, the Linux kernel
-            // offers *NO GUARANTEES* about whether we receive the *clone* or
-            // the *stop* first.
-            //
-            case PTRACE_EVENT_CLONE:
-            {
-              pid_t new_tid = 0;
-              if(LNX_RETRY_ON_EINTR(ptrace(PTRACE_GETEVENTMSG, wait_id, 0, &new_tid)) >= 0)
-              {
-                // rjf: first, check if we have already seen a stop event for this TID. if so,
-                // remove from pre-clone stop thread ID List.
-                B32 already_stopped = 0;
-                for(StoppedPreCloneThreadID *n = first_stopped_pre_clone_thread_id; n != 0; n = n->next)
-                {
-                  if(n->tid == new_tid)
-                  {
-                    already_stopped = 1;
-                    DLLRemove(first_stopped_pre_clone_thread_id, last_stopped_pre_clone_thread_id, n);
-                    break;
+                      e->instruction_pointer = lnx_dmn_ip_from_thread(thread);
+                      e->address             = e->instruction_pointer;
+                    }break;
+                    
+                    //- rjf: data breakpoints
+                    case TRAP_HWBKPT:
+                    {
+                      B32 is_valid = 1;
+                      U64 address  = 0;
+                      switch(thread->process->ctx->arch)
+                      {
+                        default:{}break;
+                        case Arch_x64:
+                        {
+                          X64_RegBlock *regs_x64 = thread->reg_block;
+                          if(regs_x64->dr6 & X64_DebugStatusFlag_B0)
+                          {
+                            address = regs_x64->dr0;
+                          }
+                          else if(regs_x64->dr6 & X64_DebugStatusFlag_B1)
+                          {
+                            address = regs_x64->dr1;
+                          }
+                          else if(regs_x64->dr6 & X64_DebugStatusFlag_B2)
+                          {
+                            address = regs_x64->dr2;
+                          }
+                          else if(regs_x64->dr6 & X64_DebugStatusFlag_B3)
+                          {
+                            address = regs_x64->dr3;
+                          }
+                          else
+                          {
+                            is_valid = 0;
+                          }
+                        }break;
+                      }
+                      
+                      if(is_valid)
+                      {
+                        DMN_Event *e = dmn_event_list_push(arena, &events);
+                        e->kind                = DMN_EventKind_Breakpoint;
+                        e->process             = lnx_dmn_handle_from_process(thread->process);
+                        e->thread              = lnx_dmn_handle_from_thread(thread);
+                        e->instruction_pointer = address;
+                        e->address             = address;
+                      }
+                    }break;
+                    case TRAP_BRANCH: { NotImplemented; }break;
+                    case TRAP_UNK:    { NotImplemented; }break;
+                    default: { InvalidPath; } break;
                   }
-                }
-                
-                // rjf: set up thread creation
-                thread_new = 1;
-                thread_new_pid = new_tid;
-                thread_new_report_events = already_stopped;
-                thread_new_state = already_stopped ? LNX_DMN_ThreadState_Stopped : LNX_DMN_ThreadState_PendingCreation;
-                thread_new_parent = thread->process;
-                if(already_stopped)
-                {
-                  lnx_dmn_state->threads_pending_creation -= 1;
                 }
                 else
                 {
-                  lnx_dmn_state->threads_pending_creation += 1;
+                  log_infof("ptrace error: Failed to get signal info via PTRACE_GETSIGINFO.");
                 }
-              }
-              else
+              }break;
+              
+              ////////////////////
+              //- rjf: fork / vforks
+              //
+              case PTRACE_EVENT_FORK:
               {
-                log_infof("ptrace error: PTRACE_EVENT_CLONE reported, but ptrace did not successfully report the new TID.");
-              }
-            }break;
-            
-            ////////////////////
-            //- rjf: exec
-            //
-            case PTRACE_EVENT_EXEC:
-            {
-              LNX_DMN_Process *process = thread->process;
-              if(process->debug_subprocesses)
+                NotImplemented;
+              }break;
+              case PTRACE_EVENT_VFORK:
               {
-                thread_done = 1;
-                thread_done_report_events = 1;
-                thread_done_exit_code = 0;
-                process_new = 1;
-                process_new_flags = LNX_DMN_CreateProcessFlag_DebugSubprocesses;
-              }
-              else
+                NotImplemented;
+              }break;
+              case PTRACE_EVENT_VFORK_DONE:
               {
-                if(LNX_RETRY_ON_EINTR(ptrace(PTRACE_DETACH, wait_id, 0, 0)) >= 0)
+                NotImplemented;
+              }break;
+              
+              ////////////////////
+              //- rjf: clone
+              //
+              // NOTE(rjf): we get this event from the creator thread when it has
+              // cloned itself to create a child. immediately after creation, the
+              // child will raise a stop event. but importantly, the Linux kernel
+              // offers *NO GUARANTEES* about whether we receive the *clone* or
+              // the *stop* first.
+              //
+              case PTRACE_EVENT_CLONE:
+              {
+                pid_t new_tid = 0;
+                if(LNX_RETRY_ON_EINTR(ptrace(PTRACE_GETEVENTMSG, wait_id, 0, &new_tid)) >= 0)
+                {
+                  // rjf: first, check if we have already seen a stop event for this TID. if so,
+                  // remove from pre-clone stop thread ID List.
+                  B32 already_stopped = 0;
+                  for(StoppedPreCloneThreadID *n = first_stopped_pre_clone_thread_id; n != 0; n = n->next)
+                  {
+                    if(n->tid == new_tid)
+                    {
+                      already_stopped = 1;
+                      DLLRemove(first_stopped_pre_clone_thread_id, last_stopped_pre_clone_thread_id, n);
+                      break;
+                    }
+                  }
+                  
+                  // rjf: set up thread creation
+                  thread_new = 1;
+                  thread_new_pid = new_tid;
+                  thread_new_report_events = already_stopped;
+                  thread_new_state = already_stopped ? LNX_DMN_ThreadState_Stopped : LNX_DMN_ThreadState_PendingCreation;
+                  thread_new_parent = thread->process;
+                  if(already_stopped)
+                  {
+                    lnx_dmn_state->threads_pending_creation -= 1;
+                  }
+                  else
+                  {
+                    lnx_dmn_state->threads_pending_creation += 1;
+                  }
+                }
+                else
+                {
+                  log_infof("ptrace error: PTRACE_EVENT_CLONE reported, but ptrace did not successfully report the new TID.");
+                }
+              }break;
+              
+              ////////////////////
+              //- rjf: exec
+              //
+              case PTRACE_EVENT_EXEC:
+              {
+                LNX_DMN_Process *process = thread->process;
+                if(process->debug_subprocesses)
                 {
                   thread_done = 1;
                   thread_done_report_events = 1;
                   thread_done_exit_code = 0;
+                  process_new = 1;
+                  process_new_flags = LNX_DMN_CreateProcessFlag_DebugSubprocesses;
                 }
-                else { Assert(0 && "failed to detach"); }
-              }
-            }break;
-            
-            ////////////////////
-            //- rjf: thread stops
-            //
-            case PTRACE_EVENT_STOP:
-            {
-              // rjf: stop event for pending threads -> thread is created & stopped
-              if(thread != 0 && thread->state == LNX_DMN_ThreadState_PendingCreation)
-              {
-                thread->state = LNX_DMN_ThreadState_Stopped;
-                lnx_dmn_state->threads_pending_creation -= 1;
-                thread_stop = 1;
-                thread_initial_stop = 1;
-                
-                // rjf: report new thread
-                DMN_Event *e = dmn_event_list_push(arena, &events);
-                e->kind    = DMN_EventKind_CreateThread;
-                e->process = lnx_dmn_handle_from_process(thread->process);
-                e->thread  = lnx_dmn_handle_from_thread(thread);
-                e->arch    = thread->process->ctx->arch;
-                e->code    = thread->tid;
-                // TODO(rjf): e->stack_pointer = ???;
-                e->tls_root_vaddr = thread->dtv_base_vaddr;
-              }
-              
-              // rjf: stop event for other threads we're attached to, due to a stop in
-              // another thread - check if this hit a trap and roll back
-              else if(thread != 0 && thread->state == LNX_DMN_ThreadState_Stopped)
-              {
-                //- rjf: unpack thread IP / process
-                U64 ip = lnx_dmn_ip_from_thread(thread);
-                DMN_Handle process_handle = lnx_dmn_handle_from_process(process);
-                
-                //- rjf: check previous bytes against trap instruction. if this thread
-                // executed a trap, we need to roll back before continuing this thread.
-                // we CANNOT RELY on there being a subsequently-queued SIGTRAP.
-                U8 *hit_trap_bytes_maybe = push_array(scratch.arena, U8, arch_info->trap_instruction.size);
-                dmn_process_read(process_handle, r1u64(ip - arch_info->trap_instruction.size, ip), hit_trap_bytes_maybe);
-                String8 hit_trap_data_maybe = str8(hit_trap_bytes_maybe, arch_info->trap_instruction.size);
-                if(str8_match(hit_trap_data_maybe, arch_info->trap_instruction, 0))
+                else
                 {
-                  lnx_dmn_thread_write_ip(thread, ip - arch_info->trap_instruction.size);
+                  if(LNX_RETRY_ON_EINTR(ptrace(PTRACE_DETACH, wait_id, 0, 0)) >= 0)
+                  {
+                    thread_done = 1;
+                    thread_done_report_events = 1;
+                    thread_done_exit_code = 0;
+                  }
+                  else { Assert(0 && "failed to detach"); }
                 }
-              }
+              }break;
               
-              // rjf: stop event for unrecognized thread -> this references a thread we
-              // haven't seen cloned yet (we cannot rely on the order of clone/stop). so,
-              // we will gather the ID, and increase the pending threads count, and stop
-              // the pending state when we see the CLONE instead.
-              else if(thread == 0)
+              ////////////////////
+              //- rjf: thread stops
+              //
+              case PTRACE_EVENT_STOP:
               {
-                lnx_dmn_state->threads_pending_creation += 1;
-                StoppedPreCloneThreadID *n = push_array(scratch.arena, StoppedPreCloneThreadID, 1);
-                DLLPushBack(first_stopped_pre_clone_thread_id, last_stopped_pre_clone_thread_id, n);
-                n->tid = wait_id;
+                // rjf: stop event for pending threads -> thread is created & stopped
+                if(thread != 0 && thread->state == LNX_DMN_ThreadState_PendingCreation)
+                {
+                  thread->state = LNX_DMN_ThreadState_Stopped;
+                  lnx_dmn_state->threads_pending_creation -= 1;
+                  thread_stop = 1;
+                  thread_initial_stop = 1;
+                  
+                  // rjf: report new thread
+                  DMN_Event *e = dmn_event_list_push(arena, &events);
+                  e->kind    = DMN_EventKind_CreateThread;
+                  e->process = lnx_dmn_handle_from_process(thread->process);
+                  e->thread  = lnx_dmn_handle_from_thread(thread);
+                  e->arch    = thread->process->ctx->arch;
+                  e->code    = thread->tid;
+                  // TODO(rjf): e->stack_pointer = ???;
+                  e->tls_root_vaddr = thread->dtv_base_vaddr;
+                }
+                
+                // rjf: stop event for other threads we're attached to, due to a stop in
+                // another thread - check if this hit a trap and roll back
+                else if(thread != 0 && thread->state == LNX_DMN_ThreadState_Stopped)
+                {
+                  //- rjf: unpack thread IP / process
+                  U64 ip = lnx_dmn_ip_from_thread(thread);
+                  DMN_Handle process_handle = lnx_dmn_handle_from_process(process);
+                  
+                  //- rjf: check previous bytes against trap instruction. if this thread
+                  // executed a trap, we need to roll back before continuing this thread.
+                  // we CANNOT RELY on there being a subsequently-queued SIGTRAP.
+                  U8 *hit_trap_bytes_maybe = push_array(scratch.arena, U8, arch_info->trap_instruction.size);
+                  dmn_process_read(process_handle, r1u64(ip - arch_info->trap_instruction.size, ip), hit_trap_bytes_maybe);
+                  String8 hit_trap_data_maybe = str8(hit_trap_bytes_maybe, arch_info->trap_instruction.size);
+                  if(str8_match(hit_trap_data_maybe, arch_info->trap_instruction, 0))
+                  {
+                    lnx_dmn_thread_write_ip(thread, ip - arch_info->trap_instruction.size);
+                  }
+                }
+                
+                // rjf: stop event for unrecognized thread -> this references a thread we
+                // haven't seen cloned yet (we cannot rely on the order of clone/stop). so,
+                // we will gather the ID, and increase the pending threads count, and stop
+                // the pending state when we see the CLONE instead.
+                else if(thread == 0)
+                {
+                  lnx_dmn_state->threads_pending_creation += 1;
+                  StoppedPreCloneThreadID *n = push_array(scratch.arena, StoppedPreCloneThreadID, 1);
+                  DLLPushBack(first_stopped_pre_clone_thread_id, last_stopped_pre_clone_thread_id, n);
+                  n->tid = wait_id;
+                }
+              }break;
+            }
+          }
+          
+          ////////////////////////
+          //- rjf: sigstop - potentially halt
+          //
+          else if(wstopsig == SIGSTOP)
+          {
+            siginfo_t siginfo = {0};
+            if(LNX_RETRY_ON_EINTR(ptrace(PTRACE_GETSIGINFO, wait_id, 0, &siginfo)) >= 0)
+            {
+              // finish halting if this is our SIGSTOP
+              if(siginfo.si_pid == lnx_dmn_state->halter_tid)
+              {
+                is_halt_done = 1;
               }
-            }break;
-          }
-        }
-        
-        ////////////////////////
-        //- rjf: sigstop - potentially halt
-        //
-        else if(wstopsig == SIGSTOP)
-        {
-          siginfo_t siginfo = {0};
-          if(LNX_RETRY_ON_EINTR(ptrace(PTRACE_GETSIGINFO, wait_id, 0, &siginfo)) >= 0)
-          {
-            // finish halting if this is our SIGSTOP
-            if(siginfo.si_pid == lnx_dmn_state->halter_tid)
-            {
-              is_halt_done = 1;
-            }
-            else
-            {
-              // TODO: handle SIGSTOP
+              else
+              {
+                // TODO: handle SIGSTOP
+              }
             }
           }
-        }
-        
-        ////////////////////////
-        //- rjf: catchall exception case
-        //
-        else
-        {
-          is_exception = 1;
           
-          // rjf: unpack ip
-          U64 exception_ip = lnx_dmn_ip_from_thread(thread);
-          
-          // rjf: pass this signal back
-          thread->pass_through_signal = 1;
-          thread->pass_through_signo = wstopsig;
-          
-          // rjf: determine if this is a repeat
-          local_persist B8 signo_is_repeatable_table[] =
-          {
-            0, // null
-            1, // SIGHUP           1
-            1, // SIGINT           2
-            1, // SIGQUIT          3
-            1, // SIGILL           4
-            1, // SIGTRAP          5
-            1, // SIGABRT/SIGIOT   6
-            1, // SIGBUS           7
-            1, // SIGFPE           8
-            1, // SIGKILL          9
-            1, // SIGUSR1         10
-            1, // SIGSEGV         11
-            1, // SIGUSR2         12
-            1, // SIGPIPE         13
-            1, // SIGALRM         14
-            1, // SIGTERM         15
-            1, // SIGSTKFLT       16
-            0, // SIGCHLD         17
-            0, // SIGCONT         18
-            1, // SIGSTOP         19
-            1, // SIGTSTP         20
-            1, // SIGTTIN         21
-            1, // SIGTTOU         22
-            0, // SIGURG          23
-            1, // SIGXCPU         24
-            1, // SIGXFSZ         25
-            1, // SIGVTALRM       26
-            1, // SIGPROF         27
-            0, // SIGWINCH        28
-            1, // SIGIO           29
-            1, // SIGPWR          30
-            1, // SIGSYS/SIGUNUSED31
-          };
-          B32 is_repeatable = (wstopsig < ArrayCount(signo_is_repeatable_table)) ? signo_is_repeatable_table[wstopsig] : 0;
-          B32 is_second_chance = (is_repeatable &&
-                                  thread->last_exception_ip == exception_ip &&
-                                  thread->last_exception_signo == wstopsig);
-          
-          // rjf: store this last exception info
-          if(is_repeatable)
-          {
-            thread->last_exception_ip = exception_ip;
-            thread->last_exception_signo = wstopsig;
-          }
-          
-          // rjf: report as exception
-          DMN_Event *e = dmn_event_list_push(arena, &events);
-          e->kind                = DMN_EventKind_Exception;
-          e->process             = lnx_dmn_handle_from_process(thread->process);
-          e->thread              = lnx_dmn_handle_from_thread(thread);
-          e->instruction_pointer = exception_ip;
-          e->address             = exception_ip;
-          e->code                = wstopsig;
-          e->exception_repeated  = is_second_chance;
-          if(wstopsig == SIGSEGV)
-          {
-            siginfo_t si = {0};
-            LNX_RETRY_ON_EINTR(ptrace(PTRACE_GETSIGINFO, thread->tid, 0, &si));
-            e->address = (U64)si.si_addr;
-          }
-        }
-      }
-      
-      //////////////////////////
-      //- rjf: not exception? -> clear this thread's last exception info
-      //
-      if(!is_exception && thread != 0)
-      {
-        thread->last_exception_ip = 0;
-        thread->last_exception_signo = 0;
-      }
-      
-      //////////////////////////
-      //- rjf: signal not handled -> log
-      //
-      if(!signal_handled)
-      {
-        // TODO(rjf)
-      }
-      
-      //////////////////////////
-      //- rjf: thread done -> release
-      //
-      if(thread_done && thread)
-      {
-        LNX_DMN_Process *thread_process = thread->process;
-        
-        // rjf: store main thread's exit code
-        if(thread->tid == thread_process->pid)
-        {
-          thread_process->main_thread_exit_code = thread_done_exit_code;
-        }
-        
-        // rjf: push exit event
-        if(thread_done_report_events)
-        {
-          DMN_Event *e = dmn_event_list_push(arena, &events);
-          e->kind    = DMN_EventKind_ExitThread;
-          e->process = lnx_dmn_handle_from_process(thread_process);
-          e->thread  = lnx_dmn_handle_from_thread(thread);
-          e->code    = (U32)thread_done_exit_code;
-        }
-        
-        // rjf: release thread storage
-        {
-          // update global thread counter
-          if(thread->state == LNX_DMN_ThreadState_PendingCreation)
-          {
-            lnx_dmn_state->threads_pending_creation -= 1;
-          }
-          
-          // rjf: remove thread from per-process thread list
-          DLLRemove(thread_process->first_thread, thread_process->last_thread, thread);
-          thread_process->thread_count -= 1;
-          
-          // rjf: remove thread from id -> thread table
-          {
-            U64 key = (U64)thread->tid;
-            U64 hash = u64_hash_from_str8(str8_struct(&key));
-            U64 slot_idx = hash%lnx_dmn_state->thread_from_tid_slots_count;
-            DLLRemove_NP(lnx_dmn_state->thread_from_tid_slots[slot_idx].first, lnx_dmn_state->thread_from_tid_slots[slot_idx].last, thread, tid_next, tid_prev);
-          }
-          
-          // rjf: release reg block
-          String8Node *reg_block_node;
-          if(thread_process->ctx->free_reg_block_nodes.node_count)
-          {
-            reg_block_node = str8_list_pop_front(&thread_process->ctx->free_reg_block_nodes);
-          }
+          ////////////////////////
+          //- rjf: catchall exception case
+          //
           else
           {
-            reg_block_node = push_array(thread_process->ctx->arena, String8Node, 1);
-          }
-          reg_block_node->string = str8(thread->reg_block, 0);
-          str8_list_push_node(&thread_process->ctx->free_reg_blocks, reg_block_node);
-          
-          // rjf: release entity record
-          lnx_dmn_entity_release((LNX_DMN_Entity *)thread);
-        }
-        
-        // rjf: last thread in process? -> exit process too
-        if(thread_process->thread_count == 0)
-        {
-          // rjf: push module events
-          if(thread_done_report_events)
-          {
-            for(LNX_DMN_Module *module = thread_process->ctx->first_module; module != 0; module = module->order_next)
+            is_exception = 1;
+            
+            // rjf: unpack ip
+            U64 exception_ip = lnx_dmn_ip_from_thread(thread);
+            
+            // rjf: pass this signal back
+            thread->pass_through_signal = 1;
+            thread->pass_through_signo = wstopsig;
+            
+            // rjf: determine if this is a repeat
+            local_persist B8 signo_is_repeatable_table[] =
             {
-              lnx_dmn_push_event_unload_module(arena, &events, thread_process, module);
+              0, // null
+              1, // SIGHUP           1
+              1, // SIGINT           2
+              1, // SIGQUIT          3
+              1, // SIGILL           4
+              1, // SIGTRAP          5
+              1, // SIGABRT/SIGIOT   6
+              1, // SIGBUS           7
+              1, // SIGFPE           8
+              1, // SIGKILL          9
+              1, // SIGUSR1         10
+              1, // SIGSEGV         11
+              1, // SIGUSR2         12
+              1, // SIGPIPE         13
+              1, // SIGALRM         14
+              1, // SIGTERM         15
+              1, // SIGSTKFLT       16
+              0, // SIGCHLD         17
+              0, // SIGCONT         18
+              1, // SIGSTOP         19
+              1, // SIGTSTP         20
+              1, // SIGTTIN         21
+              1, // SIGTTOU         22
+              0, // SIGURG          23
+              1, // SIGXCPU         24
+              1, // SIGXFSZ         25
+              1, // SIGVTALRM       26
+              1, // SIGPROF         27
+              0, // SIGWINCH        28
+              1, // SIGIO           29
+              1, // SIGPWR          30
+              1, // SIGSYS/SIGUNUSED31
+            };
+            B32 is_repeatable = (wstopsig < ArrayCount(signo_is_repeatable_table)) ? signo_is_repeatable_table[wstopsig] : 0;
+            B32 is_second_chance = (is_repeatable &&
+                                    thread->last_exception_ip == exception_ip &&
+                                    thread->last_exception_signo == wstopsig);
+            
+            // rjf: store this last exception info
+            if(is_repeatable)
+            {
+              thread->last_exception_ip = exception_ip;
+              thread->last_exception_signo = wstopsig;
+            }
+            
+            // rjf: report as exception
+            DMN_Event *e = dmn_event_list_push(arena, &events);
+            e->kind                = DMN_EventKind_Exception;
+            e->process             = lnx_dmn_handle_from_process(thread->process);
+            e->thread              = lnx_dmn_handle_from_thread(thread);
+            e->instruction_pointer = exception_ip;
+            e->address             = exception_ip;
+            e->code                = wstopsig;
+            e->exception_repeated  = is_second_chance;
+            if(wstopsig == SIGSEGV)
+            {
+              siginfo_t si = {0};
+              LNX_RETRY_ON_EINTR(ptrace(PTRACE_GETSIGINFO, thread->tid, 0, &si));
+              e->address = (U64)si.si_addr;
             }
           }
+        }
+        
+        //////////////////////////
+        //- rjf: not exception? -> clear this thread's last exception info
+        //
+        if(!is_exception && thread != 0)
+        {
+          thread->last_exception_ip = 0;
+          thread->last_exception_signo = 0;
+        }
+        
+        //////////////////////////
+        //- rjf: signal not handled -> log
+        //
+        if(!signal_handled)
+        {
+          // TODO(rjf)
+        }
+        
+        //////////////////////////
+        //- rjf: thread done -> release
+        //
+        if(thread_done && thread)
+        {
+          LNX_DMN_Process *thread_process = thread->process;
           
-          // rjf: push process exit event
+          // rjf: store main thread's exit code
+          if(thread->tid == thread_process->pid)
+          {
+            thread_process->main_thread_exit_code = thread_done_exit_code;
+          }
+          
+          // rjf: push exit event
           if(thread_done_report_events)
           {
             DMN_Event *e = dmn_event_list_push(arena, &events);
-            e->kind    = DMN_EventKind_ExitProcess;
+            e->kind    = DMN_EventKind_ExitThread;
             e->process = lnx_dmn_handle_from_process(thread_process);
-            e->code    = thread_process->main_thread_exit_code;
+            e->thread  = lnx_dmn_handle_from_thread(thread);
+            e->code    = (U32)thread_done_exit_code;
           }
           
-          // rjf: turn on process-end path
-          process = thread_process;
-          process_done = 1;
-        }
-      }
-      
-      //////////////////////////
-      //- rjf: process done -> release
-      //
-      if(process_done && process)
-      {
-        DLLRemove(lnx_dmn_state->first_process, lnx_dmn_state->last_process, process);
-        lnx_dmn_state->process_count -= 1;
-        if(process->state != LNX_DMN_ProcessState_Normal)
-        {
-          lnx_dmn_state->process_pending_creation -= 1;
-        }
-        LNX_RETRY_ON_EINTR(close(process->fd));
-        {
-          U64 key = (U64)process->pid;
-          U64 hash = u64_hash_from_str8(str8_struct(&key));
-          U64 slot_idx = hash%lnx_dmn_state->process_from_pid_slots_count;
-          DLLRemove_NP(lnx_dmn_state->process_from_pid_slots[slot_idx].first, lnx_dmn_state->process_from_pid_slots[slot_idx].last, process, pid_next, pid_prev);
-        }
-        if(process->ctx)
-        {
-          process->ctx->ref_count -= 1;
-          if(process->ctx->ref_count == 0)
+          // rjf: release thread storage
           {
-            Arena *arena = process->ctx->arena;
-            lnx_dmn_entity_release((LNX_DMN_Entity *)process->ctx);
-          }
-        }
-        lnx_dmn_entity_release((LNX_DMN_Entity *)process);
-      }
-      
-      //////////////////////////
-      //- rjf: new process -> create
-      //
-      LNX_DMN_Process *new_process = 0;
-      if(process_new)
-      {
-        LNX_DMN_Process *parent_process = 0;
-        new_process = lnx_dmn_process_alloc(wait_id, LNX_DMN_ProcessState_Normal, 0, !!(process_new_flags & LNX_DMN_CreateProcessFlag_DebugSubprocesses), !!(process_new_flags & LNX_DMN_CreateProcessFlag_Cow));
-        
-        ////////////////////////
-        //- rjf: get process context - create if this isn't cloning parent process
-        //
-        LNX_DMN_ProcessCtx *ctx = 0;
-        if(parent_process != 0 && process_new_flags & LNX_DMN_CreateProcessFlag_ClonedMemory)
-        {
-          ctx = parent_process->ctx;
-        }
-        else
-        {
-          //////////////////////
-          //- rjf: allocate ctx
-          //
-          ctx = &lnx_dmn_entity_alloc(LNX_DMN_EntityKind_ProcessCtx)->process_ctx;
-          
-          //////////////////////
-          //- rjf: read executable ELF header
-          //
-          ELF_Hdr64 exe_ehdr = {0};
-          {
-            Temp scratch = scratch_begin(&arena, 1);
-            char *exe_path = (char *)str8f(scratch.arena, "/proc/%d/exe", wait_id).str;
-            int exe_fd = LNX_RETRY_ON_EINTR(open(exe_path, O_RDONLY));
-            if(exe_fd >= 0)
+            // update global thread counter
+            if(thread->state == LNX_DMN_ThreadState_PendingCreation)
             {
-              exe_ehdr = lnx_dmn_elf_hdr64_from_vaddr(exe_fd, 0);
-            }
-            LNX_RETRY_ON_EINTR(close(exe_fd));
-            scratch_end(scratch);
-          }
-          
-          //////////////////////
-          //- rjf: read auxv info for pid
-          //
-          LNX_DMN_Auxv auxv = {0};
-          {
-            Temp scratch = scratch_begin(&arena, 1);
-            
-            // rjf: open aux data
-            String8 auxv_path = str8f(scratch.arena, "/proc/%d/auxv", wait_id);
-            int auxv_fd = LNX_RETRY_ON_EINTR(open((char *)auxv_path.str, O_RDONLY));
-            
-            // rjf: scan aux data
-            if(auxv_fd >= 0)
-            {
-              for(U64 off = 0;;)
-              {
-                // rjf: read next aux
-                ELF_Auxv64 auxv_entry = {0};
-                {
-                  Temp temp = temp_begin(scratch.arena);
-                  U64 auxv_size = elf_auxv_size_from_class(exe_ehdr.e_ident[ELF_Identifier_Class]);
-                  String8 auxv_data = lnx_dmn_data_from_memory_range(temp.arena, auxv_fd, r1u64(off, off+auxv_size));
-                  auxv_entry = elf_auxv64_from_class_data(exe_ehdr.e_ident[ELF_Identifier_Class], auxv_data);
-                  off += auxv_size;
-                  temp_end(temp);
-                }
-                
-                // rjf: fill result
-                switch(auxv_entry.a_type)
-                {
-                  default:{}break;
-                  case ELF_AuxType_Base:   auxv.base   = auxv_entry.a_val; break;
-                  case ELF_AuxType_Phnum:  auxv.phnum  = auxv_entry.a_val; break;
-                  case ELF_AuxType_Phent:  auxv.phent  = auxv_entry.a_val; break;
-                  case ELF_AuxType_Phdr:   auxv.phdr   = auxv_entry.a_val; break;
-                  case ELF_AuxType_ExecFn: auxv.execfn = auxv_entry.a_val; break;
-                  case ELF_AuxType_Pagesz: auxv.pagesz = auxv_entry.a_val; break;
-                }
-                
-                // rjf: terminate on null entries
-                if(auxv_entry.a_type == ELF_AuxType_Null)
-                {
-                  break;
-                }
-              }
-              LNX_RETRY_ON_EINTR(close(auxv_fd));
+              lnx_dmn_state->threads_pending_creation -= 1;
             }
             
-            scratch_end(scratch);
-          }
-          
-          //- rjf: unpack context
-          Arch arch = arch_from_elf_machine(exe_ehdr.e_machine);
-          U64 rebase = (exe_ehdr.e_type == ELF_Type_Dyn ? (auxv.phdr - exe_ehdr.e_phoff) : 0);
-          Rng1U64 image_vrange = lnx_dmn_vaddr_range_from_phdrs(new_process->fd, exe_ehdr.e_ident[ELF_Identifier_Class], rebase, auxv.phdr, auxv.phent, auxv.phnum);
-          
-          //- rjf: read ELF header for dynamic loader
-          ELF_Hdr64 dl_ehdr = lnx_dmn_elf_hdr64_from_vaddr(new_process->fd, auxv.base);
-          ELF_Class dl_class = dl_ehdr.e_ident[ELF_Identifier_Class];
-          
-          //- rjf: compute rdebug vaddr
-          U64 rdebug_vaddr = 0;
-          if(dl_class != ELF_Class_None)
-          {
-            Temp scratch = scratch_begin(&arena, 1);
+            // rjf: remove thread from per-process thread list
+            DLLRemove(thread_process->first_thread, thread_process->last_thread, thread);
+            thread_process->thread_count -= 1;
             
-            // rjf: unpack header
-            U64 dl_rebase = (dl_ehdr.e_type == ELF_Type_Dyn ? auxv.base : 0);
-            
-            // rjf: find dynamic program header
-            U64 dynamic_vaddr = 0;
+            // rjf: remove thread from id -> thread table
             {
-              U64 phdr_vaddr = auxv.base + dl_ehdr.e_phoff;
-              for(U64 ph_cursor = phdr_vaddr, ph_opl = (phdr_vaddr + dl_ehdr.e_phentsize*dl_ehdr.e_phentsize);
-                  ph_cursor < ph_opl;
-                  ph_cursor += dl_ehdr.e_phentsize)
-              {
-                ELF_Phdr64 phdr = {0};
-                {
-                  Temp scratch = scratch_begin(0, 0);
-                  U64 phdr_size = elf_phdr_size_from_class(dl_class);
-                  String8 phdr_data = lnx_dmn_data_from_memory_range(scratch.arena, new_process->fd, r1u64(ph_cursor, ph_cursor+phdr_size));
-                  phdr = elf_phdr64_from_class_data(dl_class, phdr_data);
-                  scratch_end(scratch);
-                }
-                if(phdr.p_type == ELF_PType_Dynamic)
-                {
-                  dynamic_vaddr = dl_rebase + phdr.p_vaddr;
-                  break;
-                }
-              }
+              U64 key = (U64)thread->tid;
+              U64 hash = u64_hash_from_str8(str8_struct(&key));
+              U64 slot_idx = hash%lnx_dmn_state->thread_from_tid_slots_count;
+              DLLRemove_NP(lnx_dmn_state->thread_from_tid_slots[slot_idx].first, lnx_dmn_state->thread_from_tid_slots[slot_idx].last, thread, tid_next, tid_prev);
             }
             
-            // rjf: parse dynamic info for this module
-            LNX_DMN_DynamicInfo dynamic_info = {0};
+            // rjf: release reg block
+            String8Node *reg_block_node;
+            if(thread_process->ctx->free_reg_block_nodes.node_count)
             {
-              B32 is_dl_rebased = !!(process_new_flags & LNX_DMN_CreateProcessFlag_Rebased);
-              U64 dynamic_info_dl_rebase = is_dl_rebased ? 0 : dl_rebase;
-              for(U64 dynamic_cursor = dynamic_vaddr;; dynamic_cursor += elf_dyn_size_from_class(dl_class))
-              {
-                // rjf: read next dyn entry
-                ELF_Dyn64 dyn = {0};
-                {
-                  Temp scratch = scratch_begin(&arena, 1);
-                  U64 dyn_size = elf_dyn_size_from_class(dl_class);
-                  String8 dyn_data = lnx_dmn_data_from_memory_range(scratch.arena, new_process->fd, r1u64(dynamic_cursor, dynamic_cursor+dyn_size));
-                  dyn = elf_dyn64_from_class_data(dl_class, dyn_data);
-                  scratch_end(scratch);
-                }
-                
-                // rjf: break on zero
-                if(dyn.tag == ELF_DynTag_Null) { break; }
-                
-                // rjf: extract info from dynamic section
-                switch(dyn.tag)
-                {
-                  default:{}break;
-                  case ELF_DynTag_Strtab:   {dynamic_info.strtab_vaddr = dynamic_info_dl_rebase + dyn.val;}break;
-                  case ELF_DynTag_Strsz:    {dynamic_info.strtab_size = dyn.val;}break;
-                  case ELF_DynTag_Symtab:   {dynamic_info.symtab_vaddr = dynamic_info_dl_rebase + dyn.val;}break;
-                  case ELF_DynTag_Syment:   {dynamic_info.symtab_entry_size = dyn.val;}break;
-                  case ELF_DynTag_Hash:     {dynamic_info.hash_vaddr = dynamic_info_dl_rebase + dyn.val;}break;
-                  case ELF_DynTag_GNU_Hash: {dynamic_info.gnu_hash_vaddr = dynamic_info_dl_rebase + dyn.val;}break;
-                }
-              }
-            }
-            
-            // rjf: parse symbol table count for this module
-            U64 symbol_count = 0;
-            {
-              // rjf: base hash implementation
-              if(dynamic_info.hash_vaddr)
-              {
-                U64 hash_entry_size = 4;
-                if(dl_class == ELF_Class_64 && (dl_ehdr.e_machine == ELF_MachineKind_ALPHA || dl_ehdr.e_machine == ELF_MachineKind_S390 || dl_ehdr.e_machine == ELF_MachineKind_S390_OLD))
-                {
-                  hash_entry_size = 8;
-                }
-                U64 chain_count = 0;
-                if(lnx_dmn_read(new_process->fd, r1u64(dynamic_info.hash_vaddr, dynamic_info.hash_vaddr + hash_entry_size), &chain_count) == hash_entry_size)
-                {
-                  symbol_count = chain_count;
-                }
-              }
-              
-              // rjf: GNU hash table implementation
-              else if(dynamic_info.gnu_hash_vaddr)
-              {
-                // GNU_HASH header: u32 nbuckets, u32 symoffset, u32 bloom_size, u32 bloom_shift,
-                // followed by bloom[bloom_size] (word size = 4 on 32-bit ELF, 8 on 64-bit),
-                // buckets[nbuckets] (u32), chains[...] (u32, terminated by entry w/ LSB set).
-                U32 gnu_header[4] = {0};
-                if(lnx_dmn_read(new_process->fd, r1u64(dynamic_info.gnu_hash_vaddr, dynamic_info.gnu_hash_vaddr + sizeof(gnu_header)), gnu_header) == sizeof(gnu_header))
-                {
-                  // rjf: unpack header
-                  U32 nbuckets    = gnu_header[0];
-                  U32 symoffset   = gnu_header[1];
-                  U32 bloom_size  = gnu_header[2];
-                  U64 bloom_word  = (dl_class == ELF_Class_64) ? 8 : 4;
-                  U64 buckets_vaddr = dynamic_info.gnu_hash_vaddr + sizeof(gnu_header) + bloom_size * bloom_word;
-                  U64 chain_vaddr   = buckets_vaddr + (U64)nbuckets * sizeof(U32);
-                  
-                  // rjf: find largest symbol index referenced by any bucket
-                  U32 max_bucket = 0;
-                  for(U32 b = 0; b < nbuckets; b += 1)
-                  {
-                    U32 entry = 0;
-                    if(lnx_dmn_read(new_process->fd, r1u64(buckets_vaddr + b*sizeof(U32), buckets_vaddr + (b+1)*sizeof(U32)), &entry) != sizeof(U32))
-                    {
-                      break;
-                    }
-                    if(entry > max_bucket) { max_bucket = entry; }
-                  }
-                  
-                  //  rjf: no symbols in hash table - total count is symoffset
-                  if(max_bucket < symoffset)
-                  {
-                    symbol_count = symoffset;
-                  }
-                  
-                  // rjf: else -> walk chain from max_bucket until terminator (entry w/ LSB set)
-                  else
-                  {
-                    U64 idx = max_bucket;
-                    for(;;)
-                    {
-                      U32 chain_entry = 0;
-                      U64 entry_vaddr = chain_vaddr + (idx - symoffset) * sizeof(U32);
-                      if(lnx_dmn_read(new_process->fd, r1u64(entry_vaddr, entry_vaddr + sizeof(U32)), &chain_entry) != sizeof(U32))
-                      {
-                        break;
-                      }
-                      if(chain_entry & 1)
-                      {
-                        symbol_count = idx + 1;
-                        break;
-                      }
-                      idx += 1;
-                      if(idx - max_bucket > (1u<<24))
-                      {
-                        break;
-                      }
-                    }
-                  }
-                }
-              }
-            }
-            
-            // rjf: scan symbol table for the rendezvous symbol
-            if(dynamic_info.symtab_vaddr && dynamic_info.symtab_entry_size && symbol_count)
-            {
-              for EachIndex(symbol_idx, symbol_count)
-              {
-                Temp temp = temp_begin(scratch.arena);
-                
-                // rjf: read next symbol
-                ELF_Sym64 symbol = {0};
-                {
-                  Temp temp = temp_begin(scratch.arena);
-                  U64 sym_size = elf_sym_size_from_class(dl_class);
-                  U64 sym_vaddr = dynamic_info.symtab_vaddr + symbol_idx*dynamic_info.symtab_entry_size;
-                  String8 sym_data = lnx_dmn_data_from_memory_range(temp.arena, new_process->fd, r1u64(sym_vaddr, sym_vaddr+sym_size));
-                  symbol = elf_sym64_from_class_data(dl_class, sym_data);
-                  temp_end(temp);
-                }
-                
-                // rjf: read symbol's name
-                String8 symbol_name = {0};
-                if(symbol.st_name < dynamic_info.strtab_size)
-                {
-                  U64 cap = dynamic_info.strtab_size - symbol.st_name;
-                  symbol_name = lnx_dmn_read_string_capped(temp.arena, new_process->fd, dynamic_info.strtab_vaddr + symbol.st_name, cap);
-                }
-                
-                // rjf: _r_debug -> this symbol defines the rdebug_vaddr
-                B32 got_rdebug = 0;
-                if(str8_match(symbol_name, s("_r_debug"), 0))
-                {
-                  ELF_SymType symbol_type = ELF_ST_TYPE(symbol.st_info);
-                  if(symbol_type == ELF_SymType_Object && symbol.st_size > 0)
-                  {
-                    got_rdebug = 1;
-                    rdebug_vaddr = dl_rebase + symbol.st_value;
-                  }
-                }
-                
-                temp_end(temp);
-                if(got_rdebug)
-                {
-                  break;
-                }
-              }
-            }
-            
-            scratch_end(scratch);
-          }
-          
-          //- rjf: [x64] query xsave layout
-          U64 xcr0 = 0;
-          U64 xsave_size = 0;
-          X64_XSaveLayout xsave_layout = {0};
-          if(arch == Arch_x64)
-          {
-            X64_XSave xsave = {0};
-            if(LNX_RETRY_ON_EINTR(ptrace(PTRACE_GETREGSET, new_process->pid, (void *)NT_X86_XSTATE, &(struct iovec){.iov_base = &xsave, .iov_len = sizeof(xsave) }) >= 0))
-            {
-              // Linux stores xcr0 bits in fxstate padding,
-              // see https://github.com/torvalds/linux/blob/6548d364a3e850326831799d7e3ea2d7bb97ba08/arch/x86/include/asm/user.h#L25
-              xcr0 = *(U64 *)((U8 *)&xsave + 464);
-              xsave_size = x64_get_xsave_size();
-              xsave_layout = x64_get_xsave_layout(xcr0);
+              reg_block_node = str8_list_pop_front(&thread_process->ctx->free_reg_block_nodes);
             }
             else
             {
-              log_infof("ptrace error: PTRACE_GETREGSET failed, when trying to determine xsave layout.");
+              reg_block_node = push_array(thread_process->ctx->arena, String8Node, 1);
             }
+            reg_block_node->string = str8(thread->reg_block, 0);
+            str8_list_push_node(&thread_process->ctx->free_reg_blocks, reg_block_node);
+            
+            // rjf: release entity record
+            lnx_dmn_entity_release((LNX_DMN_Entity *)thread);
           }
           
-          //- rjf: gather probes in this process
-          Arena *ctx_arena = arena_alloc();
-          LNX_DMN_Probe **known_probes = push_array(ctx_arena, LNX_DMN_Probe *, LNX_DMN_ProbeKind_COUNT);
+          // rjf: last thread in process? -> exit process too
+          if(thread_process->thread_count == 0)
           {
-            Temp scratch = scratch_begin(&arena, 1);
-            
-            // rjf: get dynamic loader path for this pid
-            String8 dl_path = {0};
+            // rjf: push module events
+            if(thread_done_report_events)
             {
-              int maps_fd = LNX_RETRY_ON_EINTR(open((char *)str8f(scratch.arena, "/proc/%d/maps", wait_id).str, O_RDONLY));
-              if(maps_fd != -1)
+              for(LNX_DMN_Module *module = thread_process->ctx->first_module; module != 0; module = module->order_next)
               {
-                // rjf: determine how big /proc/pid/maps is (this is a "special file", so we have to compute the size
-                // by reading the whole thing - very very good
-                //
-                // TODO(rjf): probably just read it once into a list & join?
-                //
-                U64 maps_size = 0;
-                {
-                  U8 temp[4096];
-                  size_t cap = MB(1);
-                  size_t cursor = 0;
-                  for(;cursor < cap;)
-                  {
-                    ssize_t actual_read = LNX_RETRY_ON_EINTR(pread(maps_fd, temp, sizeof(temp), cursor));
-                    if(actual_read <= 0) { break; }
-                    cursor += (U64)actual_read;
-                  }
-                  maps_size = (U64)cursor;
-                }
-                
-                // rjf: read entire /proc/pid/maps
-                U8 *maps_ptr = push_array(scratch.arena, U8, maps_size);
-                U64 read_size = lnx_dmn_read(maps_fd, r1u64(0, maps_size), maps_ptr);
-                
-                // split map file on lines
-                String8List lines = str8_split_by_string_chars(scratch.arena, str8(maps_ptr, maps_size), str8_lit("\n"), 0);
-                
-                // scan each line until a virtual mapping whose low part matches the DL base address is found
-                for EachNode(n, String8Node, lines.first)
-                {
-                  String8 line = n->string;
-                  
-                  // split the string while respecting escape sequences
-                  String8List parts = {0};
-                  for EachIndex(cursor, line.size)
-                  {
-                    if(parts.node_count > 5)    { break; }
-                    if(line.str[cursor] == ' ') { continue; }
-                    
-                    // scan forward to the closing delimiter
-                    U64 token_start = cursor;
-                    for(; cursor < line.size; cursor += 1)
-                    {
-                      if(line.str[cursor] == '\\')
-                      {
-                        cursor += 1;
-                        continue;
-                      }
-                      if(line.str[cursor] == ' ') { break; }
-                    }
-                    
-                    // push sub-string to the list
-                    str8_list_push(scratch.arena, &parts, str8_substr(line, r1u64(token_start, cursor)));
-                  }
-                  
-                  // was line parsed correctly?
-                  B32 good_parse = 1;
-                  if(parts.node_count < 5)
-                  {
-                    good_parse = 0;
-                    // TODO(rjf): log
-                  }
-                  
-                  // parse map virtual range
-                  String8List vaddr_list = {0};
-                  if(good_parse)
-                  {
-                    vaddr_list = str8_split_by_string_chars(scratch.arena, parts.first->string, str8_lit("-"), 0);
-                    if(vaddr_list.node_count != 2)
-                    {
-                      good_parse = 0;
-                      // TODO(rjf): log - failed to parse virtual range portion of map line
-                    }
-                  }
-                  
-                  // does the low part match DL base address?
-                  U64 lo_vaddr = 0;
-                  if(vaddr_list.first != 0)
-                  {
-                    lo_vaddr = u64_from_str8(vaddr_list.first->string, 16);
-                    if(lo_vaddr == auxv.base)
-                    {
-                      dl_path = parts.node_count == 5 ? str8_zero() : parts.last->string;
-                      dl_path = push_str8_copy(scratch.arena, dl_path);
-                      break;
-                    }
-                  }
-                }
-                
-                LNX_RETRY_ON_EINTR(close(maps_fd));
+                lnx_dmn_push_event_unload_module(arena, &events, thread_process, module);
               }
             }
             
-            // rjf: read probes for this dl
-            int dl_fd = LNX_RETRY_ON_EINTR(open((char *)dl_path.str, O_RDONLY));
-            LNX_DMN_ProbeList probes = {0};
-            if(dl_fd >= 0)
+            // rjf: push process exit event
+            if(thread_done_report_events)
             {
-              U64 offset = 0;
-              
-              ELF_Hdr64 ehdr = lnx_dmn_elf_hdr64_from_vaddr(dl_fd, offset);
-              ELF_Class eclass = ehdr.e_ident[ELF_Identifier_Class];
-              
-              U64 strtab_shdr_offset = offset + ehdr.e_shoff + ehdr.e_shstrndx * ehdr.e_shentsize;
-              ELF_Shdr64 strtab_shdr = {0};
-              {
-                Temp scratch = scratch_begin(&arena, 1);
-                U64 shdr_size = elf_shdr_size_from_class(eclass);
-                String8 shdr_data = lnx_dmn_data_from_memory_range(scratch.arena, dl_fd, r1u64(strtab_shdr_offset, strtab_shdr_offset+shdr_size));
-                strtab_shdr = elf_shdr64_from_class_data(eclass, shdr_data);
-                scratch_end(scratch);
-              }
-              
-              B32 found_probes      = 0;
-              B32 found_probes_base = 0;
-              ELF_Shdr64 text_shdr         = {0};
-              ELF_Shdr64 stapsdt_base_shdr = {0};
-              ELF_Shdr64 stapsdt_shdr      = {0};
-              for(U64 shdr_off = offset + ehdr.e_shoff, shdr_opl = shdr_off + ehdr.e_shentsize * ehdr.e_shnum;
-                  shdr_off < shdr_opl;
-                  shdr_off += ehdr.e_shentsize)
-              {
-                ELF_Shdr64 shdr = {0};
-                {
-                  Temp scratch = scratch_begin(&arena, 1);
-                  U64 shdr_size = elf_shdr_size_from_class(eclass);
-                  String8 shdr_data = lnx_dmn_data_from_memory_range(scratch.arena, dl_fd, r1u64(shdr_off, shdr_off+shdr_size));
-                  shdr = elf_shdr64_from_class_data(eclass, shdr_data);
-                  scratch_end(scratch);
-                }
-                
-                if(shdr.sh_type == ELF_ShType_Note)
-                {
-                  U64     name_offset = offset + strtab_shdr.sh_offset + shdr.sh_name;
-                  U64     name_cap    = offset + strtab_shdr.sh_offset + strtab_shdr.sh_size;
-                  String8 name        = lnx_dmn_read_string_capped(scratch.arena, dl_fd, name_offset, name_cap);
-                  
-                  if(str8_match(name, str8_lit(".note.stapsdt"), 0))
-                  {
-                    stapsdt_shdr = shdr;
-                    found_probes = 1;
-                  }
-                }
-                else if(shdr.sh_type == ELF_ShType_ProgBits)
-                {
-                  U64     name_offset = offset + strtab_shdr.sh_offset + shdr.sh_name;
-                  U64     name_cap    = offset + strtab_shdr.sh_offset + strtab_shdr.sh_size;
-                  String8 name        = lnx_dmn_read_string_capped(scratch.arena, dl_fd, name_offset, name_cap);
-                  
-                  if(str8_match(name, str8_lit(".stapsdt.base"), 0))
-                  {
-                    stapsdt_base_shdr = shdr;
-                    found_probes_base = 1;
-                  } else if(str8_match(name, str8_lit(".text"), 0))
-                  {
-                    text_shdr = shdr;
-                  }
-                }
-                
-                if(found_probes && found_probes_base) { break; }
-              }
-              
-              if(!found_probes || !found_probes_base) { goto exit; }
-              
-              U64 probes_base = stapsdt_base_shdr.sh_addr;
-              
-              Rng1U64  note_range     = shift_1u64(r1u64(stapsdt_shdr.sh_offset, stapsdt_shdr.sh_offset + stapsdt_shdr.sh_size), offset);
-              void    *raw_note       = push_array(ctx_arena, U8, stapsdt_shdr.sh_size);
-              U64      note_read_size = lnx_dmn_read(dl_fd, note_range, raw_note);
-              if(note_read_size != dim_1u64(note_range)) { goto exit; }
-              
-              Arch         arch = arch_from_elf_machine(ehdr.e_machine);
-              ELF_NoteList note = elf_parse_note(scratch.arena, str8(raw_note, dim_1u64(note_range)), ehdr.e_ident[ELF_Identifier_Class], ehdr.e_machine);
-              
-              for EachNode(n, ELF_NoteNode, note.first)
-              {
-                ELF_Note *note = &n->v;
-                if(!str8_match(note->owner, str8_lit("stapsdt"), 0)) { continue; }
-                if(note->type != ELF_NoteType_STapSdt)               { continue; }
-                
-                LNX_DMN_Probe probe = {0};
-                {
-                  U64 cursor    = 0;
-                  U64 addr_size = ehdr.e_ident[ELF_Identifier_Class] == ELF_Class_64 ? 8 : 4;
-                  
-                  U64 pc = 0;
-                  U64 pc_size = str8_deserial_read(note->desc, cursor, &pc, addr_size, addr_size);
-                  if (pc_size == 0) { goto exit; }
-                  cursor += pc_size;
-                  
-                  U64 base_addr = 0;
-                  U64 base_addr_size = str8_deserial_read(note->desc, cursor, &base_addr, addr_size, addr_size);
-                  if (base_addr_size == 0) { goto exit; }
-                  cursor += base_addr_size;
-                  
-                  U64 semaphore = 0;
-                  U64 semaphore_size = str8_deserial_read(note->desc, cursor, &semaphore, addr_size, addr_size);
-                  if (semaphore_size == 0) { goto exit; }
-                  cursor += semaphore_size;
-                  
-                  String8 provider = str8_cstring_capped(note->desc.str + cursor, note->desc.str + note->desc.size);
-                  cursor += provider.size + 1;
-                  if (cursor > note->desc.size) { goto exit; }
-                  
-                  String8 name = str8_cstring_capped(note->desc.str + cursor, note->desc.str + note->desc.size);
-                  cursor += name.size + 1;
-                  if (cursor > note->desc.size) { goto exit; }
-                  
-                  String8 args = str8_cstring_capped(note->desc.str + cursor, note->desc.str + note->desc.size);
-                  cursor += args.size + 1;
-                  if (cursor > note->desc.size) { goto exit; }
-                  
-                  U64 probe_rebase = auxv.base + (base_addr - probes_base);
-                  
-                  probe.provider  = provider;
-                  probe.name      = name;
-                  probe.args      = stap_arg_array_from_string(ctx_arena, arch, args);
-                  probe.pc        = pc + probe_rebase;
-                  probe.semaphore = semaphore ? semaphore + probe_rebase : 0;
-                }
-                
-                LNX_DMN_ProbeNode *n = push_array(ctx_arena, LNX_DMN_ProbeNode, 1);
-                n->v = probe;
-                SLLQueuePush(probes.first, probes.last, n);
-                probes.count += 1;
-              }
-              
-              exit:;
-              LNX_RETRY_ON_EINTR(close(dl_fd));
+              DMN_Event *e = dmn_event_list_push(arena, &events);
+              e->kind    = DMN_EventKind_ExitProcess;
+              e->process = lnx_dmn_handle_from_process(thread_process);
+              e->code    = thread_process->main_thread_exit_code;
             }
             
-            // rjf: store probes
-            for EachNode(n, LNX_DMN_ProbeNode, probes.first)
+            // rjf: turn on process-end path
+            process = thread_process;
+            process_done = 1;
+          }
+        }
+        
+        //////////////////////////
+        //- rjf: process done -> release
+        //
+        if(process_done && process)
+        {
+          DLLRemove(lnx_dmn_state->first_process, lnx_dmn_state->last_process, process);
+          lnx_dmn_state->process_count -= 1;
+          if(process->state != LNX_DMN_ProcessState_Normal)
+          {
+            lnx_dmn_state->process_pending_creation -= 1;
+          }
+          LNX_RETRY_ON_EINTR(close(process->fd));
+          {
+            U64 key = (U64)process->pid;
+            U64 hash = u64_hash_from_str8(str8_struct(&key));
+            U64 slot_idx = hash%lnx_dmn_state->process_from_pid_slots_count;
+            DLLRemove_NP(lnx_dmn_state->process_from_pid_slots[slot_idx].first, lnx_dmn_state->process_from_pid_slots[slot_idx].last, process, pid_next, pid_prev);
+          }
+          if(process->ctx)
+          {
+            process->ctx->ref_count -= 1;
+            if(process->ctx->ref_count == 0)
             {
-              LNX_DMN_Probe *p = &n->v;
-              if(str8_match(p->provider, s("rtld"), 0))
+              Arena *arena = process->ctx->arena;
+              lnx_dmn_entity_release((LNX_DMN_Entity *)process->ctx);
+            }
+          }
+          lnx_dmn_entity_release((LNX_DMN_Entity *)process);
+        }
+        
+        //////////////////////////
+        //- rjf: new process -> create
+        //
+        LNX_DMN_Process *new_process = 0;
+        if(process_new)
+        {
+          LNX_DMN_Process *parent_process = 0;
+          new_process = lnx_dmn_process_alloc(wait_id, LNX_DMN_ProcessState_Normal, 0, !!(process_new_flags & LNX_DMN_CreateProcessFlag_DebugSubprocesses), !!(process_new_flags & LNX_DMN_CreateProcessFlag_Cow));
+          
+          ////////////////////////
+          //- rjf: get process context - create if this isn't cloning parent process
+          //
+          LNX_DMN_ProcessCtx *ctx = 0;
+          if(parent_process != 0 && process_new_flags & LNX_DMN_CreateProcessFlag_ClonedMemory)
+          {
+            ctx = parent_process->ctx;
+          }
+          else
+          {
+            //////////////////////
+            //- rjf: allocate ctx
+            //
+            ctx = &lnx_dmn_entity_alloc(LNX_DMN_EntityKind_ProcessCtx)->process_ctx;
+            
+            //////////////////////
+            //- rjf: read executable ELF header
+            //
+            ELF_Hdr64 exe_ehdr = {0};
+            {
+              Temp scratch = scratch_begin(&arena, 1);
+              char *exe_path = (char *)str8f(scratch.arena, "/proc/%d/exe", wait_id).str;
+              int exe_fd = LNX_RETRY_ON_EINTR(open(exe_path, O_RDONLY));
+              if(exe_fd >= 0)
               {
-                for EachNonZeroEnumVal(LNX_DMN_ProbeKind, k)
+                exe_ehdr = lnx_dmn_elf_hdr64_from_vaddr(exe_fd, 0);
+              }
+              LNX_RETRY_ON_EINTR(close(exe_fd));
+              scratch_end(scratch);
+            }
+            
+            //////////////////////
+            //- rjf: read auxv info for pid
+            //
+            LNX_DMN_Auxv auxv = {0};
+            {
+              Temp scratch = scratch_begin(&arena, 1);
+              
+              // rjf: open aux data
+              String8 auxv_path = str8f(scratch.arena, "/proc/%d/auxv", wait_id);
+              int auxv_fd = LNX_RETRY_ON_EINTR(open((char *)auxv_path.str, O_RDONLY));
+              
+              // rjf: scan aux data
+              if(auxv_fd >= 0)
+              {
+                for(U64 off = 0;;)
                 {
-                  if(str8_match(p->name, lnx_dmn_probe_kind_string_table[k], 0))
+                  // rjf: read next aux
+                  ELF_Auxv64 auxv_entry = {0};
                   {
-                    known_probes[k] = p;
+                    Temp temp = temp_begin(scratch.arena);
+                    U64 auxv_size = elf_auxv_size_from_class(exe_ehdr.e_ident[ELF_Identifier_Class]);
+                    String8 auxv_data = lnx_dmn_data_from_memory_range(temp.arena, auxv_fd, r1u64(off, off+auxv_size));
+                    auxv_entry = elf_auxv64_from_class_data(exe_ehdr.e_ident[ELF_Identifier_Class], auxv_data);
+                    off += auxv_size;
+                    temp_end(temp);
+                  }
+                  
+                  // rjf: fill result
+                  switch(auxv_entry.a_type)
+                  {
+                    default:{}break;
+                    case ELF_AuxType_Base:   auxv.base   = auxv_entry.a_val; break;
+                    case ELF_AuxType_Phnum:  auxv.phnum  = auxv_entry.a_val; break;
+                    case ELF_AuxType_Phent:  auxv.phent  = auxv_entry.a_val; break;
+                    case ELF_AuxType_Phdr:   auxv.phdr   = auxv_entry.a_val; break;
+                    case ELF_AuxType_ExecFn: auxv.execfn = auxv_entry.a_val; break;
+                    case ELF_AuxType_Pagesz: auxv.pagesz = auxv_entry.a_val; break;
+                  }
+                  
+                  // rjf: terminate on null entries
+                  if(auxv_entry.a_type == ELF_AuxType_Null)
+                  {
+                    break;
+                  }
+                }
+                LNX_RETRY_ON_EINTR(close(auxv_fd));
+              }
+              
+              scratch_end(scratch);
+            }
+            
+            //- rjf: unpack context
+            Arch arch = arch_from_elf_machine(exe_ehdr.e_machine);
+            U64 rebase = (exe_ehdr.e_type == ELF_Type_Dyn ? (auxv.phdr - exe_ehdr.e_phoff) : 0);
+            Rng1U64 image_vrange = lnx_dmn_vaddr_range_from_phdrs(new_process->fd, exe_ehdr.e_ident[ELF_Identifier_Class], rebase, auxv.phdr, auxv.phent, auxv.phnum);
+            
+            //- rjf: read ELF header for dynamic loader
+            ELF_Hdr64 dl_ehdr = lnx_dmn_elf_hdr64_from_vaddr(new_process->fd, auxv.base);
+            ELF_Class dl_class = dl_ehdr.e_ident[ELF_Identifier_Class];
+            
+            //- rjf: compute rdebug vaddr
+            U64 rdebug_vaddr = 0;
+            if(dl_class != ELF_Class_None)
+            {
+              Temp scratch = scratch_begin(&arena, 1);
+              
+              // rjf: unpack header
+              U64 dl_rebase = (dl_ehdr.e_type == ELF_Type_Dyn ? auxv.base : 0);
+              
+              // rjf: find dynamic program header
+              U64 dynamic_vaddr = 0;
+              {
+                U64 phdr_vaddr = auxv.base + dl_ehdr.e_phoff;
+                for(U64 ph_cursor = phdr_vaddr, ph_opl = (phdr_vaddr + dl_ehdr.e_phentsize*dl_ehdr.e_phentsize);
+                    ph_cursor < ph_opl;
+                    ph_cursor += dl_ehdr.e_phentsize)
+                {
+                  ELF_Phdr64 phdr = {0};
+                  {
+                    Temp scratch = scratch_begin(0, 0);
+                    U64 phdr_size = elf_phdr_size_from_class(dl_class);
+                    String8 phdr_data = lnx_dmn_data_from_memory_range(scratch.arena, new_process->fd, r1u64(ph_cursor, ph_cursor+phdr_size));
+                    phdr = elf_phdr64_from_class_data(dl_class, phdr_data);
+                    scratch_end(scratch);
+                  }
+                  if(phdr.p_type == ELF_PType_Dynamic)
+                  {
+                    dynamic_vaddr = dl_rebase + phdr.p_vaddr;
                     break;
                   }
                 }
               }
+              
+              // rjf: parse dynamic info for this module
+              LNX_DMN_DynamicInfo dynamic_info = {0};
+              {
+                B32 is_dl_rebased = !!(process_new_flags & LNX_DMN_CreateProcessFlag_Rebased);
+                U64 dynamic_info_dl_rebase = is_dl_rebased ? 0 : dl_rebase;
+                for(U64 dynamic_cursor = dynamic_vaddr;; dynamic_cursor += elf_dyn_size_from_class(dl_class))
+                {
+                  // rjf: read next dyn entry
+                  ELF_Dyn64 dyn = {0};
+                  {
+                    Temp scratch = scratch_begin(&arena, 1);
+                    U64 dyn_size = elf_dyn_size_from_class(dl_class);
+                    String8 dyn_data = lnx_dmn_data_from_memory_range(scratch.arena, new_process->fd, r1u64(dynamic_cursor, dynamic_cursor+dyn_size));
+                    dyn = elf_dyn64_from_class_data(dl_class, dyn_data);
+                    scratch_end(scratch);
+                  }
+                  
+                  // rjf: break on zero
+                  if(dyn.tag == ELF_DynTag_Null) { break; }
+                  
+                  // rjf: extract info from dynamic section
+                  switch(dyn.tag)
+                  {
+                    default:{}break;
+                    case ELF_DynTag_Strtab:   {dynamic_info.strtab_vaddr = dynamic_info_dl_rebase + dyn.val;}break;
+                    case ELF_DynTag_Strsz:    {dynamic_info.strtab_size = dyn.val;}break;
+                    case ELF_DynTag_Symtab:   {dynamic_info.symtab_vaddr = dynamic_info_dl_rebase + dyn.val;}break;
+                    case ELF_DynTag_Syment:   {dynamic_info.symtab_entry_size = dyn.val;}break;
+                    case ELF_DynTag_Hash:     {dynamic_info.hash_vaddr = dynamic_info_dl_rebase + dyn.val;}break;
+                    case ELF_DynTag_GNU_Hash: {dynamic_info.gnu_hash_vaddr = dynamic_info_dl_rebase + dyn.val;}break;
+                  }
+                }
+              }
+              
+              // rjf: parse symbol table count for this module
+              U64 symbol_count = 0;
+              {
+                // rjf: base hash implementation
+                if(dynamic_info.hash_vaddr)
+                {
+                  U64 hash_entry_size = 4;
+                  if(dl_class == ELF_Class_64 && (dl_ehdr.e_machine == ELF_MachineKind_ALPHA || dl_ehdr.e_machine == ELF_MachineKind_S390 || dl_ehdr.e_machine == ELF_MachineKind_S390_OLD))
+                  {
+                    hash_entry_size = 8;
+                  }
+                  U64 chain_count = 0;
+                  if(lnx_dmn_read(new_process->fd, r1u64(dynamic_info.hash_vaddr, dynamic_info.hash_vaddr + hash_entry_size), &chain_count) == hash_entry_size)
+                  {
+                    symbol_count = chain_count;
+                  }
+                }
+                
+                // rjf: GNU hash table implementation
+                else if(dynamic_info.gnu_hash_vaddr)
+                {
+                  // GNU_HASH header: u32 nbuckets, u32 symoffset, u32 bloom_size, u32 bloom_shift,
+                  // followed by bloom[bloom_size] (word size = 4 on 32-bit ELF, 8 on 64-bit),
+                  // buckets[nbuckets] (u32), chains[...] (u32, terminated by entry w/ LSB set).
+                  U32 gnu_header[4] = {0};
+                  if(lnx_dmn_read(new_process->fd, r1u64(dynamic_info.gnu_hash_vaddr, dynamic_info.gnu_hash_vaddr + sizeof(gnu_header)), gnu_header) == sizeof(gnu_header))
+                  {
+                    // rjf: unpack header
+                    U32 nbuckets    = gnu_header[0];
+                    U32 symoffset   = gnu_header[1];
+                    U32 bloom_size  = gnu_header[2];
+                    U64 bloom_word  = (dl_class == ELF_Class_64) ? 8 : 4;
+                    U64 buckets_vaddr = dynamic_info.gnu_hash_vaddr + sizeof(gnu_header) + bloom_size * bloom_word;
+                    U64 chain_vaddr   = buckets_vaddr + (U64)nbuckets * sizeof(U32);
+                    
+                    // rjf: find largest symbol index referenced by any bucket
+                    U32 max_bucket = 0;
+                    for(U32 b = 0; b < nbuckets; b += 1)
+                    {
+                      U32 entry = 0;
+                      if(lnx_dmn_read(new_process->fd, r1u64(buckets_vaddr + b*sizeof(U32), buckets_vaddr + (b+1)*sizeof(U32)), &entry) != sizeof(U32))
+                      {
+                        break;
+                      }
+                      if(entry > max_bucket) { max_bucket = entry; }
+                    }
+                    
+                    //  rjf: no symbols in hash table - total count is symoffset
+                    if(max_bucket < symoffset)
+                    {
+                      symbol_count = symoffset;
+                    }
+                    
+                    // rjf: else -> walk chain from max_bucket until terminator (entry w/ LSB set)
+                    else
+                    {
+                      U64 idx = max_bucket;
+                      for(;;)
+                      {
+                        U32 chain_entry = 0;
+                        U64 entry_vaddr = chain_vaddr + (idx - symoffset) * sizeof(U32);
+                        if(lnx_dmn_read(new_process->fd, r1u64(entry_vaddr, entry_vaddr + sizeof(U32)), &chain_entry) != sizeof(U32))
+                        {
+                          break;
+                        }
+                        if(chain_entry & 1)
+                        {
+                          symbol_count = idx + 1;
+                          break;
+                        }
+                        idx += 1;
+                        if(idx - max_bucket > (1u<<24))
+                        {
+                          break;
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+              
+              // rjf: scan symbol table for the rendezvous symbol
+              if(dynamic_info.symtab_vaddr && dynamic_info.symtab_entry_size && symbol_count)
+              {
+                for EachIndex(symbol_idx, symbol_count)
+                {
+                  Temp temp = temp_begin(scratch.arena);
+                  
+                  // rjf: read next symbol
+                  ELF_Sym64 symbol = {0};
+                  {
+                    Temp temp = temp_begin(scratch.arena);
+                    U64 sym_size = elf_sym_size_from_class(dl_class);
+                    U64 sym_vaddr = dynamic_info.symtab_vaddr + symbol_idx*dynamic_info.symtab_entry_size;
+                    String8 sym_data = lnx_dmn_data_from_memory_range(temp.arena, new_process->fd, r1u64(sym_vaddr, sym_vaddr+sym_size));
+                    symbol = elf_sym64_from_class_data(dl_class, sym_data);
+                    temp_end(temp);
+                  }
+                  
+                  // rjf: read symbol's name
+                  String8 symbol_name = {0};
+                  if(symbol.st_name < dynamic_info.strtab_size)
+                  {
+                    U64 cap = dynamic_info.strtab_size - symbol.st_name;
+                    symbol_name = lnx_dmn_read_string_capped(temp.arena, new_process->fd, dynamic_info.strtab_vaddr + symbol.st_name, cap);
+                  }
+                  
+                  // rjf: _r_debug -> this symbol defines the rdebug_vaddr
+                  B32 got_rdebug = 0;
+                  if(str8_match(symbol_name, s("_r_debug"), 0))
+                  {
+                    ELF_SymType symbol_type = ELF_ST_TYPE(symbol.st_info);
+                    if(symbol_type == ELF_SymType_Object && symbol.st_size > 0)
+                    {
+                      got_rdebug = 1;
+                      rdebug_vaddr = dl_rebase + symbol.st_value;
+                    }
+                  }
+                  
+                  temp_end(temp);
+                  if(got_rdebug)
+                  {
+                    break;
+                  }
+                }
+              }
+              
+              scratch_end(scratch);
             }
             
-            scratch_end(scratch);
+            //- rjf: [x64] query xsave layout
+            U64 xcr0 = 0;
+            U64 xsave_size = 0;
+            X64_XSaveLayout xsave_layout = {0};
+            if(arch == Arch_x64)
+            {
+              X64_XSave xsave = {0};
+              if(LNX_RETRY_ON_EINTR(ptrace(PTRACE_GETREGSET, new_process->pid, (void *)NT_X86_XSTATE, &(struct iovec){.iov_base = &xsave, .iov_len = sizeof(xsave) }) >= 0))
+              {
+                // Linux stores xcr0 bits in fxstate padding,
+                // see https://github.com/torvalds/linux/blob/6548d364a3e850326831799d7e3ea2d7bb97ba08/arch/x86/include/asm/user.h#L25
+                xcr0 = *(U64 *)((U8 *)&xsave + 464);
+                xsave_size = x64_get_xsave_size();
+                xsave_layout = x64_get_xsave_layout(xcr0);
+              }
+              else
+              {
+                log_infof("ptrace error: PTRACE_GETREGSET failed, when trying to determine xsave layout.");
+              }
+            }
+            
+            //- rjf: gather probes in this process
+            Arena *ctx_arena = arena_alloc();
+            LNX_DMN_Probe **known_probes = push_array(ctx_arena, LNX_DMN_Probe *, LNX_DMN_ProbeKind_COUNT);
+            {
+              Temp scratch = scratch_begin(&arena, 1);
+              
+              // rjf: get dynamic loader path for this pid
+              String8 dl_path = {0};
+              {
+                int maps_fd = LNX_RETRY_ON_EINTR(open((char *)str8f(scratch.arena, "/proc/%d/maps", wait_id).str, O_RDONLY));
+                if(maps_fd != -1)
+                {
+                  // rjf: determine how big /proc/pid/maps is (this is a "special file", so we have to compute the size
+                  // by reading the whole thing - very very good
+                  //
+                  // TODO(rjf): probably just read it once into a list & join?
+                  //
+                  U64 maps_size = 0;
+                  {
+                    U8 temp[4096];
+                    size_t cap = MB(1);
+                    size_t cursor = 0;
+                    for(;cursor < cap;)
+                    {
+                      ssize_t actual_read = LNX_RETRY_ON_EINTR(pread(maps_fd, temp, sizeof(temp), cursor));
+                      if(actual_read <= 0) { break; }
+                      cursor += (U64)actual_read;
+                    }
+                    maps_size = (U64)cursor;
+                  }
+                  
+                  // rjf: read entire /proc/pid/maps
+                  U8 *maps_ptr = push_array(scratch.arena, U8, maps_size);
+                  U64 read_size = lnx_dmn_read(maps_fd, r1u64(0, maps_size), maps_ptr);
+                  
+                  // split map file on lines
+                  String8List lines = str8_split_by_string_chars(scratch.arena, str8(maps_ptr, maps_size), str8_lit("\n"), 0);
+                  
+                  // scan each line until a virtual mapping whose low part matches the DL base address is found
+                  for EachNode(n, String8Node, lines.first)
+                  {
+                    String8 line = n->string;
+                    
+                    // split the string while respecting escape sequences
+                    String8List parts = {0};
+                    for EachIndex(cursor, line.size)
+                    {
+                      if(parts.node_count > 5)    { break; }
+                      if(line.str[cursor] == ' ') { continue; }
+                      
+                      // scan forward to the closing delimiter
+                      U64 token_start = cursor;
+                      for(; cursor < line.size; cursor += 1)
+                      {
+                        if(line.str[cursor] == '\\')
+                        {
+                          cursor += 1;
+                          continue;
+                        }
+                        if(line.str[cursor] == ' ') { break; }
+                      }
+                      
+                      // push sub-string to the list
+                      str8_list_push(scratch.arena, &parts, str8_substr(line, r1u64(token_start, cursor)));
+                    }
+                    
+                    // was line parsed correctly?
+                    B32 good_parse = 1;
+                    if(parts.node_count < 5)
+                    {
+                      good_parse = 0;
+                      // TODO(rjf): log
+                    }
+                    
+                    // parse map virtual range
+                    String8List vaddr_list = {0};
+                    if(good_parse)
+                    {
+                      vaddr_list = str8_split_by_string_chars(scratch.arena, parts.first->string, str8_lit("-"), 0);
+                      if(vaddr_list.node_count != 2)
+                      {
+                        good_parse = 0;
+                        // TODO(rjf): log - failed to parse virtual range portion of map line
+                      }
+                    }
+                    
+                    // does the low part match DL base address?
+                    U64 lo_vaddr = 0;
+                    if(vaddr_list.first != 0)
+                    {
+                      lo_vaddr = u64_from_str8(vaddr_list.first->string, 16);
+                      if(lo_vaddr == auxv.base)
+                      {
+                        dl_path = parts.node_count == 5 ? str8_zero() : parts.last->string;
+                        dl_path = push_str8_copy(scratch.arena, dl_path);
+                        break;
+                      }
+                    }
+                  }
+                  
+                  LNX_RETRY_ON_EINTR(close(maps_fd));
+                }
+              }
+              
+              // rjf: read probes for this dl
+              int dl_fd = LNX_RETRY_ON_EINTR(open((char *)dl_path.str, O_RDONLY));
+              LNX_DMN_ProbeList probes = {0};
+              if(dl_fd >= 0)
+              {
+                U64 offset = 0;
+                
+                ELF_Hdr64 ehdr = lnx_dmn_elf_hdr64_from_vaddr(dl_fd, offset);
+                ELF_Class eclass = ehdr.e_ident[ELF_Identifier_Class];
+                
+                U64 strtab_shdr_offset = offset + ehdr.e_shoff + ehdr.e_shstrndx * ehdr.e_shentsize;
+                ELF_Shdr64 strtab_shdr = {0};
+                {
+                  Temp scratch = scratch_begin(&arena, 1);
+                  U64 shdr_size = elf_shdr_size_from_class(eclass);
+                  String8 shdr_data = lnx_dmn_data_from_memory_range(scratch.arena, dl_fd, r1u64(strtab_shdr_offset, strtab_shdr_offset+shdr_size));
+                  strtab_shdr = elf_shdr64_from_class_data(eclass, shdr_data);
+                  scratch_end(scratch);
+                }
+                
+                B32 found_probes      = 0;
+                B32 found_probes_base = 0;
+                ELF_Shdr64 text_shdr         = {0};
+                ELF_Shdr64 stapsdt_base_shdr = {0};
+                ELF_Shdr64 stapsdt_shdr      = {0};
+                for(U64 shdr_off = offset + ehdr.e_shoff, shdr_opl = shdr_off + ehdr.e_shentsize * ehdr.e_shnum;
+                    shdr_off < shdr_opl;
+                    shdr_off += ehdr.e_shentsize)
+                {
+                  ELF_Shdr64 shdr = {0};
+                  {
+                    Temp scratch = scratch_begin(&arena, 1);
+                    U64 shdr_size = elf_shdr_size_from_class(eclass);
+                    String8 shdr_data = lnx_dmn_data_from_memory_range(scratch.arena, dl_fd, r1u64(shdr_off, shdr_off+shdr_size));
+                    shdr = elf_shdr64_from_class_data(eclass, shdr_data);
+                    scratch_end(scratch);
+                  }
+                  
+                  if(shdr.sh_type == ELF_ShType_Note)
+                  {
+                    U64     name_offset = offset + strtab_shdr.sh_offset + shdr.sh_name;
+                    U64     name_cap    = offset + strtab_shdr.sh_offset + strtab_shdr.sh_size;
+                    String8 name        = lnx_dmn_read_string_capped(scratch.arena, dl_fd, name_offset, name_cap);
+                    
+                    if(str8_match(name, str8_lit(".note.stapsdt"), 0))
+                    {
+                      stapsdt_shdr = shdr;
+                      found_probes = 1;
+                    }
+                  }
+                  else if(shdr.sh_type == ELF_ShType_ProgBits)
+                  {
+                    U64     name_offset = offset + strtab_shdr.sh_offset + shdr.sh_name;
+                    U64     name_cap    = offset + strtab_shdr.sh_offset + strtab_shdr.sh_size;
+                    String8 name        = lnx_dmn_read_string_capped(scratch.arena, dl_fd, name_offset, name_cap);
+                    
+                    if(str8_match(name, str8_lit(".stapsdt.base"), 0))
+                    {
+                      stapsdt_base_shdr = shdr;
+                      found_probes_base = 1;
+                    } else if(str8_match(name, str8_lit(".text"), 0))
+                    {
+                      text_shdr = shdr;
+                    }
+                  }
+                  
+                  if(found_probes && found_probes_base) { break; }
+                }
+                
+                if(!found_probes || !found_probes_base) { goto exit; }
+                
+                U64 probes_base = stapsdt_base_shdr.sh_addr;
+                
+                Rng1U64  note_range     = shift_1u64(r1u64(stapsdt_shdr.sh_offset, stapsdt_shdr.sh_offset + stapsdt_shdr.sh_size), offset);
+                void    *raw_note       = push_array(ctx_arena, U8, stapsdt_shdr.sh_size);
+                U64      note_read_size = lnx_dmn_read(dl_fd, note_range, raw_note);
+                if(note_read_size != dim_1u64(note_range)) { goto exit; }
+                
+                Arch         arch = arch_from_elf_machine(ehdr.e_machine);
+                ELF_NoteList note = elf_parse_note(scratch.arena, str8(raw_note, dim_1u64(note_range)), ehdr.e_ident[ELF_Identifier_Class], ehdr.e_machine);
+                
+                for EachNode(n, ELF_NoteNode, note.first)
+                {
+                  ELF_Note *note = &n->v;
+                  if(!str8_match(note->owner, str8_lit("stapsdt"), 0)) { continue; }
+                  if(note->type != ELF_NoteType_STapSdt)               { continue; }
+                  
+                  LNX_DMN_Probe probe = {0};
+                  {
+                    U64 cursor    = 0;
+                    U64 addr_size = ehdr.e_ident[ELF_Identifier_Class] == ELF_Class_64 ? 8 : 4;
+                    
+                    U64 pc = 0;
+                    U64 pc_size = str8_deserial_read(note->desc, cursor, &pc, addr_size, addr_size);
+                    if (pc_size == 0) { goto exit; }
+                    cursor += pc_size;
+                    
+                    U64 base_addr = 0;
+                    U64 base_addr_size = str8_deserial_read(note->desc, cursor, &base_addr, addr_size, addr_size);
+                    if (base_addr_size == 0) { goto exit; }
+                    cursor += base_addr_size;
+                    
+                    U64 semaphore = 0;
+                    U64 semaphore_size = str8_deserial_read(note->desc, cursor, &semaphore, addr_size, addr_size);
+                    if (semaphore_size == 0) { goto exit; }
+                    cursor += semaphore_size;
+                    
+                    String8 provider = str8_cstring_capped(note->desc.str + cursor, note->desc.str + note->desc.size);
+                    cursor += provider.size + 1;
+                    if (cursor > note->desc.size) { goto exit; }
+                    
+                    String8 name = str8_cstring_capped(note->desc.str + cursor, note->desc.str + note->desc.size);
+                    cursor += name.size + 1;
+                    if (cursor > note->desc.size) { goto exit; }
+                    
+                    String8 args = str8_cstring_capped(note->desc.str + cursor, note->desc.str + note->desc.size);
+                    cursor += args.size + 1;
+                    if (cursor > note->desc.size) { goto exit; }
+                    
+                    U64 probe_rebase = auxv.base + (base_addr - probes_base);
+                    
+                    probe.provider  = provider;
+                    probe.name      = name;
+                    probe.args      = stap_arg_array_from_string(ctx_arena, arch, args);
+                    probe.pc        = pc + probe_rebase;
+                    probe.semaphore = semaphore ? semaphore + probe_rebase : 0;
+                  }
+                  
+                  LNX_DMN_ProbeNode *n = push_array(ctx_arena, LNX_DMN_ProbeNode, 1);
+                  n->v = probe;
+                  SLLQueuePush(probes.first, probes.last, n);
+                  probes.count += 1;
+                }
+                
+                exit:;
+                LNX_RETRY_ON_EINTR(close(dl_fd));
+              }
+              
+              // rjf: store probes
+              for EachNode(n, LNX_DMN_ProbeNode, probes.first)
+              {
+                LNX_DMN_Probe *p = &n->v;
+                if(str8_match(p->provider, s("rtld"), 0))
+                {
+                  for EachNonZeroEnumVal(LNX_DMN_ProbeKind, k)
+                  {
+                    if(str8_match(p->name, lnx_dmn_probe_kind_string_table[k], 0))
+                    {
+                      known_probes[k] = p;
+                      break;
+                    }
+                  }
+                }
+              }
+              
+              scratch_end(scratch);
+            }
+            
+            //- rjf: allocate & fill context
+            ctx = &lnx_dmn_entity_alloc(LNX_DMN_EntityKind_ProcessCtx)->process_ctx;
+            ctx->arena             = ctx_arena;
+            ctx->arch              = arch;
+            ctx->rdebug_vaddr      = rdebug_vaddr;
+            ctx->dl_class          = dl_class;
+            ctx->module_slots_count= 4096;
+            ctx->module_slots      = push_array(ctx_arena, LNX_DMN_ModuleSlot, ctx->module_slots_count);
+            ctx->probes            = known_probes;
+            ctx->xcr0              = xcr0;
+            ctx->xsave_size        = Max(xsave_size, sizeof(X64_XSave));
+            ctx->xsave_layout      = xsave_layout;
+            
+            //- rjf: create main module
+            LNX_DMN_Module *main_module = lnx_dmn_module_alloc(ctx, new_process->fd, image_vrange.min, auxv.execfn, 1, 1);
+            
+            //- rjf: glibc has a shortcut mapping for the main module; ensure 0 base address goes to it
+            {
+              U64 vaddr = 0;
+              U64 hash = u64_hash_from_str8(str8_struct(&vaddr));
+              U64 slot_idx = hash%ctx->module_slots_count;
+              DLLPushBack_NP(ctx->module_slots[slot_idx].first, ctx->module_slots[slot_idx].last, main_module, hash_next, hash_prev);
+            }
           }
           
-          //- rjf: allocate & fill context
-          ctx = &lnx_dmn_entity_alloc(LNX_DMN_EntityKind_ProcessCtx)->process_ctx;
-          ctx->arena             = ctx_arena;
-          ctx->arch              = arch;
-          ctx->rdebug_vaddr      = rdebug_vaddr;
-          ctx->dl_class          = dl_class;
-          ctx->module_slots_count= 4096;
-          ctx->module_slots      = push_array(ctx_arena, LNX_DMN_ModuleSlot, ctx->module_slots_count);
-          ctx->probes            = known_probes;
-          ctx->xcr0              = xcr0;
-          ctx->xsave_size        = Max(xsave_size, sizeof(X64_XSave));
-          ctx->xsave_layout      = xsave_layout;
+          ////////////////////////
+          //- rjf: set process' context
+          //
+          new_process->ctx = ctx;
+          new_process->ctx->ref_count += 1;
           
-          //- rjf: create main module
-          LNX_DMN_Module *main_module = lnx_dmn_module_alloc(ctx, new_process->fd, image_vrange.min, auxv.execfn, 1, 1);
-          
-          //- rjf: glibc has a shortcut mapping for the main module; ensure 0 base address goes to it
+          ////////////////////////
+          //- rjf: install probe traps - only needed in processes without cloned memory
+          //
+          if(!(process_new_flags & LNX_DMN_CreateProcessFlag_ClonedMemory))
           {
-            U64 vaddr = 0;
-            U64 hash = u64_hash_from_str8(str8_struct(&vaddr));
-            U64 slot_idx = hash%ctx->module_slots_count;
-            DLLPushBack_NP(ctx->module_slots[slot_idx].first, ctx->module_slots[slot_idx].last, main_module, hash_next, hash_prev);
+            for EachNonZeroEnumVal(LNX_DMN_ProbeKind, k)
+            {
+              if(new_process->ctx->probes[k] == 0) { continue; }
+              DMN_Trap *trap = push_array(new_process->ctx->arena, DMN_Trap, 1);
+              trap->process = lnx_dmn_handle_from_process(new_process);
+              trap->vaddr   = new_process->ctx->probes[k]->pc;
+              trap->id      = k;
+              LNX_DMN_ActiveTrap *active_trap = lnx_dmn_set_trap(new_process->ctx->arena, trap);
+              SLLQueuePush(new_process->ctx->first_probe_trap, new_process->ctx->last_probe_trap, active_trap);
+            }
+          }
+          
+          ////////////////////////
+          //- rjf: report process creation
+          //
+          {
+            DMN_Event *e = dmn_event_list_push(arena, &events);
+            e->kind      = DMN_EventKind_CreateProcess;
+            e->process   = lnx_dmn_handle_from_process(new_process);
+            e->arch      = new_process->ctx->arch;
+            e->code      = new_process->pid;
+            e->size      = get_system_info()->page_size;
+          }
+          
+          ////////////////////////
+          //- rjf: create main thread
+          //
+          {
+            thread_new = 1;
+            thread_new_state = LNX_DMN_ThreadState_Stopped;
+            thread_new_parent = new_process;
+            thread_new_report_events = 1;
+            thread_new_pid = wait_id;
           }
         }
         
-        ////////////////////////
-        //- rjf: set process' context
+        //////////////////////////
+        //- rjf: new thread -> create
         //
-        new_process->ctx = ctx;
-        new_process->ctx->ref_count += 1;
-        
-        ////////////////////////
-        //- rjf: install probe traps - only needed in processes without cloned memory
-        //
-        if(!(process_new_flags & LNX_DMN_CreateProcessFlag_ClonedMemory))
+        if(thread_new)
         {
-          for EachNonZeroEnumVal(LNX_DMN_ProbeKind, k)
+          // rjf: allocate
+          LNX_DMN_Thread *new_thread = 0;
           {
-            if(new_process->ctx->probes[k] == 0) { continue; }
-            DMN_Trap *trap = push_array(new_process->ctx->arena, DMN_Trap, 1);
-            trap->process = lnx_dmn_handle_from_process(new_process);
-            trap->vaddr   = new_process->ctx->probes[k]->pc;
-            trap->id      = k;
-            LNX_DMN_ActiveTrap *active_trap = lnx_dmn_set_trap(new_process->ctx->arena, trap);
-            SLLQueuePush(new_process->ctx->first_probe_trap, new_process->ctx->last_probe_trap, active_trap);
+            // rjf: allocate reg block
+            void *reg_block = 0;
+            if(process->ctx->free_reg_blocks.node_count)
+            {
+              String8Node *n = str8_list_pop_front(&process->ctx->free_reg_blocks);
+              reg_block = n->string.str;
+              str8_list_push_node(&process->ctx->free_reg_block_nodes, n);
+            }
+            else
+            {
+              U64 reg_block_size = arch_info->reg_block_size;
+              reg_block = push_array(process->ctx->arena, U8, reg_block_size);
+            }
+            
+            // rjf: allocate thread
+            new_thread = &lnx_dmn_entity_alloc(LNX_DMN_EntityKind_Thread)->thread;
+            new_thread->tid       = thread_new_pid;
+            new_thread->state     = thread_new_state;
+            new_thread->process   = thread_new_parent;
+            new_thread->reg_block = reg_block;
+            
+            // rjf: hook thread to process
+            DLLPushBack(thread_new_parent->first_thread, thread_new_parent->last_thread, new_thread);
+            thread_new_parent->thread_count += 1;
+            
+            // rjf: map id -> thread
+            {
+              U64 key = (U64)thread_new_pid;
+              U64 hash = u64_hash_from_str8(str8_struct(&key));
+              U64 slot_idx = hash%lnx_dmn_state->thread_from_tid_slots_count;
+              DLLPushBack_NP(lnx_dmn_state->thread_from_tid_slots[slot_idx].first, lnx_dmn_state->thread_from_tid_slots[slot_idx].last, new_thread, tid_next, tid_prev);
+            }
+          }
+          
+          // rjf: report
+          if(thread_new_report_events)
+          {
+            DMN_Event *e = dmn_event_list_push(arena, &events);
+            e->kind    = DMN_EventKind_CreateThread;
+            e->process = lnx_dmn_handle_from_process(new_thread->process);
+            e->thread  = lnx_dmn_handle_from_thread(new_thread);
+            e->arch    = new_thread->process->ctx->arch;
+            e->code    = new_thread->tid;
+            // TODO(rjf): e->stack_pointer = ???;
+            e->tls_root_vaddr = new_thread->dtv_base_vaddr;
+          }
+          
+          // rjf: if thread is stopped -> turn on initial stop path
+          if(thread_new_state == LNX_DMN_ThreadState_Stopped)
+          {
+            thread = new_thread;
+            thread_stop = 1;
+            thread_initial_stop = 1;
           }
         }
         
-        ////////////////////////
-        //- rjf: report process creation
+        //////////////////////////
+        //- rjf: thread stop -> read registers. if initial stop, form base addr to DTV (TLS)
         //
+        if(thread_stop)
+        {
+          thread->is_reg_block_dirty = !lnx_dmn_thread_read_reg_block(thread);
+          if(thread_initial_stop)
+          {
+            thread->dtv_base_vaddr = lnx_dmn_tls_root_vaddr_from_reg_block(thread->process->fd, thread->process->ctx->arch, thread->reg_block);
+          }
+        }
+        
+        //////////////////////////
+        //- rjf: process was created -> report events for module loads
+        //
+        if(new_process)
+        {
+          for(LNX_DMN_Module *module = new_process->ctx->first_module; module != 0; module = module->order_next)
+          {
+            lnx_dmn_push_event_load_module(arena, &events, new_process->first_thread, module);
+          }
+        }
+        
+        //////////////////////////
+        //- rjf: process was created -> report event for handshake completion
+        //
+        if(new_process)
         {
           DMN_Event *e = dmn_event_list_push(arena, &events);
-          e->kind      = DMN_EventKind_CreateProcess;
-          e->process   = lnx_dmn_handle_from_process(new_process);
-          e->arch      = new_process->ctx->arch;
-          e->code      = new_process->pid;
+          e->kind    = DMN_EventKind_HandshakeComplete;
+          e->process = lnx_dmn_handle_from_process(new_process);
+          e->thread  = lnx_dmn_handle_from_thread(new_process->first_thread);
         }
         
-        ////////////////////////
-        //- rjf: create main thread
+        //////////////////////////
+        //- rjf: break if all threads are stopped, no pending processes, no pending threads, and if we have events.
         //
+        if(running_thread_count == 0 && lnx_dmn_state->process_pending_creation == 0 && lnx_dmn_state->threads_pending_creation == 0)
         {
-          thread_new = 1;
-          thread_new_state = LNX_DMN_ThreadState_Stopped;
-          thread_new_parent = new_process;
-          thread_new_report_events = 1;
-          thread_new_pid = wait_id;
+          break;
         }
       }
       
-      //////////////////////////
-      //- rjf: new thread -> create
+      ////////////////////////////
+      //- rjf: halted -> push halt event, reset halter state
       //
-      if(thread_new)
-      {
-        // rjf: allocate
-        LNX_DMN_Thread *new_thread = 0;
-        {
-          // rjf: allocate reg block
-          void *reg_block = 0;
-          if(process->ctx->free_reg_blocks.node_count)
-          {
-            String8Node *n = str8_list_pop_front(&process->ctx->free_reg_blocks);
-            reg_block = n->string.str;
-            str8_list_push_node(&process->ctx->free_reg_block_nodes, n);
-          }
-          else
-          {
-            ARCH_Info *arch_info = arch_info_from_arch(process->ctx->arch);
-            U64 reg_block_size = arch_info->reg_block_size;
-            reg_block = push_array(process->ctx->arena, U8, reg_block_size);
-          }
-          
-          // rjf: allocate thread
-          new_thread = &lnx_dmn_entity_alloc(LNX_DMN_EntityKind_Thread)->thread;
-          new_thread->tid       = thread_new_pid;
-          new_thread->state     = thread_new_state;
-          new_thread->process   = thread_new_parent;
-          new_thread->reg_block = reg_block;
-          
-          // rjf: hook thread to process
-          DLLPushBack(thread_new_parent->first_thread, thread_new_parent->last_thread, new_thread);
-          thread_new_parent->thread_count += 1;
-          
-          // rjf: map id -> thread
-          {
-            U64 key = (U64)thread_new_pid;
-            U64 hash = u64_hash_from_str8(str8_struct(&key));
-            U64 slot_idx = hash%lnx_dmn_state->thread_from_tid_slots_count;
-            DLLPushBack_NP(lnx_dmn_state->thread_from_tid_slots[slot_idx].first, lnx_dmn_state->thread_from_tid_slots[slot_idx].last, new_thread, tid_next, tid_prev);
-          }
-        }
-        
-        // rjf: report
-        if(thread_new_report_events)
-        {
-          DMN_Event *e = dmn_event_list_push(arena, &events);
-          e->kind    = DMN_EventKind_CreateThread;
-          e->process = lnx_dmn_handle_from_process(new_thread->process);
-          e->thread  = lnx_dmn_handle_from_thread(new_thread);
-          e->arch    = new_thread->process->ctx->arch;
-          e->code    = new_thread->tid;
-          // TODO(rjf): e->stack_pointer = ???;
-          e->tls_root_vaddr = new_thread->dtv_base_vaddr;
-        }
-        
-        // rjf: if thread is stopped -> turn on initial stop path
-        if(thread_new_state == LNX_DMN_ThreadState_Stopped)
-        {
-          thread = new_thread;
-          thread_stop = 1;
-          thread_initial_stop = 1;
-        }
-      }
-      
-      //////////////////////////
-      //- rjf: thread stop -> read registers. if initial stop, form base addr to DTV (TLS)
-      //
-      if(thread_stop)
-      {
-        thread->is_reg_block_dirty = !lnx_dmn_thread_read_reg_block(thread);
-        if(thread_initial_stop)
-        {
-          thread->dtv_base_vaddr = lnx_dmn_tls_root_vaddr_from_reg_block(thread->process->fd, thread->process->ctx->arch, thread->reg_block);
-        }
-      }
-      
-      //////////////////////////
-      //- rjf: process was created -> report events for module loads
-      //
-      if(new_process)
-      {
-        for(LNX_DMN_Module *module = new_process->ctx->first_module; module != 0; module = module->order_next)
-        {
-          lnx_dmn_push_event_load_module(arena, &events, new_process->first_thread, module);
-        }
-      }
-      
-      //////////////////////////
-      //- rjf: process was created -> report event for handshake completion
-      //
-      if(new_process)
+      if(is_halt_done)
       {
         DMN_Event *e = dmn_event_list_push(arena, &events);
-        e->kind    = DMN_EventKind_HandshakeComplete;
-        e->process = lnx_dmn_handle_from_process(new_process);
-        e->thread  = lnx_dmn_handle_from_thread(new_process->first_thread);
+        e->kind = DMN_EventKind_Halt;
+        lnx_dmn_state->halter_tid     = 0;
+        lnx_dmn_state->halt_code      = 0;
+        lnx_dmn_state->halt_user_data = 0;
+        lnx_dmn_state->is_halting     = 0;
       }
       
-      //////////////////////////
-      //- rjf: break if all threads are stopped, no pending processes, no pending threads
+      ////////////////////////////
+      //- rjf: unset all traps - restore original bytes
       //
-      if(running_thread_count == 0 && lnx_dmn_state->process_pending_creation == 0 && lnx_dmn_state->threads_pending_creation == 0)
       {
-        break;
-      }
-    }
-    
-    ////////////////////////////
-    //- rjf: halted -> push halt event, reset halter state
-    //
-    if(is_halt_done)
-    {
-      DMN_Event *e = dmn_event_list_push(arena, &events);
-      e->kind = DMN_EventKind_Halt;
-      lnx_dmn_state->halter_tid     = 0;
-      lnx_dmn_state->halt_code      = 0;
-      lnx_dmn_state->halt_user_data = 0;
-      lnx_dmn_state->is_halting     = 0;
-    }
-    
-    ////////////////////////////
-    //- rjf: unset all traps - restore original bytes
-    //
-    {
-      U64 trap_idx = 0;
-      for EachNode(n, DMN_TrapChunkNode, ctrls->traps.first)
-      {
-        for EachIndex(n_idx, n->count)
+        U64 trap_idx = 0;
+        for EachNode(n, DMN_TrapChunkNode, ctrls->traps.first)
         {
-          DMN_Trap *trap = n->v+n_idx;
-          if(trap->flags == 0)
+          for EachIndex(n_idx, n->count)
           {
-            dmn_process_write(trap->process, r1u64(trap->vaddr, trap->vaddr + bytes_per_trap), trap_swap_bytes + trap_idx*bytes_per_trap);
+            DMN_Trap *trap = n->v+n_idx;
+            if(trap->flags == 0)
+            {
+              dmn_process_write(trap->process, r1u64(trap->vaddr, trap->vaddr + bytes_per_trap), trap_swap_bytes + trap_idx*bytes_per_trap);
+            }
+            trap_idx += 1;
           }
-          trap_idx += 1;
         }
       }
     }
@@ -3357,13 +3368,15 @@ dmn_ctrl_run(Arena *arena, DMN_CtrlCtx *ctx, DMN_RunCtrls *ctrls)
 ////////////////////////////////
 //~ rjf: @dmn_os_hooks Halting (Implemented Per-OS)
 
-internal void
+internal B32
 dmn_halt(U64 code, U64 user_data)
 {
+  B32 result = 0;
   MutexScope(lnx_dmn_state->halter_mutex)
   {
     if(lnx_dmn_state->process_count)
     {
+      result = 1;
       lnx_dmn_state->halter_tid     = gettid();
       lnx_dmn_state->halt_code      = code;
       lnx_dmn_state->halt_user_data = user_data;
@@ -3374,6 +3387,7 @@ dmn_halt(U64 code, U64 user_data)
       }
     }
   }
+  return result;
 }
 
 ////////////////////////////////

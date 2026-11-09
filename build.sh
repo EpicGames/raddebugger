@@ -120,11 +120,18 @@ fi
 
 # --- Build Everything (@build_targets) ---------------------------------------
 cd build
+if [[ "${radcobj:-0}" == "1" ]]; then
+  didbuild=1
+  $compile "${oodle_flags[@]}" -fPIC -c ../src/linker/radcobj_main.c -o radcobj.o
+  $ar rcs libradcobj.a radcobj.o
+fi
 if [[ "${raddbg:-0}"               == "1" ]]; then didbuild=1 && compile ../src/raddbg/raddbg_main.c $cc_icon $cc_link $cc_os_gfx $cc_render $cc_font_provider -o raddbg; fi
 if [[ "${raddbg_non_graphical:-0}" == "1" ]]; then didbuild=1 && compile ../src/raddbg/raddbg_main.c -DWM_STUB=1 -DR_BACKEND=R_BACKEND_STUB $cc_link $cc_os_gfx $cc_render $cc_font_provider -o raddbg_non_graphical; fi
+if [[ "${raddbg_server:-0}"        == "1" ]]; then didbuild=1 && compile ../src/raddbg_server/raddbg_server_main.c $cc_link -o raddbg_server; fi
 if [[ "${radbin:-0}"               == "1" ]]; then didbuild=1 && compile ../src/radbin/radbin_main.c   $cc_link -o radbin; fi
 if [[ "${radlink:-0}"              == "1" ]]; then didbuild=1 && compile ../src/linker/lnk.c           $cc_link -o radlink; fi
 if [[ "${torture:-0}"              == "1" ]]; then didbuild=1 && compile ../src/torture/torture_main.c $cc_link $cc_os_gfx $cc_render $cc_font_provider -o torture; fi
+if [[ "${ryan_scratch:-0}"         == "1" ]]; then didbuild=1 && compile ../src/scratch/ryan_scratch.c $cc_link $cc_os_gfx $cc_render $cc_font_provider -o ryan_scratch; fi
 cd ..
 
 # --- Warn On No Builds -------------------------------------------------------

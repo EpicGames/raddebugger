@@ -10,10 +10,13 @@
 #define NO_ASYNC 1
 #define NO_WIN32_RIO 1
 
+#define RADLINK_UBA_COW_WORKAROUND
+
 // --- Code Base ---------------------------------------------------------------
 
 #include "base/base_inc.h"
 #include "hash_table.h"
+#include "compression/compression_inc.h"
 #include "coff/coff.h"
 #include "coff/coff_parse.h"
 #include "coff/coff_obj_writer.h"
@@ -35,6 +38,7 @@
 
 #include "base/base_inc.c"
 #include "hash_table.c"
+#include "compression/compression_inc.c"
 #include "coff/coff.c"
 #include "coff/coff_parse.c"
 #include "coff/coff_obj_writer.c"
@@ -122,6 +126,7 @@
 #include "lnk_hasher.c"
 #include "lnk_io.c"
 #include "lnk_cmd_line.c"
+#include "lnk_obj_codec.c"
 #include "lnk_config.c"
 #include "lnk_name_trie.c"
 #include "lnk_symbol_table.c"
@@ -138,7 +143,8 @@
 //
 // [ ] Handle EXPORTAS (short import header contains an optional third string that should be used as export name)
 // [ ] Omit the import descriptors on /WHOLEARCHIVE to help with the current metadata handling complexity that comes from including every lib member
-//
+// [ ] Reduce the duplicative fields in LNK_Obj now that LNK_Input is there
+// [ ] Pass over LNK_Config and separate common switches from linker specific switches
 
 internal String8
 lnk_make_full_path(Arena *arena, PathStyle system_path_style, String8 work_dir, String8 path)
@@ -160,13 +166,12 @@ lnk_make_full_path(Arena *arena, PathStyle system_path_style, String8 work_dir, 
   return result;
 }
 
-internal
 THREAD_POOL_TASK_FUNC(lnk_blake3_hasher_task)
 {
   ProfBeginFunction();
   
   LNK_Blake3Hasher *task     = raw_task;
-  Rng1U64           range    = task->ranges[task_id];
+  Rng1U64           range    = tp_work_range(task->data.size, task->chunk_count, task_id);
   String8           sub_data = str8_substr(task->data, range);
   
   blake3_hasher hasher; blake3_hasher_init(&hasher);
@@ -185,7 +190,7 @@ lnk_blake3_hash_parallel(TP_Context *tp, U64 chunk_count, String8 data)
   ProfBegin("Hash Chunks");
   LNK_Blake3Hasher task = {0};
   task.data             = data;
-  task.ranges           = tp_divide_work(scratch.arena, data.size, chunk_count);
+  task.chunk_count      = safe_cast_u32(chunk_count);
   task.hashes           = push_array(scratch.arena, U128, chunk_count);
   tp_for_parallel(tp, 0, chunk_count, lnk_blake3_hasher_task, &task);
   ProfEnd();
@@ -331,9 +336,9 @@ lnk_manifest_from_inputs(Arena       *arena,
     lnk_merge_manifest_files(mt_path, merged_manifest_path, unique_input_manifest_paths);
 
     // read mt.exe output from disk
-    B8 was_manifest_read;
+    B8 was_manifest_read = 0;
     manifest_data = lnk_read_data_from_file_path(arena, merged_manifest_path, &was_manifest_read);
-    if (was_manifest_read == 0) {
+    if ( ! was_manifest_read) {
       lnk_error(LNK_Error_Mt, "unable to find mt.exe output manifest on disk, expected path \"%S\"", merged_manifest_path);
     }
 
@@ -996,8 +1001,9 @@ lnk_inputer_push_lib_thin(LNK_Inputer *inputer, LNK_Config *config, LNK_InputSou
     BucketNode *was_reported = hash_table_search_path(inputer->missing_lib_ht, path);
     if (was_reported == 0) {
       hash_table_push_path_u64(inputer->arena, inputer->missing_lib_ht, path, 0);
-      LNK_ErrorCode code = config->boot_mode == LNK_BootMode_Lib && input_source == LNK_InputSource_CmdLine
-                          ? LNK_Error_InvalidPath : LNK_Warning_FileNotFound;
+      LNK_ErrorCode code = config->tool == LNK_Tool_Lib && input_source == LNK_InputSource_CmdLine
+                           ? LNK_Error_InvalidPath
+                           : LNK_Warning_FileNotFound;
       lnk_error(code, "unable to find library `%S`", path);
     }
     goto exit;
@@ -1047,7 +1053,7 @@ lnk_has_pending_input_work(LNK_Inputer *inputer, LNK_Link *link)
 }
 
 internal LNK_InputPtrArray
-lnk_inputer_flush(Arena *arena, TP_Context *tp, LNK_Inputer *inputer, LNK_InputList *all_inputs, LNK_InputList *new_inputs)
+lnk_inputer_flush(Arena *arena, TP_Context *tp, LNK_Config *config, LNK_Inputer *inputer, LNK_InputList *all_inputs, LNK_InputList *new_inputs)
 {
   ProfBeginFunction();
   Temp scratch = scratch_begin(&arena, 1);
@@ -1079,18 +1085,18 @@ lnk_inputer_flush(Arena *arena, TP_Context *tp, LNK_Inputer *inputer, LNK_InputL
   ProfEnd();
 
   ProfBegin("Load Inputs From Disk"); 
-  B8           *thin_input_was_read = push_array(scratch.arena, B8, thin_input_paths.count);
-  String8Array  thin_input_datas    = lnk_read_data_from_file_path_parallel(tp, inputer->arena, thin_input_paths, thin_input_was_read);
+  File         *thin_input_handles = push_array(inputer->arena, File, thin_input_paths.count);
+  String8Array  thin_input_datas   = lnk_read_data_from_file_path_parallel_with_handles(tp, inputer->arena, thin_input_paths, thin_input_handles);
   for EachIndex(thin_input_idx, thin_inputs_count) {
-    thin_inputs[thin_input_idx]->has_disk_read_failed = !thin_input_was_read[thin_input_idx];
-    thin_inputs[thin_input_idx]->owns_file_map        = thin_input_datas.v[thin_input_idx].size != 0;
-    thin_inputs[thin_input_idx]->data                 = thin_input_datas.v[thin_input_idx];
+    thin_inputs[thin_input_idx]->handle        = thin_input_handles[thin_input_idx];
+    thin_inputs[thin_input_idx]->owns_file_map = thin_input_datas.v[thin_input_idx].size != 0;
+    thin_inputs[thin_input_idx]->data          = thin_input_datas.v[thin_input_idx];
   }
   ProfEnd();
 
   ProfScope("Disk Read Check") {
     for EachIndex(i, thin_inputs_count) {
-      if (thin_inputs[i]->has_disk_read_failed) {
+      if (file_match(thin_inputs[i]->handle, file_zero())) {
         lnk_error(LNK_Error_InvalidPath, "unable to find file \"%S\"", thin_inputs[i]->path);
       }
     }
@@ -1098,9 +1104,8 @@ lnk_inputer_flush(Arena *arena, TP_Context *tp, LNK_Inputer *inputer, LNK_InputL
 
   LNK_InputPtrArray result = lnk_array_from_input_list(arena, *new_inputs);
 
-  // archive files are validated together by the library loader
   if (all_inputs != &inputer->libs) {
-    // classify materialized object and member inputs
+    // classify materialized inputs
     for EachIndex(i, result.count) {
       LNK_Input *input = result.v[i];
       if (input->type == COFF_DataType_Null) {
@@ -1145,15 +1150,28 @@ lnk_inputer_flush(Arena *arena, TP_Context *tp, LNK_Inputer *inputer, LNK_InputL
   return result;
 }
 
-internal
-THREAD_POOL_TASK_FUNC(lnk_release_file_maps_task)
+internal void
+lnk_input_release_file_map(LNK_Input *input)
 {
-  LNK_ReleaseFileMapsTask *task = raw_task;
-  for (U64 input_idx; (input_idx = ins_atomic_u64_inc_eval(&task->next_input_idx) - 1) < task->inputs.count;) {
-    LNK_Input *input = task->inputs.v[input_idx];
+  if (input->owns_file_map) {
     file_map_view_close((FileMap){0}, input->data.str, r1u64(0, input->data.size));
     input->data          = str8_zero();
     input->owns_file_map = 0;
+  }
+  if (input->cfm_map) {
+    cfm_map_close(input->cfm_map);
+    input->data    = str8_zero();
+    input->cfm_map = 0;
+  }
+}
+
+THREAD_POOL_TASK_FUNC(lnk_release_file_maps_task)
+{
+  LNK_ReleaseFileMapsTask *task = raw_task;
+  for (U64 input_idx;
+       (input_idx = ins_atomic_u64_inc_eval(&task->next_input_idx) - 1) < task->inputs.count;) {
+    LNK_Input *input = task->inputs.v[input_idx];
+    lnk_input_release_file_map(input);
   }
 }
 
@@ -1161,14 +1179,15 @@ internal void
 lnk_inputer_release_file_maps(TP_Context *tp, LNK_Inputer *inputer)
 {
   ProfBeginFunction();
-
   Temp scratch = scratch_begin(0, 0);
 
+  // regular file maps and compressed file maps (CFM) are both expensive to tear down,
+  // and the kernel does it single-threaded at process exit otherwise
   U64 mapped_input_count = 0;
   LNK_InputList *lists[] = {&inputer->objs, &inputer->libs, &inputer->members};
   for EachElement(i, lists) {
     for EachNode(input, LNK_Input, lists[i]->first) {
-      mapped_input_count += input->owns_file_map;
+      mapped_input_count += (input->owns_file_map || input->cfm_map != NULL);
     }
   }
 
@@ -1176,7 +1195,7 @@ lnk_inputer_release_file_maps(TP_Context *tp, LNK_Inputer *inputer)
   U64         mapped_input_idx = 0;
   for EachElement(i, lists) {
     for EachNode(input, LNK_Input, lists[i]->first) {
-      if (input->owns_file_map) {
+      if (input->owns_file_map || input->cfm_map != NULL) {
         mapped_inputs[mapped_input_idx++] = input;
       }
     }
@@ -1273,7 +1292,7 @@ lnk_apply_obj_directives(LNK_Config *config, LNK_ObjList objs)
       for EachNode(dir, LNK_Directive, directive_info.v[i].first) {
         // preserve all raw directives in the object; librarian only
         // consumes exports for an import-library operation
-        if (config->boot_mode == LNK_BootMode_Lib &&
+        if (config->tool == LNK_Tool_Lib &&
             (lnk_cmd_switch_type_from_string(dir->id) != LNK_CmdSwitch_Export || !config->build_imp_lib)) {
           continue;
         }
@@ -1332,22 +1351,28 @@ lnk_load_objs(TP_Context *tp, TP_Arena *arena, LNK_Config *config, LNK_Inputer *
 {
   ProfBeginV("Load Objs [Count %llu]", inputer->new_objs.count);
 
-  LNK_InputPtrArray inputs = lnk_inputer_flush(arena->v[0], tp, inputer, &inputer->objs, &inputer->new_objs);
-  String8List remove_sections = config->boot_mode == LNK_BootMode_Linker ? config->remove_sections : (String8List){0};
-  lnk_obj_from_input_many(tp, arena, inputs, remove_sections);
+  Temp scratch = scratch_begin(arena->v, arena->count);
+
+  // load inputs from the disk
+  LNK_InputPtrArray inputs = lnk_inputer_flush(arena->v[0], tp, config, inputer, &inputer->objs, &inputer->new_objs);
+
+  // load objects from inputs
+  lnk_obj_from_input_many(tp, arena, inputs, config->remove_sections);
+
+  // infer the machine from loaded objects
   lnk_resolve_machine(inputs, config);
 
+  // append inputs to the result object list
   LNK_ObjList objs = {0};
   for EachIndex(i, inputs.count) {
-    if (inputs.v[i]->type == COFF_DataType_Import) {
-      lnk_error_input_obj(LNK_Error_IllData, inputs.v[i], "expected an object, found a short import");
-      continue;
-    }
+    AssertAlways(inputs.v[i]->type == COFF_DataType_Obj || inputs.v[i]->type == COFF_DataType_BigObj);
     lnk_obj_list_push_node(&objs, inputs.v[i]->obj);
   }
 
+  // apply objects directries to the config
   lnk_apply_obj_directives(config, objs);
 
+  scratch_end(scratch);
   ProfEnd();
   return objs;
 }
@@ -1358,7 +1383,7 @@ lnk_load_libs(TP_Context *tp, TP_Arena *arena, LNK_Config *config, LNK_Inputer *
   for EachIndex(input_source, LNK_InputSource_Count) {
     ProfBegin("Input Libs [Count %llu]", inputer->new_libs[input_source].count);
 
-    LNK_InputPtrArray new_input_libs = lnk_inputer_flush(arena->v[0], tp, inputer, &inputer->libs, &inputer->new_libs[input_source]);
+    LNK_InputPtrArray new_input_libs = lnk_inputer_flush(arena->v[0], tp, config, inputer, &inputer->libs, &inputer->new_libs[input_source]);
 
     if (lnk_get_log_status(LNK_Log_InputLib) && new_input_libs.count) {
       U64 input_size = 0;
@@ -1401,6 +1426,32 @@ lnk_require_import_metadata(LNK_Link *link, LNK_Obj *obj)
   }
 }
 
+typedef struct LNK_CfmMapOpener
+{
+  CFM_Context       *cfm;
+  LNK_InputPtrArray  inputs;
+  CFM_Status        *statuses;
+  CFM_Map          **maps;
+} LNK_CfmMapOpener;
+
+THREAD_POOL_TASK_FUNC(lnk_cfm_map_opener)
+{
+  ProfBeginFunction();
+  LNK_CfmMapOpener *task  = raw_task;
+  LNK_Input        *input = task->inputs.v[task_id];
+
+  // release the plain file view; the CFM map takes over the data pointer
+  ProfBegin("release file map");
+  lnk_input_release_file_map(input);
+  ProfEnd();
+
+  task->statuses[task_id] = cfm_map_prepare(task->cfm, input->handle, &task->maps[task_id]);
+  if (task->statuses[task_id] == CFM_Ok) {
+    task->maps[task_id]->source_path = input->path;
+  }
+  ProfEnd();
+}
+
 internal void
 lnk_load_inputs(TP_Context *tp, TP_Arena *arena, LNK_Config *config, LNK_Inputer *inputer, LNK_SymbolTable *symtab, LNK_Link *link)
 {
@@ -1411,14 +1462,77 @@ lnk_load_inputs(TP_Context *tp, TP_Arena *arena, LNK_Config *config, LNK_Inputer
   LNK_ObjList objs        = {0};
 
   // materialize inputs
-  LNK_InputPtrArray direct  = lnk_inputer_flush(arena->v[0], tp, inputer, &inputer->objs,    &inputer->new_objs);
-  LNK_InputPtrArray members = lnk_inputer_flush(arena->v[0], tp, inputer, &inputer->members, &inputer->new_members);
+  LNK_InputPtrArray direct  = lnk_inputer_flush(arena->v[0], tp, config, inputer, &inputer->objs,    &inputer->new_objs);
+  LNK_InputPtrArray members = lnk_inputer_flush(arena->v[0], tp, config, inputer, &inputer->members, &inputer->new_members);
   LNK_InputPtrArray all = {
     .count = direct.count + members.count,
     .v     = push_array(scratch.arena, LNK_Input *, direct.count + members.count),
   };
   MemoryCopy(all.v, direct.v, direct.count * sizeof(*all.v));
   MemoryCopy(all.v + direct.count, members.v, members.count * sizeof(*all.v));
+
+  {
+    ProfBegin("Open Compressed Inputs");
+
+    // gather compressed objects
+    LNK_InputPtrArray compressed = { .v = push_array(scratch.arena, LNK_Input *, all.count) };
+    for EachIndex(i, all.count) {
+      LNK_Input *input = all.v[i];
+      if (lnk_obj_codec_matches(input->data)) {
+        AssertAlways(input->type == COFF_DataType_BigObj || input->type == COFF_DataType_Obj);
+        compressed.v[compressed.count++] = input;
+      }
+    }
+
+    if (compressed.count > 0) {
+      // lazy init CFM when input has compressed objects
+      if (inputer->cfm == NULL) {
+        String8 sdk_paths[CMP_SdkType_Count] = { [CMP_SdkType_Oodle2] = config->oodle2_path };
+        inputer->cfm = cfm_alloc(config->cfm_cache_cap, config->cfm_prefetch_size, config->cfm_worker_count, 1, lnk_cobj_codec(), sdk_paths);
+
+        B32 is_handler_installed = cfm_install_fault_handler(inputer->cfm);
+        AssertAlways(is_handler_installed);
+      }
+
+      // validate containers and reserve their address ranges on the pool; the header
+      // page-in and the per-segment placeholder splits dominate and are independent per file
+      LNK_CfmMapOpener task = {
+        .cfm      = inputer->cfm,
+        .inputs   = compressed,
+        .statuses = push_array(scratch.arena, CFM_Status, compressed.count),
+        .maps     = push_array(scratch.arena, CFM_Map *,  compressed.count),
+      };
+      tp_for_parallel_prof(tp, arena, compressed.count, lnk_cfm_map_opener, &task, "Prepare CFM maps");
+
+      for EachIndex(i, compressed.count) {
+        LNK_Input *input  = compressed.v[i];
+        CFM_Status status = task.statuses[i];
+        if (status != CFM_Ok) {
+          if (status == CFM_MixedSegmentSizes) {
+            lnk_error(LNK_Error_MixedSegmentSizes, "mixed segment sizes is not a supported case; please compress objects with the same segment size; expected %llu, %S", inputer->cfm->first_segment_size, input->path);
+          } else {
+            lnk_error(LNK_Error_Cfm, "failed to open compressed file map, reason %s, path %S", cfm_status_string(status), input->path);
+          }
+          lnk_exit(1);
+        }
+      }
+
+      // register all maps to the fault handler at once (single registry sort)
+      ProfBegin("Register CFM maps");
+      cfm_map_register_batch(inputer->cfm, compressed.count, task.maps);
+      ProfEnd();
+
+      // update inputs data
+      for EachIndex(i, compressed.count) {
+        LNK_Input *input = compressed.v[i];
+        Assert(input->data.size == 0 && input->data.str == NULL);
+        input->cfm_map = task.maps[i];
+        input->data    = input->cfm_map->data;
+      }
+    }
+
+    ProfEnd();
+  }
 
   lnk_obj_from_input_many(tp, arena, all, config->remove_sections);
   lnk_resolve_machine(all, config);
@@ -1851,7 +1965,6 @@ lnk_queue_lib_member(Arena                *arena,
   }
 }
 
-internal
 THREAD_POOL_TASK_FUNC(lnk_search_lib_task)
 {
   LNK_SearchLibTask    *task             = raw_task;
@@ -2499,10 +2612,10 @@ lnk_link_image(TP_Context *tp, TP_Arena *arena, LNK_Config *config, LNK_Inputer 
     
     ProfBegin("Load .res files from disk");
     for EachNode(node, String8Node, config->input_list[LNK_Input_Res].first) {
-      B8      was_read = 0;
-      String8 res_data = lnk_read_data_from_file_path(scratch.arena, node->string, &was_read);
+      B8      was_res_read = 0;
+      String8 res_data     = lnk_read_data_from_file_path(scratch.arena, node->string, &was_res_read);
 
-      if (was_read == 0) {
+      if ( ! was_res_read) {
         lnk_error(LNK_Error_LoadRes, "unable to open res file: %S", node->string);
         continue;
       }
@@ -2706,7 +2819,7 @@ lnk_link_image(TP_Context *tp, TP_Arena *arena, LNK_Config *config, LNK_Inputer 
                 // is reference inline site?
                 LNK_InlineSite *inline_site = lnk_inline_site_from_section_offset(line_map, section_number, reloc->apply_off, symbol);
                 if (inline_site && inline_site->name.size) {
-                  CV_Line *line_inline = lnk_line_from_inline_site(inline_site, reloc->apply_off);
+                  CV_Line *line_inline = lnk_line_from_inline_site(inline_site, Compose64Bit(section_number, reloc->apply_off));
                   if (line_inline) {
                     ref_name    = inline_site->name;
                     source_line = line_inline;
@@ -2982,7 +3095,6 @@ lnk_resolve_reloc_target_symbol(Arena *arena, LNK_SymbolTable *symtab, LNK_ObjSy
   return is_resolved;
 }
 
-internal
 THREAD_POOL_TASK_FUNC(lnk_opt_ref_task)
 {
   ProfBeginFunction();
@@ -3068,9 +3180,7 @@ THREAD_POOL_TASK_FUNC(lnk_opt_ref_task)
       }
     }
   }
-  tp_broadcast(&is_live);
-  tp_broadcast(&global_batch_list);
-  tp_broadcast(&active_thread_count);
+  tp_broadcast_many(is_live, global_batch_list, active_thread_count);
 
   LNK_RelocRefsBatchList free_list = {0};
   for (;;) {
@@ -3544,7 +3654,6 @@ THREAD_POOL_TASK_FUNC(lnk_opt_icf_task)
     U64      *contrib_offsets;
     U64     **color_map;
     Contrib  *contribs;
-    Rng1U64  *contrib_ranges;
     U64      *split_counts;
     U64      *split_offsets;
     U32      *is_part_stable;
@@ -3570,7 +3679,6 @@ THREAD_POOL_TASK_FUNC(lnk_opt_icf_task)
 
     shared.contrib_offsets = offsets_from_counts_array_u64(scratch.arena, contrib_counts, task->objs_count);
     shared.contribs        = push_array(scratch.arena, Contrib, shared.contrib_count);
-    shared.contrib_ranges  = tp_divide_work(scratch.arena, shared.contrib_count, tp->worker_count);
     shared.split_counts    = push_array(scratch.arena, U64, tp->worker_count);
     shared.split_offsets   = push_array(scratch.arena, U64, tp->worker_count + 1);
     shared.is_part_stable  = push_array(scratch.arena, U32, 1);
@@ -3738,9 +3846,7 @@ THREAD_POOL_TASK_FUNC(lnk_opt_icf_task)
     *table_generation           = 0;
     ProfEnd();
   }
-  tp_broadcast(&color_table);
-  tp_broadcast(&old_color_table);
-  tp_broadcast(&table_generation);
+  tp_broadcast_many(color_table, old_color_table, table_generation);
 
   //
   // step 2: refine equivalence classes
@@ -3768,7 +3874,8 @@ THREAD_POOL_TASK_FUNC(lnk_opt_icf_task)
     U64 ready_state            = (table_generation_value << 2) | 2;
 
     ProfBegin("Compute colored hashes");
-    for EachInRange(contrib_idx, shared.contrib_ranges[task_id]) {
+    Rng1U64 contrib_range = tp_work_range(shared.contrib_count, tp->worker_count, task_id);
+    for EachInRange(contrib_idx, contrib_range) {
       Contrib *contrib = &shared.contribs[contrib_idx];
       contrib->key.old_color = shared.color_map[contrib->obj_idx][contrib->section_number];
 
@@ -3825,7 +3932,6 @@ THREAD_POOL_TASK_FUNC(lnk_opt_icf_task)
 
     // publish one old-color record per color group
     ProfBegin("Index color groups");
-    Rng1U64 contrib_range = shared.contrib_ranges[task_id];
     for EachInRange(contrib_idx, contrib_range) {
       Contrib       *contrib = &shared.contribs[contrib_idx];
       ColorHashSlot *slot    = &color_table.slots[contrib->color_slot_idx];
@@ -3955,6 +4061,8 @@ THREAD_POOL_TASK_FUNC(lnk_opt_icf_task)
   }
   tp_broadcast(&fold_stats);
 
+  Rng1U64 contrib_range = tp_work_range(shared.contrib_count, tp->worker_count, task_id);
+
   // Collect associated-child mappings before any worker changes flags or symlinks.
   // The collector filters LnkRemove, and the scope query follows COMDAT symlinks;
   // querying either during Flag Folds makes the positional child pairing depend
@@ -3970,7 +4078,7 @@ THREAD_POOL_TASK_FUNC(lnk_opt_icf_task)
   AssocFold *assoc_first = 0;
   AssocFold *assoc_last  = 0;
   ProfBegin("Plan Associated Folds");
-  for EachInRange(contrib_idx, shared.contrib_ranges[task_id]) {
+  for EachInRange(contrib_idx, contrib_range) {
     Contrib       *contrib    = &shared.contribs[contrib_idx];
     ColorHashSlot *color_slot = &color_table.slots[contrib->color_slot_idx];
     Contrib       *leader     = &shared.contribs[ins_atomic_u64_eval(&color_slot->first_contrib_idx)];
@@ -4004,7 +4112,7 @@ THREAD_POOL_TASK_FUNC(lnk_opt_icf_task)
   barrier_wait(tp->barrier);
 
   ProfBegin("Flag Folds");
-  for EachInRange(contrib_idx, shared.contrib_ranges[task_id]) {
+  for EachInRange(contrib_idx, contrib_range) {
     Contrib       *contrib    = &shared.contribs[contrib_idx];
     ColorHashSlot *color_slot = &color_table.slots[contrib->color_slot_idx];
     Contrib       *leader     = &shared.contribs[ins_atomic_u64_eval(&color_slot->first_contrib_idx)];
@@ -4218,13 +4326,12 @@ lnk_should_gather_section(LNK_Obj *obj, U64 section_number, COFF_SectionHeader *
   return 1;
 }
 
-internal
 THREAD_POOL_TASK_FUNC(lnk_gather_sections_task)
 {
   Temp scratch = scratch_begin(&arena, 1);
 
   LNK_BuildImageTask *task         = raw_task;
-  Rng1U64             range        = task->u.gather_sects.ranges[task_id];
+  Rng1U64             range        = tp_work_range(task->objs_count, tp->worker_count, task_id);
   HashTable          *sect_defn_ht = hash_table_init(arena, 128);
   task->u.gather_sects.defns[task_id] = sect_defn_ht;
 
@@ -4405,7 +4512,6 @@ THREAD_POOL_TASK_FUNC(lnk_gather_sections_task)
   scratch_end(scratch);
 }
 
-internal
 THREAD_POOL_TASK_FUNC(lnk_set_comdat_leaders_contribs_task)
 {
   LNK_BuildImageTask *task    = raw_task;
@@ -4427,7 +4533,6 @@ THREAD_POOL_TASK_FUNC(lnk_set_comdat_leaders_contribs_task)
   ProfEnd();
 }
 
-internal
 THREAD_POOL_TASK_FUNC(lnk_flag_debug_symbols_task)
 {
   LNK_BuildImageTask *task    = raw_task;
@@ -4446,7 +4551,6 @@ THREAD_POOL_TASK_FUNC(lnk_flag_debug_symbols_task)
   }
 }
 
-internal
 THREAD_POOL_TASK_FUNC(lnk_patch_comdat_leaders_task)
 {
   LNK_BuildImageTask *task    = raw_task;
@@ -4520,31 +4624,31 @@ lnk_section_contrib_ptr_is_before(void *raw_a, void *raw_b)
 
 typedef struct LNK_SortContribsRadixTask
 {
-  Rng1U64 *ranges;
-  U64     *keys_src;
-  U32     *indices_src;
-  U64     *keys_dst;
-  U32     *indices_dst;
-  U32     *hist;
-  U64      shift;
+  U64  count;
+  U64 *keys_src;
+  U32 *indices_src;
+  U64 *keys_dst;
+  U32 *indices_dst;
+  U32 *hist;
+  U64  shift;
 } LNK_SortContribsRadixTask;
 
-internal
 THREAD_POOL_TASK_FUNC(lnk_sort_contribs_radix_hist_task)
 {
   LNK_SortContribsRadixTask *task = raw_task;
-  U32 *hist = task->hist + (U64)task_id * LNK_SORT_CONTRIBS_RADIX_SIZE;
-  for EachInRange(i, task->ranges[task_id]) {
+  U32     *hist  = task->hist + (U64)task_id * LNK_SORT_CONTRIBS_RADIX_SIZE;
+  Rng1U64  range = tp_work_range(task->count, tp->worker_count, task_id);
+  for EachInRange(i, range) {
     hist[(task->keys_src[i] >> task->shift) & (LNK_SORT_CONTRIBS_RADIX_SIZE - 1)] += 1;
   }
 }
 
-internal
 THREAD_POOL_TASK_FUNC(lnk_sort_contribs_radix_scatter_task)
 {
   LNK_SortContribsRadixTask *task = raw_task;
-  U32 *hist = task->hist + (U64)task_id * LNK_SORT_CONTRIBS_RADIX_SIZE;
-  for EachInRange(i, task->ranges[task_id]) {
+  U32     *hist  = task->hist + (U64)task_id * LNK_SORT_CONTRIBS_RADIX_SIZE;
+  Rng1U64  range = tp_work_range(task->count, tp->worker_count, task_id);
+  for EachInRange(i, range) {
     U64 digit   = (task->keys_src[i] >> task->shift) & (LNK_SORT_CONTRIBS_RADIX_SIZE - 1);
     U32 dst_idx = hist[digit]++;
     task->keys_dst[dst_idx]    = task->keys_src[i];
@@ -4572,16 +4676,15 @@ lnk_sort_contribs_chunk_radix(TP_Context *tp, Arena *arena, LNK_SectionContribCh
     max_key = Max(max_key, key);
   }
 
-  U64      significant_pass_count = (64 - clz64(max_key) + LNK_SORT_CONTRIBS_RADIX_BITS - 1) / LNK_SORT_CONTRIBS_RADIX_BITS;
-  U64      pass_count             = significant_pass_count + (significant_pass_count & 1);
-  U64     *keys_buffer            = push_array_no_zero(scratch.arena, U64, count);
-  U32     *indices_buffer         = push_array_no_zero(scratch.arena, U32, count);
-  U32     *hist                   = push_array_no_zero(scratch.arena, U32, worker_count * LNK_SORT_CONTRIBS_RADIX_SIZE);
-  Rng1U64 *ranges                 = tp_divide_work(scratch.arena, count, worker_count);
+  U64  significant_pass_count = (64 - clz64(max_key) + LNK_SORT_CONTRIBS_RADIX_BITS - 1) / LNK_SORT_CONTRIBS_RADIX_BITS;
+  U64  pass_count             = significant_pass_count + (significant_pass_count & 1);
+  U64 *keys_buffer            = push_array_no_zero(scratch.arena, U64, count);
+  U32 *indices_buffer         = push_array_no_zero(scratch.arena, U32, count);
+  U32 *hist                   = push_array_no_zero(scratch.arena, U32, worker_count * LNK_SORT_CONTRIBS_RADIX_SIZE);
 
   U64 *keys_src = keys, *keys_dst = keys_buffer;
   U32 *indices_src = indices, *indices_dst = indices_buffer;
-  LNK_SortContribsRadixTask task = { .ranges = ranges, .hist = hist };
+  LNK_SortContribsRadixTask task = { .count = count, .hist = hist };
   for EachIndex(pass, pass_count) {
     task.keys_src    = keys_src;
     task.indices_src = indices_src;
@@ -4617,7 +4720,6 @@ lnk_sort_contribs_chunk_radix(TP_Context *tp, Arena *arena, LNK_SectionContribCh
   ProfEnd();
 }
 
-internal
 THREAD_POOL_TASK_FUNC(lnk_sort_contribs_task)
 {
   LNK_BuildImageTask *task = raw_task;
@@ -4646,13 +4748,12 @@ lnk_common_block_contrib_is_before(void *raw_a, void *raw_b)
   return is_before;
 }
 
-internal
 THREAD_POOL_TASK_FUNC(lnk_patch_common_block_leaders_task)
 {
   ProfBeginFunction();
 
   LNK_BuildImageTask *task          = raw_task;
-  Rng1U64             contrib_range = task->u.patch_symtabs.common_block_ranges[task_id];
+  Rng1U64             contrib_range = tp_work_range(task->u.patch_symtabs.common_block_count, tp->worker_count, task_id);
 
   for (U64 contrib_idx = contrib_range.min; contrib_idx < contrib_range.max; contrib_idx += 1) {
     LNK_CommonBlockContrib *contrib        = &task->u.patch_symtabs.common_block_contribs[contrib_idx];
@@ -4670,7 +4771,6 @@ THREAD_POOL_TASK_FUNC(lnk_patch_common_block_leaders_task)
   ProfEnd();
 }
 
-internal
 THREAD_POOL_TASK_FUNC(lnk_patch_common_block_symbols_task)
 {
   LNK_BuildImageTask *task    = raw_task;
@@ -4696,7 +4796,6 @@ THREAD_POOL_TASK_FUNC(lnk_patch_common_block_symbols_task)
   ProfEnd();
 }
 
-internal
 THREAD_POOL_TASK_FUNC(lnk_patch_regular_symbols_task)
 {
   LNK_BuildImageTask *task    = raw_task;
@@ -4777,35 +4876,30 @@ lnk_patch_obj_symtab(LNK_SymbolTable *symtab, LNK_Obj *obj, B8 *was_symbol_patch
   ProfEnd();
 }
 
-internal
 THREAD_POOL_TASK_FUNC(lnk_patch_common_symbols_task)
 {
   LNK_BuildImageTask *task = raw_task;
   lnk_patch_obj_symtab(task->symtab, task->objs[task_id], task->u.patch_symtabs.was_symbol_patched[task_id], COFF_SymbolValueInterp_Common);
 }
 
-internal
 THREAD_POOL_TASK_FUNC(lnk_patch_abs_symbols_task)
 {
   LNK_BuildImageTask *task = raw_task;
   lnk_patch_obj_symtab(task->symtab, task->objs[task_id], task->u.patch_symtabs.was_symbol_patched[task_id], COFF_SymbolValueInterp_Abs);
 }
 
-internal
 THREAD_POOL_TASK_FUNC(lnk_patch_undefined_symbols_task)
 {
   LNK_BuildImageTask *task = raw_task;
   lnk_patch_obj_symtab(task->symtab, task->objs[task_id], task->u.patch_symtabs.was_symbol_patched[task_id], COFF_SymbolValueInterp_Undefined);
 }
 
-internal
 THREAD_POOL_TASK_FUNC(lnk_patch_weak_symbols_task)
 {
   LNK_BuildImageTask *task = raw_task;
   lnk_patch_obj_symtab(task->symtab, task->objs[task_id], task->u.patch_symtabs.was_symbol_patched[task_id], COFF_SymbolValueInterp_Weak);
 }
 
-internal
 THREAD_POOL_TASK_FUNC(lnk_image_fill_task)
 {
   ProfBeginFunction();
@@ -4839,7 +4933,6 @@ lnk_compute_win32_image_header_size(LNK_Config *config, U64 sect_count)
   return image_header_size;
 }
 
-internal
 THREAD_POOL_TASK_FUNC(lnk_obj_reloc_patcher)
 {
   ProfBeginFunction();
@@ -4877,7 +4970,6 @@ THREAD_POOL_TASK_FUNC(lnk_obj_reloc_patcher)
   ProfEnd();
 }
 
-internal
 THREAD_POOL_TASK_FUNC(lnk_count_common_block_contribs_task)
 {
   LNK_BuildImageTask *task   = raw_task;
@@ -4895,7 +4987,6 @@ THREAD_POOL_TASK_FUNC(lnk_count_common_block_contribs_task)
   }
 }
 
-internal
 THREAD_POOL_TASK_FUNC(lnk_fill_out_common_block_contribs_task)
 {
   LNK_BuildImageTask *task   = raw_task;
@@ -4916,7 +5007,6 @@ THREAD_POOL_TASK_FUNC(lnk_fill_out_common_block_contribs_task)
   }
 }
 
-internal
 THREAD_POOL_TASK_FUNC(lnk_flag_hotpatch_contribs_task)
 {
   LNK_BuildImageTask *task    = raw_task;
@@ -5283,7 +5373,6 @@ lnk_build_guard_tables(TP_Context       *tp,
 #endif
 }
 
-internal
 THREAD_POOL_TASK_FUNC(lnk_patch_virtual_offsets_and_sizes_in_obj_section_headers_task)
 {
   LNK_BuildImageTask *task    = raw_task;
@@ -5303,7 +5392,6 @@ THREAD_POOL_TASK_FUNC(lnk_patch_virtual_offsets_and_sizes_in_obj_section_headers
   ProfEnd();
 }
 
-internal
 THREAD_POOL_TASK_FUNC(lnk_patch_file_offsets_and_sizes_in_obj_section_headers_task)
 {
   LNK_BuildImageTask *task    = raw_task;
@@ -5328,7 +5416,6 @@ THREAD_POOL_TASK_FUNC(lnk_patch_file_offsets_and_sizes_in_obj_section_headers_ta
   ProfEnd();
 }
 
-internal
 THREAD_POOL_TASK_FUNC(lnk_patch_section_symbols_task)
 {
   LNK_BuildImageTask *task    = raw_task;
@@ -5404,7 +5491,6 @@ THREAD_POOL_TASK_FUNC(lnk_patch_section_symbols_task)
   ProfEnd();
 }
 
-internal
 THREAD_POOL_TASK_FUNC(lnk_gather_base_reloc_pages_task)
 {
   LNK_BaseRelocsTask    *task       = raw_task;
@@ -5460,12 +5546,10 @@ THREAD_POOL_TASK_FUNC(lnk_gather_base_reloc_pages_task)
       default: { InvalidPath; } break;
       }
     }
-
   }
   ProfEnd();
 }
 
-internal
 THREAD_POOL_TASK_FUNC(lnk_filter_out_duplicate_base_reloc_entries_task)
 {
   ProfBeginFunction();
@@ -5473,8 +5557,9 @@ THREAD_POOL_TASK_FUNC(lnk_filter_out_duplicate_base_reloc_entries_task)
 
   LNK_BaseRelocsTask *task = raw_task;
 
-  HashTable *voff_ht = hash_table_init(scratch.arena, task->page_size);
-  for EachInRange(page_idx, task->serialize.ranges[task_id]) {
+  HashTable *voff_ht    = hash_table_init(scratch.arena, task->page_size);
+  Rng1U64    page_range = tp_work_range(task->serialize.pages.count, tp->worker_count, task_id);
+  for EachInRange(page_idx, page_range) {
     LNK_BaseRelocPage *page = &task->serialize.pages.v[page_idx];
 
     U64List unique_entries32 = {0};
@@ -5507,7 +5592,6 @@ THREAD_POOL_TASK_FUNC(lnk_filter_out_duplicate_base_reloc_entries_task)
   ProfEnd();
 }
 
-internal
 THREAD_POOL_TASK_FUNC(lnk_serialize_base_reloc_pages_task)
 {
   ProfBeginFunction();
@@ -5515,7 +5599,8 @@ THREAD_POOL_TASK_FUNC(lnk_serialize_base_reloc_pages_task)
 
   LNK_BaseRelocsTask *task = raw_task;
 
-  for EachInRange(page_idx, task->serialize.ranges[task_id]) {
+  Rng1U64 page_range = tp_work_range(task->serialize.pages.count, tp->worker_count, task_id);
+  for EachInRange(page_idx, page_range) {
     LNK_BaseRelocPage *page = &task->serialize.pages.v[page_idx];
 
     // find block bytes in the buffer
@@ -5630,8 +5715,7 @@ lnk_build_base_relocs(TP_Context *tp, TP_Arena *tp_arena, LNK_Config *config, U6
   
   String8 base_relocs = {0};
   {
-    task.serialize.pages       = pages;
-    task.serialize.ranges      = tp_divide_work(scratch.arena, pages.count, tp->worker_count);
+    task.serialize.pages = pages;
     tp_for_parallel(tp, 0, tp->worker_count, lnk_filter_out_duplicate_base_reloc_entries_task, &task);
 
     ProfBegin("Compute Buffer Size");
@@ -5948,7 +6032,6 @@ lnk_build_image(TP_Arena *arena, TP_Context *tp, LNK_Config *config, LNK_SymbolT
     {
       TP_Temp temp = tp_temp_begin(arena);
       task.u.gather_sects.arena  = arena->v[0];
-      task.u.gather_sects.ranges = tp_divide_work(arena->v[0], objs_count, tp->worker_count);
       task.u.gather_sects.defns  = push_array(arena->v[0], HashTable *, tp->worker_count);
       tp_for_parallel_prof(tp, arena, tp->worker_count, lnk_gather_sections_task, &task, "Gather Sections");
       tp_temp_end(temp);
@@ -6113,7 +6196,7 @@ lnk_build_image(TP_Arena *arena, TP_Context *tp, LNK_Config *config, LNK_SymbolT
 
       // set up context for patch tasks
       task.u.patch_symtabs.common_block_sect     = common_block_sect;
-      task.u.patch_symtabs.common_block_ranges   = tp_divide_work(temp.arena, common_block_contribs_count, tp->worker_count);
+      task.u.patch_symtabs.common_block_count    = common_block_contribs_count;
       task.u.patch_symtabs.common_block_contribs = common_block_contribs;
       task.u.patch_symtabs.was_symbol_patched    = push_array(temp.arena, B8 *, objs_count);
       for EachIndex(obj_idx, objs_count) { task.u.patch_symtabs.was_symbol_patched[obj_idx] = push_array(temp.arena, B8, objs[obj_idx]->coff.header.symbol_count); }
@@ -6747,7 +6830,6 @@ lnk_log_timers(void)
   scratch_end(scratch);
 }
 
-internal
 THREAD_POOL_TASK_FUNC(lnk_p2r_worker)
 {
   Temp scratch = scratch_begin(&arena, 1);
@@ -6825,6 +6907,20 @@ lnk_run_linker(LNK_Config *config)
 {
   ProfBeginFunction();
   Temp scratch = scratch_begin(0,0);
+
+  //
+  // Fast Exit
+  //
+  if (config->fast_exit == LNK_SwitchState_Yes) {
+    lnk_fast_exit_child_init();
+    if ( ! lnk_fast_exit_is_child()) {
+      U32 exit_code = 0;
+      if (lnk_fast_exit_run_child(&exit_code)) {
+        lnk_exit(exit_code);
+      }
+      lnk_error(LNK_Error_FastExit, "could not launch the child process; linking in current process");
+    }
+  }
 
   TP_Context *tp    = tp_alloc(scratch.arena, config->worker_count, config->max_worker_count, config->shared_thread_pool_name);
   TP_Arena   *arena = tp_arena_alloc(tp);
@@ -6947,10 +7043,13 @@ lnk_run_linker(LNK_Config *config)
   }
 
   //
-  // fater to release file maps in parallel on Windows
+  // faster to release file maps in parallel on Windows; with a fast-exit parent waiting
+  // nobody pays for our teardown, so skip it and let process exit do the work
   //
 #if OS_WINDOWS
-  lnk_inputer_release_file_maps(tp, inputer);
+  if ( ! lnk_fast_exit_is_child()) {
+    lnk_inputer_release_file_maps(tp, inputer);
+  }
 #endif
 
   //
@@ -6969,11 +7068,16 @@ lnk_run_linker(LNK_Config *config)
   }
   
   tp_release(tp);
+
+  //
+  // outputs are on disk and logs are flushed: let the parent return while we tear down
+  //
+  lnk_fast_exit_signal(0);
+
   scratch_end(scratch);
   ProfEnd();
 }
 
-internal
 THREAD_POOL_TASK_FUNC(lnk_serialize_rrt_type_data_task)
 {
   Temp scratch = scratch_begin(&arena, 1);
@@ -6983,23 +7087,18 @@ THREAD_POOL_TASK_FUNC(lnk_serialize_rrt_type_data_task)
 
   // set up per task size array
   U64     **source_sizes = 0;
-  Rng1U64  *ranges[CV_TypeIndexSource_COUNT];
   if (task_id == 0) {
     source_sizes = push_array(scratch.arena, U64 *, CV_TypeIndexSource_COUNT);
     for EachIndex(i, CV_TypeIndexSource_COUNT) {
       source_sizes[i] = push_array(scratch.arena, U64, tp->worker_count);
     }
-
-    for EachIndex(ti_source, CV_TypeIndexSource_COUNT) {
-      ranges[ti_source] = tp_divide_work(scratch.arena, cv_types->count[ti_source], tp->worker_count);
-    }
   }
   tp_broadcast(&source_sizes);
-  tp_broadcast(&ranges);
 
   // compute size of each source per task
   for EachIndex(ti_source, CV_TypeIndexSource_COUNT) {
-    for EachInRange(i, ranges[ti_source][task_id]) {
+    Rng1U64 leaf_range = tp_work_range(cv_types->count[ti_source], tp->worker_count, task_id);
+    for EachInRange(i, leaf_range) {
       CV_LeafHeader *leaf      = (CV_LeafHeader *)lnk_raw_type_from_index(cv_types, ti_source, i).str;
       String8        leaf_data = str8((U8 *)(leaf + 1), leaf->size - sizeof(leaf->kind));
       U64            leaf_size = cv_size_from_leaf(leaf_data, PDB_LEAF_ALIGN);
@@ -7045,16 +7144,16 @@ THREAD_POOL_TASK_FUNC(lnk_serialize_rrt_type_data_task)
       }
     }
   }
-  tp_broadcast(&chunk_sizes);
-  tp_broadcast(&source_task_offsets);
+  tp_broadcast_many(chunk_sizes, source_task_offsets);
 
   // serialize types
-  U64 chunk_cursor = 0;
+  U64 chunk_cursor  = 0;
   U8 *type_data_ptr = task->type_data_out->str;
   U64 type_data_max = task->type_data_out->size;
   for EachIndex(ti_source, CV_TypeIndexSource_COUNT) {
-    U64 cursor = source_task_offsets[ti_source*tp->worker_count + task_id];
-    for EachInRange(i, ranges[ti_source][task_id]) {
+    U64     cursor     = source_task_offsets[ti_source*tp->worker_count + task_id];
+    Rng1U64 leaf_range = tp_work_range(cv_types->count[ti_source], tp->worker_count, task_id);
+    for EachInRange(i, leaf_range) {
       CV_LeafHeader *leaf       = (CV_LeafHeader *)lnk_raw_type_from_index(cv_types, ti_source, i).str;
       String8        leaf_data  = str8((U8 *)(leaf + 1), leaf->size - sizeof(leaf->kind));
       U64            write_size = cv_write_leaf(type_data_ptr, cursor, type_data_max, leaf->kind, leaf_data, PDB_LEAF_ALIGN);
@@ -7270,7 +7369,7 @@ lnk_run_lib(LNK_Config *config)
       }
     }
 
-    inputs.members = lnk_inputer_flush(arena->v[0], tp, inputer, &inputer->members, &inputer->new_members);
+    inputs.members = lnk_inputer_flush(arena->v[0], tp, config, inputer, &inputer->members, &inputer->new_members);
     lnk_obj_from_input_many(tp, arena, inputs.members, (String8List){0});
     lnk_resolve_machine(inputs.members, config);
 
@@ -7400,21 +7499,275 @@ lnk_run_lib(LNK_Config *config)
 }
 
 internal void
+lnk_run_compress(LNK_Config *config)
+{
+  ProfBeginFunction();
+  Temp scratch = scratch_begin(0,0);
+
+  // open compression SDK
+  CMP_Ctx *sdk = 0;
+  char    *sdk_error = cmp_open(scratch.arena, CMP_SdkType_Oodle2, config->oodle2_path, &sdk);
+  if (sdk_error != 0) {
+    lnk_error(LNK_Error_InvalidPath, "Failed to open compression SDK; reason: %s", sdk_error);
+    lnk_exit(1);
+  }
+
+  TP_Context *tp    = tp_alloc(scratch.arena, config->worker_count, config->max_worker_count, config->shared_thread_pool_name);
+  TP_Arena   *arena = tp_arena_alloc(tp);
+
+  // load inputs
+  LNK_Inputer     *inputer = lnk_inputer_init();
+  LNK_SymbolTable *symtab  = lnk_symbol_table_init(arena);
+  LNK_Link        *link    = lnk_link_init(arena, config);
+  for EachNode(path, String8Node, config->input_list[LNK_Input_Obj].first) {
+    lnk_inputer_push_obj_thin(inputer, 0, path->string);
+  }
+
+  LNK_ObjList objs = lnk_load_objs(tp, arena, config, inputer);
+
+  for EachNode(n, LNK_ObjNode, objs.first) {
+    LNK_Obj *obj = &n->data;
+
+    // compress obj backing bytes
+    String8 compressed_obj = lnk_obj_codec_encode(scratch.arena, sdk, config->obj_segment_size, obj->coff.data);
+
+    // release backing file
+    lnk_input_release_file_map(obj->input);
+    file_close(obj->input->handle);
+
+    // overwrite obj with compressed version
+    lnk_write_data_to_file_path(obj->path, str8_zero(), compressed_obj);
+  }
+
+  cmp_close(sdk);
+  tp_release(tp);
+  tp_arena_release(&arena);
+  scratch_end(scratch);
+  ProfEnd();
+}
+
+internal void
+lnk_run_decompress(LNK_Config *config)
+{
+  ProfBeginFunction();
+  Temp scratch = scratch_begin(0,0);
+
+  // open compression SDK
+  CMP_Ctx *sdk = 0;
+  char    *sdk_error = cmp_open(scratch.arena, CMP_SdkType_Oodle2, config->oodle2_path, &sdk);
+  if (sdk_error != 0) {
+    lnk_error(LNK_Error_InvalidPath, "failed to open compression SDK; reason: %s", sdk_error);
+    lnk_exit(1);
+  }
+
+  // decompress object files
+  U64 scratch_buffer_size = 0;
+  U8 *scratch_buffer      = 0;
+  for EachNode(path_n, String8Node, config->input_list[LNK_Input_Obj].first) {
+    String8 path = path_n->string;
+
+    B8 was_read = 0;
+    String8 file_data = lnk_read_data_from_file_path(scratch.arena, path, &was_read);
+    if (was_read == 0) {
+      lnk_error(LNK_Error_FileNotFound, "failed to read file from path: %S", path);
+      continue;
+    }
+    
+    if (lnk_obj_codec_matches(file_data)) {
+      CMP_CompressorInfoUnpacked compressor_info = {0};
+      if (lnk_obj_codec_compressor_info(file_data, &compressor_info)) {
+        U8 *decode_buffer = push_array(scratch.arena, U8, compressor_info.v.raw_size);
+
+        U64 needed_decode_scratch_size = cmp_scratch(sdk, compressor_info.v.segment_size);
+        if (scratch_buffer_size < needed_decode_scratch_size) {
+          scratch_buffer      = push_array(scratch.arena, U8, needed_decode_scratch_size);
+          scratch_buffer_size = needed_decode_scratch_size;
+        }
+
+        B32 is_decoded = lnk_obj_codec_decode(sdk, &compressor_info, r1u64(0, compressor_info.v.segment_count), file_data, str8(decode_buffer, compressor_info.v.raw_size), str8(scratch_buffer, scratch_buffer_size));
+        if (is_decoded) {
+          file_map_view_close((FileMap){0}, file_data.str, r1u64(0, compressor_info.v.raw_size));
+          lnk_write_data_to_file_path(path, str8_zero(), str8(decode_buffer, compressor_info.v.raw_size));
+        }
+      } else {
+        lnk_error(LNK_Error_IllData, "failed to extract compressor info from %S", path);
+      }
+    } else {
+      lnk_error(LNK_Error_IllData, "input file is not compressed: %S", path);
+    }
+  }
+
+  cmp_close(sdk);
+  scratch_end(scratch);
+  ProfEnd();
+}
+
+// --- Fast Exit ---------------------------------------------------------------
+
+#define LNK_FAST_EXIT_PIPE_ENV L"RADLINK_FAST_EXIT_PIPE"
+
+#if OS_WINDOWS
+
+global HANDLE g_fast_exit_pipe = INVALID_HANDLE_VALUE;
+
+internal B32
+lnk_fast_exit_is_child(void)
+{
+  return g_fast_exit_pipe != INVALID_HANDLE_VALUE;
+}
+
+internal void
+lnk_fast_exit_child_init(void)
+{
+  WCHAR value[32] = {0};
+  DWORD length = GetEnvironmentVariableW(LNK_FAST_EXIT_PIPE_ENV, value, ArrayCount(value));
+  if (length > 0 && length < ArrayCount(value)) {
+    U64 handle = 0;
+    for EachIndex(i, length) {
+      if (value[i] < L'0' || value[i] > L'9') { return; }
+      handle = handle * 10 + (U64)(value[i] - L'0');
+    }
+    g_fast_exit_pipe = (HANDLE)handle;
+    SetEnvironmentVariableW(LNK_FAST_EXIT_PIPE_ENV, 0); // processes we launch must not report to our parent
+  }
+}
+
+internal void
+lnk_fast_exit_signal(U32 exit_code)
+{
+  if (lnk_fast_exit_is_child()) {
+    fflush(stdout);
+    fflush(stderr);
+    DWORD written = 0;
+    WriteFile(g_fast_exit_pipe, &exit_code, sizeof(exit_code), &written, 0);
+    CloseHandle(g_fast_exit_pipe);
+    g_fast_exit_pipe = INVALID_HANDLE_VALUE;
+  }
+}
+
+internal B32
+lnk_fast_exit_run_child(U32 *exit_code_out)
+{
+  ProfBeginFunction();
+  Temp scratch = scratch_begin(0, 0);
+  B32 is_done = 0;
+
+  HANDLE pipe_read  = INVALID_HANDLE_VALUE;
+  HANDLE pipe_write = INVALID_HANDLE_VALUE;
+  HANDLE job        = 0;
+  PROCESS_INFORMATION process = {0};
+
+  do {
+    // the child inherits the write end only
+    SECURITY_ATTRIBUTES inheritable = { .nLength = sizeof(inheritable), .bInheritHandle = TRUE };
+    if ( ! CreatePipe(&pipe_read, &pipe_write, &inheritable, 0)) { break; }
+    SetHandleInformation(pipe_read, HANDLE_FLAG_INHERIT, 0);
+
+    // tell the child where to report
+    WCHAR pipe_value[32];
+    swprintf_s(pipe_value, ArrayCount(pipe_value), L"%llu", (U64)pipe_write);
+    if ( ! SetEnvironmentVariableW(LNK_FAST_EXIT_PIPE_ENV, pipe_value)) { break; }
+
+    // the child shares our console / redirections
+    STARTUPINFOW startup_info = { .cb = sizeof(startup_info), .dwFlags = STARTF_USESTDHANDLES };
+    startup_info.hStdInput  = GetStdHandle(STD_INPUT_HANDLE);
+    startup_info.hStdOutput = GetStdHandle(STD_OUTPUT_HANDLE);
+    startup_info.hStdError  = GetStdHandle(STD_ERROR_HANDLE);
+    SetHandleInformation(startup_info.hStdInput,  HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT);
+    SetHandleInformation(startup_info.hStdOutput, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT);
+    SetHandleInformation(startup_info.hStdError,  HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT);
+
+    // relaunch ourselves with the command line verbatim (CreateProcessW may edit its copy)
+    U64    exe_path_cap    = KB(32);
+    WCHAR *exe_path        = push_array_no_zero(scratch.arena, WCHAR, exe_path_cap);
+    DWORD  exe_path_length = GetModuleFileNameW(0, exe_path, exe_path_cap);
+    if (exe_path_length == 0 || exe_path_length >= exe_path_cap) { break; }
+    WCHAR *cmd_line        = GetCommandLineW();
+    U64    cmd_line_length = wcslen(cmd_line);
+    WCHAR *cmd_line_copy   = push_array_no_zero(scratch.arena, WCHAR, cmd_line_length + 1);
+    MemoryCopy(cmd_line_copy, cmd_line, (cmd_line_length + 1) * sizeof(WCHAR));
+
+    // a job with kill-on-close ties the child's life-time to ours: if we are terminated
+    // the orphaned link stops too, and once we exit normally the child's remaining
+    // teardown is cut short by the kernel instead of running to completion
+    job = CreateJobObjectW(0, 0);
+    if (job) {
+      JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits = {0};
+      limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+      SetInformationJobObject(job, JobObjectExtendedLimitInformation, &limits, sizeof(limits));
+    }
+
+    if ( ! CreateProcessW(exe_path, cmd_line_copy, 0, 0, TRUE, job ? CREATE_SUSPENDED : 0, 0, 0, &startup_info, &process)) { break; }
+    if (job) {
+      // nested jobs need Windows 8+; without one the child simply outlives a killed parent
+      AssignProcessToJobObject(job, process.hProcess);
+      ResumeThread(process.hThread);
+    }
+
+    // our copy of the write end has to go, otherwise the pipe never breaks when the child dies
+    CloseHandle(pipe_write);
+    pipe_write = INVALID_HANDLE_VALUE;
+    SetEnvironmentVariableW(LNK_FAST_EXIT_PIPE_ENV, 0);
+
+    // wait for the child to report, or to die
+    DWORD exit_code = 0;
+    DWORD read      = 0;
+    if (ReadFile(pipe_read, &exit_code, sizeof(exit_code), &read, 0) && read == sizeof(exit_code)) {
+      *exit_code_out = exit_code;
+    } else {
+      WaitForSingleObject(process.hProcess, INFINITE);
+      if ( ! GetExitCodeProcess(process.hProcess, &exit_code)) { exit_code = 1; }
+      *exit_code_out = exit_code;
+    }
+    is_done = 1;
+  } while (0);
+
+  if (process.hThread)  { CloseHandle(process.hThread);  }
+  if (process.hProcess) { CloseHandle(process.hProcess); }
+  if (pipe_write != INVALID_HANDLE_VALUE) { CloseHandle(pipe_write); }
+  if (pipe_read  != INVALID_HANDLE_VALUE) { CloseHandle(pipe_read);  }
+  if ( ! is_done) {
+    // no child to tie to us; the job is closed with our process otherwise, which is when the child should go
+    if (job) { CloseHandle(job); }
+    SetEnvironmentVariableW(LNK_FAST_EXIT_PIPE_ENV, 0);
+  }
+
+  scratch_end(scratch);
+  ProfEnd();
+  return is_done;
+}
+
+#else
+
+internal B32  lnk_fast_exit_is_child(void)                { return 0; }
+internal void lnk_fast_exit_child_init(void)              {}
+internal void lnk_fast_exit_signal(U32 exit_code)         { (void)exit_code; }
+internal B32  lnk_fast_exit_run_child(U32 *exit_code_out) { (void)exit_code_out; return 0; }
+
+#endif
+
+// -----------------------------------------------------------------------------
+
+internal void
 entry_point(CmdLine *cmdline)
 {
   Temp scratch = scratch_begin(0,0);
   lnk_log_begin();
 
   // init config from the command line
-  LNK_Config *config = lnk_config_init(cmdline->argc, cmdline->argv);
+  LNK_Config *config = lnk_config_init(cmdline->exe_name, cmdline->argc, cmdline->argv);
 
   // pick entry point
-  switch (config->boot_mode) {
-  case LNK_BootMode_Linker:     lnk_run_linker     (config); break;
-  case LNK_BootMode_TypeServer: lnk_run_type_server(config); break;
-  case LNK_BootMode_Lib:        lnk_run_lib        (config); break;
+  switch (config->tool) {
+  case LNK_Tool_Linker:     lnk_run_linker     (config); break;
+  case LNK_Tool_TypeServer: lnk_run_type_server(config); break;
+  case LNK_Tool_Lib:        lnk_run_lib        (config); break;
+  case LNK_Tool_Compress:   lnk_run_compress   (config); break;
+  case LNK_Tool_Decompress: lnk_run_decompress (config); break;
+  default: InvalidPath;
   }
 
   lnk_log_end();
   scratch_end(scratch);
 }
+

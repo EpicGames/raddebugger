@@ -218,12 +218,42 @@ typedef struct CV_C13SubSectionList
 ////////////////////////////////
 //~ Debug Section
 
+typedef struct CV_DebugS_Stats
+{
+  U64 size[CV_C13SubSectionIdxKind_COUNT];
+  U64 count[CV_C13SubSectionIdxKind_COUNT];
+  U64 lines_size;
+} CV_DebugS_Stats;
+
+typedef struct CV_DebugS_Subsection
+{
+  CV_C13SubSectionKind kind;
+  U32 data_offset;
+  U32 data_size;
+} CV_DebugS_Subsection;
+
+typedef struct CV_DebugS_BlockIndex
+{
+  U32 subsection_base_idx; // max_U32 means raw parsing; count==0 can be cached
+  U32 subsection_count;
+} CV_DebugS_BlockIndex;
+
+typedef struct CV_DebugS_Index
+{
+  String8 subsections; // borrowed, byte-packed CV_DebugS_Subsection records
+  U64 block_count;
+  CV_DebugS_BlockIndex *blocks;
+  String8Node *last_block; // snapshot of the indexed block list
+  CV_DebugS_Stats stats;   // physical IgnoreFlag applied, ignored_kinds not applied
+  String8 string_table;
+  String8 file_chksms;
+} CV_DebugS_Index;
+
 typedef struct CV_DebugS
 {
-  // Each block contains complete C13 subsections, including headers and padding,
-  // without a leading CV_Signature. Payload bytes may be borrowed from input.
-  String8List data;
-  U32         excluded_kinds;
+  String8List      data; // contains complete C13 subsections, including headers and padding, without a leading CV_Signature
+  U32              ignored_kinds;
+  CV_DebugS_Index *index;
 } CV_DebugS;
 
 typedef struct CV_DebugS_Iter
@@ -236,14 +266,12 @@ typedef struct CV_DebugS_Iter
   CV_C13SubSectionKind  kind;
   String8               data;
   U64                   data_offset;
+  CV_DebugS_Index      *index;
+  U64                   block_idx;
+  U64                   subsection_idx;
+  U64                   subsection_opl;
+  B32                   cached_block;
 } CV_DebugS_Iter;
-
-typedef struct CV_DebugS_Stats
-{
-  U64 size[CV_C13SubSectionIdxKind_COUNT];
-  U64 count[CV_C13SubSectionIdxKind_COUNT];
-  U64 lines_size;
-} CV_DebugS_Stats;
 
 typedef struct CV_DebugH
 {
@@ -256,6 +284,7 @@ typedef struct CV_DebugT
   String8  data;
   U64      count;
   U32     *offsets;
+  U32Array ipi_bits; // one bit per leaf: 0=TPI, 1=IPI; null v uses leaf-kind lookup
 
   // type server
   U64     source_counts [CV_TypeIndexSource_COUNT];
@@ -345,7 +374,7 @@ typedef struct
 typedef struct
 {
   U8               *buffer;
-  Rng1U64          *ranges;
+  U64               bucket_cap;
   CV_StringBucket **buckets;
 } CV_PackStringHashTableTask;
 
@@ -373,6 +402,7 @@ internal U64     cv_size_from_symbol(CV_Symbol *symbol, U64 align);
 internal U64     cv_write_symbol(U8 *buffer, U64 buffer_cursor, U64 buffer_size, CV_Symbol *symbol, U64 align);
 internal String8 cv_data_from_symbol(Arena *arena, CV_Symbol *symbol, U64 align);
 
+internal B32          cv_read_symbol_checked(String8 raw_data, U64 off, U64 align, CV_Symbol *symbol_out, U64 *bytes_read_out);
 internal U64          cv_read_symbol(String8 raw_data, U64 off, U64 align, CV_Symbol *symbol_out);
 internal U8 *         cv_ptr_from_symbol(CV_Symbol symbol);
 internal CV_SymKind * cv_kind_ptr_from_symbol(CV_Symbol symbol);
@@ -404,6 +434,7 @@ internal CV_ObjInfo cv_obj_info_from_symbol(CV_Symbol symbol);
 
 internal CV_Signature cv_signature_from_debug_s(String8 raw_debug_s);
 internal CV_DebugS    cv_debug_s_from_data_c13(Arena *arena, String8 raw_debug_s);
+internal B32          cv_debug_s_from_data_checked(Arena *arena, String8 raw_debug_s, CV_DebugS *debug_s_out);
 internal CV_DebugS    cv_debug_s_from_data(Arena *arena, String8 raw_debug_s);
 internal void         cv_debug_s_concat_in_place(CV_DebugS *dst, CV_DebugS *src);
 internal U64          cv_size_from_debug_s(CV_DebugS *debug_s, U64 align);
@@ -412,13 +443,16 @@ internal String8List  cv_data_from_debug_s_c13(Arena *arena, CV_DebugS *debug_s,
 internal CV_C13SubSectionKind    cv_c13_sub_section_kind_from_idx(CV_C13SubSectionIdxKind idx);
 internal CV_C13SubSectionIdxKind cv_c13_sub_section_idx_from_kind(CV_C13SubSectionKind kind);
 
-internal String8 cv_debug_s_alloc_subsection(Arena *arena, CV_DebugS *debug_s, CV_C13SubSectionKind kind, U64 size);
-internal void    cv_debug_s_exclude_kind(CV_DebugS *debug_s, CV_C13SubSectionKind kind);
+internal String8           cv_debug_s_alloc_subsection(Arena *arena, CV_DebugS *debug_s, CV_C13SubSectionKind kind, U64 size);
+internal void              cv_debug_s_ignore_kind(CV_DebugS *debug_s, CV_C13SubSectionKind kind);
+internal CV_DebugS_Index * cv_debug_s_index_from_debug_s(CV_DebugS *debug_s);
+internal void              cv_debug_s_stats_accumulate(CV_DebugS_Stats *stats, CV_C13SubSectionKind kind, U64 size);
 
 // .debug$S iterator: next_block selects a block, next walks that block's
 // subsections, and next_kind searches across all remaining blocks.
 internal CV_DebugS_Iter cv_debug_s_iter_init      (CV_DebugS *debug_s);
 internal B32            cv_debug_s_iter_next_block(CV_DebugS_Iter *it);
+internal B32            cv_debug_s_iter_next_raw  (CV_DebugS_Iter *it);
 internal B32            cv_debug_s_iter_next      (CV_DebugS_Iter *it);
 internal B32            cv_debug_s_iter_next_kind (CV_DebugS_Iter *it, CV_C13SubSectionKind kind);
 
@@ -431,8 +465,11 @@ internal String8         cv_file_chksms_from_debug_s (CV_DebugS *debug_s);
 //~ .debug$T helpers
 
 internal CV_DebugT       cv_debug_t_from_data         (Arena *arena, String8 data, U64 align);
+internal CV_TypeIndexSource cv_type_index_source_from_debug_t(CV_DebugT *debug_t, U64 leaf_idx);
+internal B32             cv_debug_t_from_data_checked (Arena *arena, String8 data, U64 align, U32 *offsets, U64 *source_counts, CV_DebugT *out);
 internal U64             cv_leaf_idx_from_ti          (CV_DebugT *debug_t, CV_TypeIndexSource source, CV_TypeIndex ti);
 internal CV_TypeIndex    cv_ti_from_leaf_idx          (CV_DebugT *debug_t, CV_TypeIndexSource source, U64 leaf_idx);
+internal B32             cv_debug_t_get_leaf_checked  (CV_DebugT *debug_t, U64 leaf_idx, CV_Leaf *leaf_out);
 internal CV_Leaf         cv_debug_t_get_leaf          (CV_DebugT *debug_t, U64 leaf_idx);
 internal CV_Leaf         cv_debug_t_get_leaf_from_ti  (CV_DebugT *debug_t, CV_TypeIndexSource source, CV_TypeIndex ti);
 internal String8         cv_debug_t_get_raw_leaf      (CV_DebugT *debug_t, U64 leaf_idx);
@@ -449,7 +486,7 @@ internal B32             cv_debug_t_is_type_server_ref(CV_DebugT *debug_t);
 internal void            cv_symbol_list_push_node(CV_SymbolList *list, CV_SymbolNode *node);
 internal CV_SymbolNode * cv_symbol_list_push(Arena *arena, CV_SymbolList *list, CV_Symbol v);
 
-internal U64 cv_patch_symbol_tree_offsets(String8 raw_symbols, U64 base_offset, U64 align);
+internal B32 cv_patch_symbol_tree_offsets(String8 raw_symbols, U64 base_offset, U64 align, U64 *tree_size_out);
 
 // $$FileChksms
 #define CV_MAP_STRING_TO_OFFSET_FUNC(name) U64 name(void *ud, String8 string)
@@ -464,7 +501,7 @@ internal CV_LineArray          cv_c13_line_array_from_data(Arena *arena, String8
 
 // $$InlineeLines
 internal CV_C13InlineeLinesParsedList cv_c13_inlinee_lines_from_sub_sections(Arena *arena, CV_DebugS *debug_s);
-internal CV_InlineBinaryAnnotsParsed  cv_c13_parse_inline_binary_annots(Arena *arena, U64 parent_voff, CV_C13InlineeLinesParsed *inlinee_parsed, String8 binary_annots);
+internal CV_InlineBinaryAnnotsParsed  cv_c13_parse_inline_binary_annots(Arena *arena, U64 parent_voff, CV_C13InlineeLinesParsed *inlinee_parsed, String8 binary_annots, U64Array separated_code_voffs);
 
 // $$FrameData
 internal void cv_c13_patch_checksum_offsets_in_frame_data_list(String8List frame_data, U32 checksum_rebase);

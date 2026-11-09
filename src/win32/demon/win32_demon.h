@@ -5,6 +5,13 @@
 #define WIN32_DEMON_H
 
 ////////////////////////////////
+//~ rjf: Implicit Layer Dependencies
+
+#include "coff/coff.h"
+#include "coff/coff_parse.h"
+#include "pe/pe.h"
+
+////////////////////////////////
 //~ rjf: Windows Includes
 
 #define WIN32_LEAN_AND_MEAN

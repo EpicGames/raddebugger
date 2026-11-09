@@ -11,6 +11,6 @@
 #include "third_party/blake3/blake3_dispatch.c"
 #include "third_party/blake3/blake3.c"
 
-#if defined(_MSC_VER) && defined(_M_AMD64)
+#if defined(_MSC_VER) && defined(_M_AMD64) && !BASE_NO_AUTOLINK
 #pragma comment (lib, "blake3")
 #endif

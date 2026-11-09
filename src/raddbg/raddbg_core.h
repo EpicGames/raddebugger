@@ -498,6 +498,7 @@ struct RD_State
   
   // rjf: evaluation caches
   E_Cache *eval_cache;
+  D_EvalCache *eval2_cache;
   
   // rjf: ambiguous path table (constructed from-scratch each frame)
   U64 ambiguous_path_slots_count;

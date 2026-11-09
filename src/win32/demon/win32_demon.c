@@ -2,6 +2,13 @@
 // Licensed under the MIT license (https://opensource.org/license/mit/)
 
 ////////////////////////////////
+//~ rjf: Implicit Layer Dependencies
+
+#include "coff/coff.c"
+#include "coff/coff_parse.c"
+#include "pe/pe.c"
+
+////////////////////////////////
 //~ rjf: Entity Helpers
 
 //- rjf: entity <-> handle
@@ -1974,7 +1981,8 @@ dmn_ctrl_run(Arena *arena, DMN_CtrlCtx *ctx, DMN_RunCtrls *ctrls)
       U64 begin_time = now_time_us();
       String8List debug_strings = {0};
       DMN_Event *debug_strings_event = 0;
-      for(B32 keep_going = 1; keep_going;)
+      B32 pending_halt = 0;
+      for(B32 keep_going = 1; keep_going || pending_halt;)
       {
         keep_going = 0;
         
@@ -2164,6 +2172,7 @@ dmn_ctrl_run(Arena *arena, DMN_CtrlCtx *ctx, DMN_RunCtrls *ctrls)
                   e->process   = w32_dmn_handle_from_entity(process);
                   e->arch      = module_info->arch;
                   e->code      = evt.dwProcessId;
+                  e->size      = get_system_info()->page_size;
                 }
                 
                 // rjf: create thread
@@ -2254,6 +2263,9 @@ dmn_ctrl_run(Arena *arena, DMN_CtrlCtx *ctx, DMN_RunCtrls *ctrls)
             {
               W32_DMN_Entity *process = w32_dmn_entity_from_kind_id(W32_DMN_EntityKind_Process, evt.dwProcessId);
               
+              // rjf: determine if this is a "halter thread" - the threads we spawn to halt processes
+              B32 is_halter = (evt.dwThreadId == w32_dmn_shared->halter_tid);
+              
               // rjf: create thread entity
               W32_DMN_Entity *thread = w32_dmn_entity_alloc(process, W32_DMN_EntityKind_Thread, evt.dwThreadId);
               {
@@ -2262,9 +2274,21 @@ dmn_ctrl_run(Arena *arena, DMN_CtrlCtx *ctx, DMN_RunCtrls *ctrls)
                 thread->thread.thread_local_base = (U64)evt.u.CreateThread.lpThreadLocalBase;
               }
               
-              // rjf: suspend thread immediately upon creation, to match with expected suspension state
-              DWORD sus_result = SuspendThread(thread->handle);
-              (void)sus_result;
+              // rjf: if halter -> keep loop alive, add to run thread list
+              if(is_halter)
+              {
+                pending_halt = 1;
+                W32_DMN_EntityNode *n = push_array(scratch.arena, W32_DMN_EntityNode, 1);
+                n->v = thread;
+                SLLQueuePush(first_run_thread, last_run_thread, n);
+              }
+              
+              // rjf: suspend non-halter threads immediately upon creation, to match with expected suspension state
+              if(!is_halter)
+              {
+                DWORD sus_result = SuspendThread(thread->handle);
+                (void)sus_result;
+              }
               
               // rjf: unpack thread addresses
               U64 stack_base_vaddr = w32_dmn_thread_stack_base_vaddr_from_tlb_vaddr(process->handle, thread->arch, (U64)evt.u.CreateThread.lpThreadLocalBase);
@@ -2282,9 +2306,6 @@ dmn_ctrl_run(Arena *arena, DMN_CtrlCtx *ctx, DMN_RunCtrls *ctrls)
                   LocalFree(thread_name_w);
                 }
               }
-              
-              // rjf: determine if this is a "halter thread" - the threads we spawn to halt processes
-              B32 is_halter = (evt.dwThreadId == w32_dmn_shared->halter_tid);
               
               // rjf: generate events for non-halter threads
               if(!is_halter)
@@ -2317,6 +2338,7 @@ dmn_ctrl_run(Arena *arena, DMN_CtrlCtx *ctx, DMN_RunCtrls *ctrls)
               {
                 DMN_Event *e = dmn_event_list_push(arena, &events);
                 e->kind = DMN_EventKind_Halt;
+                pending_halt = 0;
                 w32_dmn_shared->halter_process = dmn_handle_zero();
                 w32_dmn_shared->halter_tid = 0;
                 keep_going = 0;
@@ -3170,9 +3192,10 @@ dmn_ctrl_run(Arena *arena, DMN_CtrlCtx *ctx, DMN_RunCtrls *ctrls)
 ////////////////////////////////
 //~ rjf: @dmn_os_hooks Halting (Implemented Per-OS)
 
-internal void
+internal B32
 dmn_halt(U64 code, U64 user_data)
 {
+  B32 result = 0;
   if(dmn_handle_match(dmn_handle_zero(), w32_dmn_shared->halter_process))
   {
     W32_DMN_Entity *process = &w32_dmn_entity_nil;
@@ -3193,8 +3216,10 @@ dmn_halt(U64 code, U64 user_data)
       U64 data_injection_address = process->proc.injection_address + W32_DMN_INJECTED_CODE_SIZE;
       w32_dmn_process_write_struct(process->handle, data_injection_address, &injection);
       w32_dmn_shared->halter_tid = w32_dmn_inject_thread(process->handle, process->proc.injection_address);
+      result = 1;
     }
   }
+  return result;
 }
 
 ////////////////////////////////

@@ -15,6 +15,7 @@
 #include <tlhelp32.h>
 #include <Shlobj.h>
 #include <processthreadsapi.h>
+#if !BASE_NO_AUTOLINK
 #pragma comment(lib, "user32")
 #pragma comment(lib, "ole32")
 #pragma comment(lib, "shell32")
@@ -24,6 +25,7 @@
 #pragma comment(lib, "comctl32")
 #pragma comment(lib, "ws2_32")
 #pragma comment(linker,"\"/manifestdependency:type='win32' name='Microsoft.Windows.Common-Controls' version='6.0.0.0' processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'\"") // this is required for loading correct comctl32 dll file
+#endif
 
 ////////////////////////////////
 //~ rjf: File Iterator Types

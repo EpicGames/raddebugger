@@ -1,6 +1,9 @@
 // Copyright (c) Epic Games Tools
 // Licensed under the MIT license (https://opensource.org/license/mit/)
 
+#ifndef ELF_C
+#define ELF_C
+
 ////////////////////////////////
 //~ rjf: 32 => 64 bit conversions
 
@@ -373,3 +376,5 @@ elf_auxv64_from_class_data(ELF_Class elf_class, String8 data)
   }
   return result;
 }
+
+#endif // ELF_C

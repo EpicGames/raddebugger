@@ -144,10 +144,10 @@ d_handle_match(D_Handle a, D_Handle b)
 }
 
 internal void
-d_handle_list_push(Arena *arena, D_HandleList *list, D_Handle *pair)
+d_handle_list_push(Arena *arena, D_HandleList *list, D_Handle handle)
 {
   D_HandleNode *n = push_array(arena, D_HandleNode, 1);
-  MemoryCopyStruct(&n->v, pair);
+  n->v = handle;
   SLLQueuePush(list->first, list->last, n);
   list->count += 1;
 }
@@ -158,7 +158,7 @@ d_handle_list_copy(Arena *arena, D_HandleList *src)
   D_HandleList dst = {0};
   for(D_HandleNode *n = src->first; n != 0; n = n->next)
   {
-    d_handle_list_push(arena, &dst, &n->v);
+    d_handle_list_push(arena, &dst, n->v);
   }
   return dst;
 }
@@ -241,6 +241,16 @@ d_dump_handle_make(D_ServerID server_id, U64 id)
     result.entity_id = id;
   }
   return result;
+}
+
+internal D_Handle
+d_handle_from_server_id(D_ServerID server_id)
+{
+  D_Handle handle = {0};
+  {
+    handle.server_id = server_id;
+  }
+  return handle;
 }
 
 ////////////////////////////////
@@ -640,13 +650,13 @@ d_serialized_string_from_event(Arena *arena, D_Event *event, U64 max)
     str8_serial_push_struct(scratch.arena, &srl, &event->rip_vaddr);
     str8_serial_push_struct(scratch.arena, &srl, &event->stack_base);
     str8_serial_push_struct(scratch.arena, &srl, &event->tls_root);
+    str8_serial_push_struct(scratch.arena, &srl, &event->tls_index);
+    str8_serial_push_struct(scratch.arena, &srl, &event->tls_offset);
     str8_serial_push_struct(scratch.arena, &srl, &event->timestamp);
     str8_serial_push_struct(scratch.arena, &srl, &event->exception_code);
     str8_serial_push_struct(scratch.arena, &srl, &event->rgba);
     str8_serial_push_struct(scratch.arena, &srl, &event->bp_flags);
     str8_serial_push_struct(scratch.arena, &srl, &event->os);
-    str8_serial_push_struct(scratch.arena, &srl, &event->tls_index);
-    str8_serial_push_struct(scratch.arena, &srl, &event->tls_offset);
     String8 string = event->string;
     string.size = Min(string.size, max-srl.total_size);
     str8_serial_push_struct(scratch.arena, &srl, &string.size);
@@ -676,13 +686,13 @@ d_event_from_serialized_string(Arena *arena, String8 string)
     read_off += str8_deserial_read_struct(string, read_off, &event.rip_vaddr);
     read_off += str8_deserial_read_struct(string, read_off, &event.stack_base);
     read_off += str8_deserial_read_struct(string, read_off, &event.tls_root);
+    read_off += str8_deserial_read_struct(string, read_off, &event.tls_index);
+    read_off += str8_deserial_read_struct(string, read_off, &event.tls_offset);
     read_off += str8_deserial_read_struct(string, read_off, &event.timestamp);
     read_off += str8_deserial_read_struct(string, read_off, &event.exception_code);
     read_off += str8_deserial_read_struct(string, read_off, &event.rgba);
     read_off += str8_deserial_read_struct(string, read_off, &event.bp_flags);
     read_off += str8_deserial_read_struct(string, read_off, &event.os);
-    read_off += str8_deserial_read_struct(string, read_off, &event.tls_index);
-    read_off += str8_deserial_read_struct(string, read_off, &event.tls_offset);
     read_off += str8_deserial_read_struct(string, read_off, &event.string.size);
     event.string.str = push_array_no_zero(arena, U8, event.string.size);
     read_off += str8_deserial_read(string, read_off, event.string.str, event.string.size, 1);
@@ -926,7 +936,7 @@ d_entity_ctx_rw_store_alloc(void)
   store->ctx.hash_slots_count = 1024;
   store->ctx.hash_slots = push_array(arena, D_EntityHashSlot, store->ctx.hash_slots_count);
   D_Entity *root = store->ctx.root = d_entity_alloc(store, &d_entity_nil, D_EntityKind_Root, Arch_Null, d_handle_zero(), 0);
-  D_Entity *local_server = d_entity_alloc(store, root, D_EntityKind_Server, Arch_CURRENT, d_handle_from_dmn(D_ServerID_LocalHost, dmn_handle_zero()), 0);
+  D_Entity *local_server = d_entity_alloc(store, root, D_EntityKind_Server, Arch_CURRENT, d_handle_from_server_id(D_ServerID_LocalHost), 0);
   Temp scratch = scratch_begin(0, 0);
   String8 local_server_name = str8f(scratch.arena, "Local (%S)", get_system_info()->machine_name);
   d_entity_equip_string(store, local_server, local_server_name);
@@ -1556,10 +1566,32 @@ d_thread_read_reg_block(D_Handle handle, void *reg_block)
   B32 result = 0;
   switch((D_ControllerKindEnum)handle.controller_kind)
   {
+    //- rjf: demon case
     case D_ControllerKind_Demon:
     {
-      result = dmn_thread_read_reg_block(d_dmn_from_handle(handle), reg_block);
+      //- rjf: local server case
+      if(handle.server_id == D_ServerID_LocalHost)
+      {
+        result = dmn_thread_read_reg_block(d_dmn_from_handle(handle), reg_block);
+      }
+      
+      //- rjf: remote server case
+      else if(handle.server_id != 0)
+      {
+        Temp scratch = scratch_begin(0, 0);
+        SOCK_Endpoint endpoint = d_endpoint_from_server_id(handle.server_id);
+        DS_Msg msg = {DS_MsgKind_ThreadRegBlockRead, .entity = d_dmn_from_handle(handle)};
+        DS_Response response = d_server_msg(scratch.arena, endpoint, &msg);
+        result = response.good;
+        if(result)
+        {
+          MemoryCopy(reg_block, response.data.str, response.data.size);
+        }
+        scratch_end(scratch);
+      }
     }break;
+    
+    //- rjf: dump case
     case D_ControllerKind_Dump:
     {
       D_Entity *thread = d_entity_from_handle(handle);
@@ -1613,16 +1645,58 @@ d_thread_write_reg_block(D_Handle thread, void *block)
   B32 result = 0;
   switch((D_ControllerKindEnum)thread.controller_kind)
   {
+    //- rjf: demon debugging
     case D_ControllerKind_Demon:
     {
       // TODO(rjf): @callstacks immediately reflect this in the call stack cache
       DMN_Handle handle_dmn = d_dmn_from_handle(thread);
-      B32 result = dmn_thread_write_reg_block(handle_dmn, block);
+      
+      //- rjf: local demon case
+      if(thread.server_id == D_ServerID_LocalHost)
+      {
+        result = dmn_thread_write_reg_block(handle_dmn, block);
+      }
+      
+      //- rjf: remote demon case
+      else
+      {
+#if 0 // TODO(rjf): need architecture
+        Temp scratch = scratch_begin(0, 0);
+        
+        // rjf: get server id's endpoint
+        SOCK_Endpoint endpoint = d_endpoint_from_server_id(process.server_id);
+        
+        // rjf: reserve a sock ring
+        U16 sock_ring_id = d_server_io_begin();
+        
+        // rjf: send message
+        DS_Msg msg = {DS_MsgKind_ThreadRegBlockWrite, .msg_id = d_packet_msg_id(sock_ring_id, 0), .entity = handle_dmn, .data = };
+        String8 packet = ds_packet_from_msg(scratch.arena, &msg);
+        sock_send(d_ctrl_state->sock_session, SOCK_Protocol_TCP, endpoint, packet, max_U64);
+        
+        // rjf: receive next response
+        DS_Response response = d_server_io_recv_response(scratch.arena, sock_ring_id);
+        result = response.good;
+        if(result)
+        {
+          MemoryCopy(reg_block, response.data.str, response.data.size);
+        }
+        
+        // rjf: release receive ring
+        d_server_io_end(sock_ring_id);
+        
+        scratch_end(scratch);
+#endif
+      }
+      
+      //- rjf: dirty register gen
       if(result)
       {
         ins_atomic_u64_inc_eval(&d_ctrl_state->reg_gen);
       }
     }break;
+    
+    //- rjf: dump debugging
     case D_ControllerKind_Dump:
     {
       // TODO(rjf)
@@ -1672,15 +1746,34 @@ d_thread_get_module_tls_vaddr(D_Handle thread, D_Handle module, U64 *vaddr_out)
 {
   B32 result = 0;
   
-  // rjf: resolve to demon
+  //- rjf: resolve to demon
   DMN_Handle thread_dmn = d_dmn_from_handle(thread);
   DMN_Handle module_dmn = d_dmn_from_handle(module);
   
-  // rjf: compute vaddr
+  //- rjf: read TLS vaddr
   if(!dmn_handle_match(thread_dmn, dmn_handle_zero()) &&
      !dmn_handle_match(module_dmn, dmn_handle_zero()))
   {
-    result = dmn_thread_get_module_tls_vaddr(thread_dmn, module_dmn, vaddr_out);
+    //- rjf: local demon version
+    if(thread.server_id == D_ServerID_LocalHost)
+    {
+      result = dmn_thread_get_module_tls_vaddr(thread_dmn, module_dmn, vaddr_out);
+    }
+    
+    //- rjf: remote demon version
+    else if(thread.server_id != 0)
+    {
+      Temp scratch = scratch_begin(0, 0);
+      SOCK_Endpoint endpoint = d_endpoint_from_server_id(thread.server_id);
+      DS_Msg msg = {DS_MsgKind_ThreadGetModuleTLSVAddr, .entity = thread_dmn, .module = module_dmn};
+      DS_Response response = d_server_msg(scratch.arena, endpoint, &msg);
+      result = response.good;
+      if(vaddr_out)
+      {
+        vaddr_out[0] = response.vaddr;
+      }
+      scratch_end(scratch);
+    }
   }
   
   return result;
@@ -1899,6 +1992,160 @@ d_initial_debug_info_path_from_module(Arena *arena, D_Handle module_handle)
 }
 
 ////////////////////////////////
+//~ rjf: Server Cache Lookups
+
+internal SOCK_Endpoint
+d_endpoint_from_server_id(D_ServerID server_id)
+{
+  SOCK_Endpoint endpoint = {0};
+  RWMutexScope(d_ctrl_state->open_server_cache.rw_mutex, 0)
+  {
+    U64 slot_idx = server_id%d_ctrl_state->open_server_cache.slots_count;
+    for(D_OpenServerNode *n = d_ctrl_state->open_server_cache.slots[slot_idx].first; n != 0; n = n->next)
+    {
+      if(n->server_id == server_id)
+      {
+        endpoint = n->endpoint;
+        break;
+      }
+    }
+  }
+  return endpoint;
+}
+
+////////////////////////////////
+//~ rjf: Server Sends/Receives
+
+internal D_ServerIOCtx
+d_server_io_begin(void)
+{
+  D_ServerIOCtx result = {0};
+  RWMutexScope(d_ctrl_state->sock_ring_alloc_rw_mutex, 1) for(;;)
+  {
+    if(d_ctrl_state->free_sock_ring)
+    {
+      D_SockRingSlot *sock_ring = d_ctrl_state->free_sock_ring;
+      SLLStackPop(d_ctrl_state->free_sock_ring);
+      result.ring_id = (U16)(sock_ring - d_ctrl_state->sock_rings);
+      break;
+    }
+    cond_var_wait_rw_w(d_ctrl_state->sock_ring_alloc_cv, d_ctrl_state->sock_ring_alloc_rw_mutex, max_U64);
+  }
+  return result;
+}
+
+internal B32
+d_server_io_send_msg(D_ServerIOCtx ctx, SOCK_Endpoint endpoint, DS_Msg *msg)
+{
+  Temp scratch = scratch_begin(0, 0);
+  
+  // rjf: unpack ctx
+  GuardedRing *completion_ring = d_ctrl_state->sock_rings[ctx.ring_id].completion_ring;
+  
+  // rjf: msg -> packets
+  DS_Msg msg_copy = {0};
+  MemoryCopyStruct(&msg_copy, msg);
+  msg_copy.msg_id = d_packet_msg_id(ctx.ring_id, 0);
+  String8 data = ds_data_from_msg(scratch.arena, &msg_copy);
+  String8List packets = ds_packets_from_data(scratch.arena, DS_PacketKind_Msg, data);
+  
+  // rjf: send all packets
+  RWMutexScope(d_ctrl_state->sock_send_mutex, 1)
+  {
+    for EachNode(n, String8Node, packets.first)
+    {
+      sock_send(d_ctrl_state->sock_session, endpoint, SOCK_Protocol_TCP, n->string, max_U64, .out_ring = completion_ring);
+    }
+  }
+  
+  // rjf: wait for send completions
+  B32 result = 1;
+  for EachIndex(idx, packets.node_count)
+  {
+    SOCK_SendCompletion completion = {0};
+    sock_wait_for_send_completion(completion_ring, &completion, max_U64);
+    result = result && completion.good;
+  }
+  
+  scratch_end(scratch);
+  return result;
+}
+
+internal DS_Response
+d_server_io_recv_response(Arena *arena, D_ServerIOCtx ctx)
+{
+  Temp scratch = scratch_begin(&arena, 1);
+  
+  // rjf: unpack ctx
+  D_SockRingSlot *sock_ring = d_ctrl_state->sock_rings + ctx.ring_id;
+  GuardedRing *guarded_ring = sock_ring->recv_ring;
+  
+  // rjf: read packet group
+  String8List packets = {0};
+  {
+    RingGuard g = guarded_ring_open(guarded_ring);
+    for(B32 done = 0; !done;)
+    {
+      U64 packet_size = 0;
+      if(guarded_ring_read_struct_or_wait(&g, &packet_size, max_U64))
+      {
+        U8 *packet_data = push_array(scratch.arena, U8, packet_size);
+        guarded_ring_read_or_wait(&g, packet_size, packet_data, max_U64);
+        String8 packet = str8(packet_data, packet_size);
+        if(packet.size >= sizeof(DS_PacketHeader))
+        {
+          DS_PacketHeader *header = (DS_PacketHeader *)packet.str;
+          str8_list_push(scratch.arena, &packets, packet);
+          if(header->flags & DS_PacketFlag_Terminal)
+          {
+            done = 1;
+          }
+        }
+      }
+    }
+    guarded_ring_close(&g);
+  }
+  
+  // rjf: packet group -> data
+  DS_PacketKind packet_kind = DS_PacketKind_Null;
+  String8 data = ds_data_from_packets(scratch.arena, packets, &packet_kind);
+  
+  // rjf: data -> response
+  DS_Response response = {0};
+  if(packet_kind == DS_PacketKind_Response)
+  {
+    response = ds_response_from_data(data);
+  }
+  
+  scratch_end(scratch);
+  return response;
+}
+
+internal void
+d_server_io_end(D_ServerIOCtx ctx)
+{
+  RWMutexScope(d_ctrl_state->sock_ring_alloc_rw_mutex, 1)
+  {
+    D_SockRingSlot *sock_ring = d_ctrl_state->sock_rings + ctx.ring_id;
+    SLLStackPush(d_ctrl_state->free_sock_ring, sock_ring);
+  }
+  cond_var_broadcast(d_ctrl_state->sock_ring_alloc_cv);
+}
+
+internal DS_Response
+d_server_msg(Arena *arena, SOCK_Endpoint endpoint, DS_Msg *msg)
+{
+  DS_Response response = {0};
+  D_ServerIOCtx ctx = d_server_io_begin();
+  if(d_server_io_send_msg(ctx, endpoint, msg))
+  {
+    response = d_server_io_recv_response(arena, ctx);
+  }
+  d_server_io_end(ctx);
+  return response;
+}
+
+////////////////////////////////
 //~ rjf: Unwinding Functions
 
 internal D_Unwind
@@ -2025,19 +2272,49 @@ d_unwind_from_thread(Arena *arena, D_Handle thread, U64 endt_us)
           MemoryCopy(regs_block, regs_block_restore, arch_reg_block_size);
         }
         
-        // rjf: if we failed to read memory, try to read that memory, equip to memory map.
-        // if it is stale and we run out of time, we will need to mark the whole unwind as
-        // stale. if it can't be read, the unwind fails.
+        // rjf: if we failed to read memory, read that memory, and add to memory map.
+        //
+        // first, we try to read that memory, but rounded up/down to 4k boundaries. if that fails,
+        // we just fall back to doing a tiny read.
+        //
+        // this is a bit aggressive, e.g. we read a whole 4k chunk even if we just touch a small
+        // # of bytes in that chunk, but this is likely more optimal on average, and it avoids
+        // tons of roundtrips, which matters especially when doing remote debugging.
+        //
+        // if it can't be read at all, the unwind fails.
+        //
         if(step.status == UWND_StepStatus_FailedMemoryRead)
         {
-          U64 size_desired = dim_1u64(step.missed_read_vaddr_range);
-          U8 *data = push_array(scratch.arena, U8, size_desired);
-          U64 size = d_process_read(process_entity->handle, step.missed_read_vaddr_range, data);
-          if(size == size_desired)
+          // rjf: try reading the 4K-granularity chunks containing this read.
+          B32 read_good = 0;
           {
-            memory_map_push(scratch.arena, &memory_map, step.missed_read_vaddr_range, data);
+            Rng1U64 missed_read_vaddr_range_rounded = r1u64(AlignDownPow2(step.missed_read_vaddr_range.min, KB(4)),
+                                                            AlignPow2(step.missed_read_vaddr_range.max, KB(4)));
+            U64 size_desired = dim_1u64(missed_read_vaddr_range_rounded);
+            U8 *data = push_array(scratch.arena, U8, size_desired);
+            U64 size = d_process_read(process_entity->handle, missed_read_vaddr_range_rounded, data);
+            if(size == size_desired)
+            {
+              memory_map_push(scratch.arena, &memory_map, missed_read_vaddr_range_rounded, data);
+              read_good = 1;
+            }
           }
-          else
+          
+          // rjf: if read still isn't good, try just reading the part we need.
+          if(!read_good)
+          {
+            U64 size_desired = dim_1u64(step.missed_read_vaddr_range);
+            U8 *data = push_array(scratch.arena, U8, size_desired);
+            U64 size = d_process_read(process_entity->handle, step.missed_read_vaddr_range, data);
+            if(size == size_desired)
+            {
+              memory_map_push(scratch.arena, &memory_map, step.missed_read_vaddr_range, data);
+              read_good = 1;
+            }
+          }
+          
+          // rjf: if read still isn't good, we failed.
+          if(!read_good)
           {
             unwind.flags |= D_UnwindFlag_Error;
           }
@@ -2893,39 +3170,61 @@ d_ctrl_thread__run_ctrls(Arena *arena)
   return ctrls;
 }
 
-internal void
-d_ctrl_thread__run_ctrls_set_server(Arena *arena, D_RunCtrls *ctrls, D_ServerID server_id, DMN_RunCtrls *server_ctrls)
+internal D_ServerRunCtrls *
+d_ctrl_thread__server_run_ctrls_from_id_or_push(Arena *arena, D_RunCtrls *ctrls, D_ServerID server_id)
 {
-  D_ServerRunCtrlsNode *node = push_array(arena, D_ServerRunCtrlsNode, 1);
-  U64 slot_idx = server_id%ctrls->slots_count;
-  SLLQueuePush(ctrls->slots[slot_idx].first, ctrls->slots[slot_idx].last, node);
-  MemoryCopyStruct(&node->run_ctrls, server_ctrls);
-  node->server_id = server_id;
-}
-
-internal DMN_RunCtrls *
-d_ctrl_thread__server_run_ctrls_from_id(D_RunCtrls *ctrls, D_ServerID server_id)
-{
-  DMN_RunCtrls *result = 0;
+  D_ServerRunCtrls *result = 0;
   U64 slot_idx = server_id%ctrls->slots_count;
   for(D_ServerRunCtrlsNode *n = ctrls->slots[slot_idx].first; n != 0; n = n->next)
   {
     if(n->server_id == server_id)
     {
-      result = &n->run_ctrls;
+      result = &n->v;
+      break;
+    }
+  }
+  if(result == 0)
+  {
+    D_ServerRunCtrlsNode *node = push_array(arena, D_ServerRunCtrlsNode, 1);
+    SLLQueuePush(ctrls->slots[slot_idx].first, ctrls->slots[slot_idx].last, node);
+    node->server_id = server_id;
+    result = &node->v;
+  }
+  return result;
+}
+
+internal D_ServerRunCtrls *
+d_ctrl_thread__server_run_ctrls_from_id(D_RunCtrls *ctrls, D_ServerID server_id)
+{
+  D_ServerRunCtrls *result = 0;
+  U64 slot_idx = server_id%ctrls->slots_count;
+  for(D_ServerRunCtrlsNode *n = ctrls->slots[slot_idx].first; n != 0; n = n->next)
+  {
+    if(n->server_id == server_id)
+    {
+      result = &n->v;
       break;
     }
   }
   return result;
 }
 
+internal B32
+d_ctrl_thread__server_is_scheduled(D_ServerState *ss, D_ServerRunCtrls *ctrls)
+{
+  B32 result = (ss->launch_or_attach_counter > 0 || ss->process_counter > 0);
+  // TODO(rjf): we can avoid no-op runs by checking if there are any unfrozen threads on `ctrls`
+  return result;
+}
+
 //- rjf: attached process running/event gathering
 
 internal DMN_Event *
-d_ctrl_thread__next_dmn_event(Arena *arena, DMN_CtrlCtx *ctrl_ctx, D_Msg *msg, DMN_RunCtrls *run_ctrls, D_Spoof *spoof)
+d_ctrl_thread__next_dmn_event(Arena *arena, DMN_CtrlCtx *ctrl_ctx, D_Msg *msg, D_RunCtrls *run_ctrls, D_Spoof *spoof, D_ServerID *server_id_out)
 {
   ProfBeginFunction();
   DMN_Event *event = push_array(arena, DMN_Event, 1);
+  D_ServerID server_id = D_ServerID_LocalHost;
   Temp scratch = scratch_begin(&arena, 1);
   
   //////////////////////////////
@@ -2940,10 +3239,27 @@ d_ctrl_thread__next_dmn_event(Arena *arena, DMN_CtrlCtx *ctrl_ctx, D_Msg *msg, D
     ProfScope("get next event")
     {
       B32 first = 1;
+      D_ServerState *start_dequeue_server = d_ctrl_state->next_dequeue_server;
       for(D_ServerState *ss = d_ctrl_state->next_dequeue_server;
-          ss != d_ctrl_state->next_dequeue_server || first;
+          ss != start_dequeue_server || first;
           (first = 0, ss = (ss->order_next == 0 ? d_ctrl_state->first_server : ss->order_next), d_ctrl_state->next_dequeue_server = ss))
       {
+        //- rjf: if we got an event from a previous server, we're done.
+        if(got_event)
+        {
+          break;
+        }
+        
+        //- rjf: if this server is not scheduled, never return debug events from it
+        {
+          D_ServerRunCtrls *server_run_ctrls = d_ctrl_thread__server_run_ctrls_from_id(run_ctrls, ss->server_id);
+          B32 is_server_scheduled = d_ctrl_thread__server_is_scheduled(ss, server_run_ctrls);
+          if(!is_server_scheduled)
+          {
+            continue;
+          }
+        }
+        
         //- rjf: grab first event from this server
         DMN_EventNode *next_event_node = ss->first_dmn_event_node;
         if(next_event_node != 0)
@@ -3005,7 +3321,7 @@ d_ctrl_thread__next_dmn_event(Arena *arena, DMN_CtrlCtx *ctrl_ctx, D_Msg *msg, D
               if(!should_filter_event && ev->code == 0xc0000005 && (spoof == 0 || ev->instruction_pointer != spoof->new_ip_value))
               {
                 Access *access = access_open();
-                D_Handle process_handle = d_handle_from_dmn(D_ServerID_LocalHost, ev->process);
+                D_Handle process_handle = d_handle_from_dmn(server_id, ev->process);
                 D_Entity *process = d_entity_from_handle(process_handle);
                 D_Entity *module = d_module_from_process_vaddr(process, ev->instruction_pointer);
                 if(module != &d_entity_nil)
@@ -3068,14 +3384,17 @@ d_ctrl_thread__next_dmn_event(Arena *arena, DMN_CtrlCtx *ctrl_ctx, D_Msg *msg, D
           got_event = 1;
           SLLQueuePop(ss->first_dmn_event_node, ss->last_dmn_event_node);
           dmn_event_deep_copy(arena, event, &next_event_node->v);
-          run_ctrls->ignore_previous_exception = 1;
+          server_id = ss->server_id;
+          D_ServerRunCtrls *server_ctrls = d_ctrl_thread__server_run_ctrls_from_id_or_push(arena, run_ctrls, server_id);
+          server_ctrls->ignore_previous_exception = 1;
         }
         
         //- rjf: good event but filtered? pop from queue, but we don't have a result yet.
         if(next_event_node != 0 && should_filter_event)
         {
           SLLQueuePop(ss->first_dmn_event_node, ss->last_dmn_event_node);
-          run_ctrls->ignore_previous_exception = 0;
+          D_ServerRunCtrls *server_ctrls = d_ctrl_thread__server_run_ctrls_from_id_or_push(arena, run_ctrls, server_id);
+          server_ctrls->ignore_previous_exception = 0;
         }
         
         //- rjf: out of queued up demon events -> clear event arena
@@ -3087,10 +3406,14 @@ d_ctrl_thread__next_dmn_event(Arena *arena, DMN_CtrlCtx *ctrl_ctx, D_Msg *msg, D
       }
     }
     
+    ////////////////////////////
     //- rjf: no event -> run all servers until we get a new one
+    //
+    B32 new_events = 0;
     if(!got_event) ProfScope("no event -> run all servers until we get a new one")
     {
       //- rjf: prep spoof
+#if 0 // TODO(rjf): @multimachine not doing spoofs anymore, turning this off for cross-server stuff for now
       B32 do_spoof = (spoof != 0 && dmn_handle_match(run_ctrls->single_step_thread, dmn_handle_zero()));
       U64 size_of_spoof = 0;
       if(do_spoof) ProfScope("prep spoof")
@@ -3100,17 +3423,18 @@ d_ctrl_thread__next_dmn_event(Arena *arena, DMN_CtrlCtx *ctrl_ctx, D_Msg *msg, D
         size_of_spoof = bit_size_from_arch(arch)/8;
         d_process_read(spoof->process, r1u64(spoof->vaddr, spoof->vaddr+size_of_spoof), &spoof_old_ip_value);
       }
-      
       //- rjf: set spoof
       if(do_spoof) ProfScope("set spoof")
       {
         d_process_write(spoof->process, r1u64(spoof->vaddr, spoof->vaddr+size_of_spoof), &spoof->new_ip_value);
       }
+#endif
       
       //- rjf: run for new events
       ProfScope("run for new events")
       {
         //- rjf: log run controls
+#if 0 // TODO(rjf): @multimachine
         LogInfoNamedBlockF("run")
         {
           log_infof("single_step_thread:         [0x%I64x]\n", run_ctrls->single_step_thread);
@@ -3131,18 +3455,36 @@ d_ctrl_thread__next_dmn_event(Arena *arena, DMN_CtrlCtx *ctrl_ctx, D_Msg *msg, D
             }
           }
         }
+#endif
+        
+        //- rjf: turn off group halt guard
+        ins_atomic_u32_eval_assign(&d_ctrl_state->ctrl_thread_local_server_group_halt_guard, 0);
+        
+        //- rjf: open server I/O for this run
+        D_ServerIOCtx server_io_ctx = d_server_io_begin();
         
         //- rjf: send run message to all *remote* servers - shouldn't matter much, but send starting at the
         // current server position, so that we also fairly order the runs (assuming equal network latency)
         U64 num_servers_running = 0;
         {
           B32 first = 1;
+          D_ServerState *start_dequeue_server = d_ctrl_state->next_dequeue_server;
           for(D_ServerState *ss = d_ctrl_state->next_dequeue_server;
-              ss != d_ctrl_state->next_dequeue_server || first;
+              ss != start_dequeue_server || first;
               (first = 0, ss = (ss->order_next == 0 ? d_ctrl_state->first_server : ss->order_next), d_ctrl_state->next_dequeue_server = ss))
           {
             if(ss->server_id != D_ServerID_LocalHost)
             {
+              // rjf: is this server being scheduled?
+              D_ServerRunCtrls *server_run_ctrls = d_ctrl_thread__server_run_ctrls_from_id(run_ctrls, ss->server_id);
+              B32 is_server_scheduled = d_ctrl_thread__server_is_scheduled(ss, server_run_ctrls);
+              
+              // rjf: if this server is not being scheduled, skip
+              if(!is_server_scheduled)
+              {
+                continue;
+              }
+              
               // rjf: unpack server
               D_Handle server_handle = {.server_id = ss->server_id};
               D_Entity *server = d_entity_from_handle(server_handle);
@@ -3152,80 +3494,142 @@ d_ctrl_thread__next_dmn_event(Arena *arena, DMN_CtrlCtx *ctrl_ctx, D_Msg *msg, D
               // rjf: form run message
               DS_Msg msg = {0};
               {
-                msg.kind = DS_MsgKind_Run;
-                // TODO(rjf): run_ctrls
+                msg.kind   = (!d_handle_match(run_ctrls->single_step_thread, d_handle_zero()) ? DS_MsgKind_SingleStep : DS_MsgKind_Run);
+                msg.flags |= (DS_MsgFlag_IgnorePreviousException*(server_run_ctrls ? (!!server_run_ctrls->ignore_previous_exception) : 0));
+                msg.flags |= (DS_MsgFlag_RunEntitiesAreUnfrozen*!!run_ctrls->run_entities_are_unfrozen);
+                msg.flags |= (DS_MsgFlag_RunEntitiesAreProcesses*!!run_ctrls->run_entities_are_processes);
+                msg.entity = (run_ctrls->single_step_thread.server_id == ss->server_id ? d_dmn_from_handle(run_ctrls->single_step_thread) : 
+                              run_ctrls->priority_thread.server_id == ss->server_id ? d_dmn_from_handle(run_ctrls->priority_thread) : 
+                              dmn_handle_zero());
+                D_ServerRunCtrls *server_run_ctrls = d_ctrl_thread__server_run_ctrls_from_id(run_ctrls, ss->server_id);
+                if(server_run_ctrls)
+                {
+                  msg.traps        = server_run_ctrls->traps;
+                  msg.run_entities = server_run_ctrls->run_entities;
+                }
               }
               
-              // rjf: message -> packet
-              String8 packet = ds_packet_from_msg(scratch.arena, &msg);
-              
-              // rjf: send packet
-              sock_send(d_ctrl_state->sock_session, SOCK_Protocol_TCP, server_endpoint, packet, max_U64);
-              
-              // rjf: set run state
-              num_servers_running += 1;
-              ss->run_state = 1;
-            }
-          }
-        }
-        
-        //- rjf: run the local server synchronously - if we get a response from another server, it will
-        // halt the local one.
-        d_ctrl_state->ctrl_thread_dmn_run_block = 1;
-        DMN_EventList events = dmn_ctrl_run(scratch.arena, ctrl_ctx, run_ctrls);
-        d_ctrl_state->ctrl_thread_dmn_run_block = 0;
-        
-        //- rjf: if we got significant events back (anything except a NotAttached), then we
-        // need to halt all connected remote servers.
-        if(events.first != 0 && (events.first->v.kind != DMN_EventKind_Error || events.first->v.error_kind != DMN_ErrorKind_NotAttached))
-        {
-          B32 first = 1;
-          for(D_ServerState *ss = d_ctrl_state->next_dequeue_server;
-              ss != d_ctrl_state->next_dequeue_server || first;
-              (first = 0, ss = (ss->order_next == 0 ? d_ctrl_state->first_server : ss->order_next), d_ctrl_state->next_dequeue_server = ss))
-          {
-            if(ss->server_id != D_ServerID_LocalHost && ss->run_state)
-            {
-              // rjf: unpack server
-              D_Handle server_handle = {.server_id = ss->server_id};
-              D_Entity *server = d_entity_from_handle(server_handle);
-              String8 server_addr = server->string;
-              SOCK_Endpoint server_endpoint = sock_endpoint_from_string(server_addr);
-              
-              // rjf: form halt message / packet
-              DS_Msg msg = {DS_MsgKind_Halt};
-              String8 packet = ds_packet_from_msg(scratch.arena, &msg);
-              
-              // rjf: send
-              sock_send(d_ctrl_state->sock_session, SOCK_Protocol_TCP, server_endpoint, packet, max_U64);
-              
-              // rjf: set group halt state (to skip halt event)
-              ss->group_halt = 1;
-            }
-          }
-        }
-        
-        //- rjf: copy locally returned events to local server queue
-        {
-          D_ServerID server_id = D_ServerID_LocalHost;
-          U64 slot_idx = server_id%d_ctrl_state->server_slots_count;
-          for(D_ServerState *ss = d_ctrl_state->server_slots[slot_idx].first; ss != 0; ss = ss->order_next)
-          {
-            if(ss->server_id == server_id)
-            {
-              for EachNode(src_n, DMN_EventNode, events.first)
+              // rjf: send message, set run state
+              if(d_server_io_send_msg(server_io_ctx, server_endpoint, &msg))
               {
-                DMN_EventNode *dst_n = ss->free_dmn_event_node;
-                if(dst_n != 0)
+                num_servers_running += 1;
+                ss->run_state = 1;
+              }
+            }
+          }
+        }
+        
+        //- rjf: run the local server synchronously - if we get a response from another server mid-run,
+        // it will halt the local one.
+        B32 local_server_halted = 0;
+        {
+          // rjf: unpack local server state
+          D_ServerState *local_server_state = d_server_state_from_id(D_ServerID_LocalHost);
+          D_ServerRunCtrls *local_server_run_ctrls = d_ctrl_thread__server_run_ctrls_from_id(run_ctrls, D_ServerID_LocalHost);
+          
+          // rjf: if scheduled, or if no other servers are running? -> run
+          if(d_ctrl_thread__server_is_scheduled(local_server_state, local_server_run_ctrls))
+          {
+            // rjf: form local run controls
+            DMN_RunCtrls local_run_ctrls = {0};
+            {
+              if(local_server_run_ctrls != 0)
+              {
+                local_run_ctrls.ignore_previous_exception  = local_server_run_ctrls->ignore_previous_exception;
+                local_run_ctrls.run_entities               = local_server_run_ctrls->run_entities.handles;
+                local_run_ctrls.run_entity_count           = local_server_run_ctrls->run_entities.count;
+                local_run_ctrls.traps                      = local_server_run_ctrls->traps;
+              }
+              if(run_ctrls->priority_thread.server_id == D_ServerID_LocalHost)
+              {
+                local_run_ctrls.priority_thread = d_dmn_from_handle(run_ctrls->priority_thread);
+              }
+              if(run_ctrls->single_step_thread.server_id == D_ServerID_LocalHost)
+              {
+                local_run_ctrls.single_step_thread = d_dmn_from_handle(run_ctrls->single_step_thread);
+              }
+              local_run_ctrls.run_entities_are_processes = run_ctrls->run_entities_are_processes;
+              local_run_ctrls.run_entities_are_unfrozen  = run_ctrls->run_entities_are_unfrozen;
+            }
+            
+            // rjf: run for new events
+            DMN_EventList events = dmn_ctrl_run(scratch.arena, ctrl_ctx, &local_run_ctrls);
+            
+            // rjf: determine if this event return is a group halt
+            B32 group_halt_set = ins_atomic_u32_eval(&d_ctrl_state->ctrl_thread_local_server_group_halt);
+            
+            // rjf: store the new events in the local server queue
+            {
+              D_ServerID server_id = D_ServerID_LocalHost;
+              U64 slot_idx = server_id%d_ctrl_state->server_slots_count;
+              for(D_ServerState *ss = d_ctrl_state->server_slots[slot_idx].first; ss != 0; ss = ss->order_next)
+              {
+                if(ss->server_id == server_id)
                 {
-                  SLLStackPop(ss->free_dmn_event_node);
+                  for EachNode(src_n, DMN_EventNode, events.first)
+                  {
+                    if(src_n->v.kind != DMN_EventKind_Halt || !group_halt_set)
+                    {
+                      DMN_EventNode *dst_n = ss->free_dmn_event_node;
+                      if(dst_n != 0)
+                      {
+                        SLLStackPop(ss->free_dmn_event_node);
+                      }
+                      else
+                      {
+                        dst_n = push_array(ss->dmn_event_arena, DMN_EventNode, 1);
+                      }
+                      dmn_event_deep_copy(ss->dmn_event_arena, &dst_n->v, &src_n->v);
+                      SLLQueuePush(ss->first_dmn_event_node, ss->last_dmn_event_node, dst_n);
+                      new_events = 1;
+                    }
+                  }
                 }
-                else
+              }
+            }
+            
+            // rjf: if we got anything other than a 'not-attached' error, or a group halt,
+            // then this debug event requires that we halt all running servers
+            if(events.first != 0 &&
+               (events.first->v.kind != DMN_EventKind_Error || events.first->v.error_kind != DMN_ErrorKind_NotAttached) &&
+               (events.first->v.kind != DMN_EventKind_Halt || !group_halt_set))
+            {
+              B32 first = 1;
+              D_ServerState *start_dequeue_server = d_ctrl_state->next_dequeue_server;
+              for(D_ServerState *ss = d_ctrl_state->next_dequeue_server;
+                  ss != start_dequeue_server || first;
+                  (first = 0, ss = (ss->order_next == 0 ? d_ctrl_state->first_server : ss->order_next), d_ctrl_state->next_dequeue_server = ss))
+              {
+                if(ss->server_id != D_ServerID_LocalHost && ss->run_state && !ss->group_halt)
                 {
-                  dst_n = push_array(ss->dmn_event_arena, DMN_EventNode, 1);
+                  // rjf: block group halts from servers -> local
+                  ins_atomic_u32_eval_assign(&d_ctrl_state->ctrl_thread_local_server_group_halt_guard, 1);
+                  
+                  // rjf: unpack server
+                  D_Handle server_handle = d_handle_from_server_id(ss->server_id);
+                  D_Entity *server = d_entity_from_handle(server_handle);
+                  String8 server_addr = server->string;
+                  SOCK_Endpoint server_endpoint = sock_endpoint_from_string(server_addr);
+                  
+                  // rjf: send
+                  DS_Msg group_halt_msg = {DS_MsgKind_Halt};
+                  DS_Response group_halt_response = d_server_msg(scratch.arena, server_endpoint, &group_halt_msg);
+                  
+                  // rjf: set group halt state (to skip halt event)
+                  ss->group_halt = group_halt_response.good;
                 }
-                dmn_event_deep_copy(ss->dmn_event_arena, &dst_n->v, &src_n->v);
-                SLLQueuePush(ss->first_dmn_event_node, ss->last_dmn_event_node, dst_n);
+              }
+            }
+            
+            // rjf: determine if we got a halt event
+            {
+              for EachNode(n, DMN_EventNode, events.first)
+              {
+                if(n->v.kind == DMN_EventKind_Halt)
+                {
+                  local_server_halted = 1;
+                  break;
+                }
               }
             }
           }
@@ -3234,12 +3638,121 @@ d_ctrl_thread__next_dmn_event(Arena *arena, DMN_CtrlCtx *ctrl_ctx, D_Msg *msg, D
         //- rjf: wait for all running servers to stop (either we're waiting on them for events, *or* we generated
         // a halt, and we're waiting for that)
         {
-#if 0
           for(;num_servers_running > 0;)
           {
-            // TODO(rjf): ss->run_state = 0, num_servers_running -= 1
+            // rjf: drain next running response
+            DS_Response response = d_server_io_recv_response(scratch.arena, server_io_ctx);
+            num_servers_running -= 1;
+            
+            // rjf: drain event packets
+            String8List packets = {0};
+            SOCK_Endpoint endpoint = {0};
+            B32 got_server_events = 0;
+            {
+              GuardedRing *ring = d_ctrl_state->sock_event_ring;
+              RingGuard g = guarded_ring_open(ring);
+              for(B32 done = 0; !done;)
+              {
+                // rjf: read next events packet
+                String8 packet = {0};
+                {
+                  U64 packet_size = 0;
+                  if(guarded_ring_try_read_struct(&g, &endpoint))
+                  {
+                    guarded_ring_try_read_struct(&g, &packet_size);
+                    U8 *packet_data = push_array(scratch.arena, U8, packet_size);
+                    guarded_ring_read_or_wait(&g, packet_size, packet_data, max_U64);
+                    packet = str8(packet_data, packet_size);
+                    got_server_events = 1;
+                  }
+                }
+                
+                // rjf: extract packet header
+                DS_PacketHeader header = {0};
+                if(packet.size >= sizeof(header))
+                {
+                  MemoryCopy(&header, packet.str, sizeof(header));
+                }
+                
+                // rjf: valid event packet -> store
+                if((DS_PacketKind)(header.flags & DS_PacketFlag_KindMask) == DS_PacketKind_Event &&
+                   header.magic == DS_PACKET_MAGIC &&
+                   header.version == DS_PACKET_VERSION)
+                {
+                  str8_list_push(scratch.arena, &packets, packet);
+                }
+                
+                // rjf: terminal? -> done
+                if(header.flags & DS_PacketFlag_Terminal || packet.size == 0)
+                {
+                  break;
+                }
+              }
+              guarded_ring_close(&g);
+            }
+            
+            // rjf: packets -> data
+            String8 data = ds_data_from_packets(scratch.arena, packets, 0);
+            
+            // rjf: data -> events
+            DMN_EventList events = ds_dmn_events_from_data(scratch.arena, data);
+            
+            // rjf: endpoint -> server state
+            D_ServerState *ss = 0;
+            if(got_server_events)
+            {
+              String8 address = sock_string_from_endpoint(scratch.arena, endpoint);
+              D_Handle server_handle = d_ctrl_thread__handle_from_addr_or_connect(address);
+              U64 slot_idx = server_handle.server_id%d_ctrl_state->server_slots_count;
+              for(D_ServerState *s = d_ctrl_state->server_slots[slot_idx].first; s != 0; s = s->hash_next)
+              {
+                if(s->server_id == server_handle.server_id)
+                {
+                  ss = s;
+                  break;
+                }
+              }
+            }
+            
+            // rjf: store events in server state - move to stopped state
+            if(ss != 0)
+            {
+              for EachNode(n, DMN_EventNode, events.first)
+              {
+                if(!ss->group_halt || n->v.kind != DMN_EventKind_Halt)
+                {
+                  DMN_EventNode *dst_n = ss->free_dmn_event_node;
+                  if(dst_n != 0)
+                  {
+                    SLLStackPop(ss->free_dmn_event_node);
+                  }
+                  else
+                  {
+                    dst_n = push_array(ss->dmn_event_arena, DMN_EventNode, 1);
+                  }
+                  SLLQueuePush(ss->first_dmn_event_node, ss->last_dmn_event_node, dst_n);
+                  dmn_event_deep_copy(ss->dmn_event_arena, &dst_n->v, &n->v);
+                  new_events = 1;
+                }
+              }
+              ss->run_state = 0;
+            }
+            
+            // rjf: if ss has group halt set, unset
+            if(ss != 0 && ss->group_halt)
+            {
+              ss->group_halt = 0;
+            }
           }
-#endif
+        }
+        
+        //- rjf: we received all we needed to, so close the sock ring.
+        d_server_io_end(server_io_ctx);
+        
+        //- rjf: reset the local server group halt flag if we saw a halt.
+        if(local_server_halted)
+        {
+          ins_atomic_u32_eval_assign(&d_ctrl_state->ctrl_thread_local_server_group_halt, 0);
         }
         
         //- rjf: bump all debuggee state generations
@@ -3249,14 +3762,17 @@ d_ctrl_thread__next_dmn_event(Arena *arena, DMN_CtrlCtx *ctrl_ctx, D_Msg *msg, D
       }
       
       //- rjf: unset spoof
+#if 0 // TODO(rjf): @multimachine
       if(do_spoof) ProfScope("unset spoof")
       {
         d_process_write(spoof->process, r1u64(spoof->vaddr, spoof->vaddr+size_of_spoof), &spoof_old_ip_value);
       }
+#endif
       
       //- rjf: irrespective of what event came back, we should ALWAYS check the
       // spoof's thread and see if it hit the spoof address, because we may have
       // simply been sent other debug events first
+#if 0 // TODO(rjf): @multimachine
       if(spoof != 0)
       {
         D_Entity *thread = d_entity_from_handle(spoof->thread);
@@ -3272,6 +3788,17 @@ d_ctrl_thread__next_dmn_event(Arena *arena, DMN_CtrlCtx *ctrl_ctx, D_Msg *msg, D
           d_thread_write_reg_block(spoof->thread, regs_block);
         }
       }
+#endif
+    }
+    
+    ////////////////////////////
+    //- rjf: no event, *and* our run didn't cause any new events -> not attached error
+    //
+    if(!got_event && !new_events)
+    {
+      event->kind = DMN_EventKind_Error;
+      event->error_kind = DMN_ErrorKind_NotAttached;
+      got_event = 1;
     }
   }
   
@@ -3298,14 +3825,27 @@ d_ctrl_thread__next_dmn_event(Arena *arena, DMN_CtrlCtx *ctrl_ctx, D_Msg *msg, D
         }
       }
       
+      // rjf: was this process launched by us? -> tick the 'launch' counter down
+      if(msg_id != 0)
+      {
+        D_ServerState *ss = d_server_state_from_id(server_id);
+        ss->launch_or_attach_counter -= 1;
+      }
+      
+      // rjf: count this process
+      {
+        D_ServerState *ss = d_server_state_from_id(server_id);
+        ss->process_counter += 1;
+      }
+      
       // rjf: push
       D_Event *out_evt = d_event_list_push(scratch.arena, &evts);
       out_evt->kind      = D_EventKind_NewProc;
       out_evt->msg_id    = msg_id;
-      out_evt->entity    = d_handle_from_dmn(D_ServerID_LocalHost, event->process);
+      out_evt->entity    = d_handle_from_dmn(server_id, event->process);
       out_evt->arch      = event->arch;
       out_evt->entity_id = event->code;
-      out_evt->os        = OperatingSystem_CURRENT; // TODO: operating system of the remote target machine
+      out_evt->os        = OperatingSystem_CURRENT; // TODO(rjf): @multimachine operating system of the remote target machine
     }break;
     
     //- rjf: create thread
@@ -3314,8 +3854,8 @@ d_ctrl_thread__next_dmn_event(Arena *arena, DMN_CtrlCtx *ctrl_ctx, D_Msg *msg, D
       D_Event *out_evt = d_event_list_push(scratch.arena, &evts);
       out_evt->kind       = D_EventKind_NewThread;
       out_evt->msg_id     = msg->msg_id;
-      out_evt->entity     = d_handle_from_dmn(D_ServerID_LocalHost, event->thread);
-      out_evt->parent     = d_handle_from_dmn(D_ServerID_LocalHost, event->process);
+      out_evt->entity     = d_handle_from_dmn(server_id, event->thread);
+      out_evt->parent     = d_handle_from_dmn(server_id, event->process);
       out_evt->arch       = event->arch;
       out_evt->entity_id  = event->code;
       out_evt->stack_base = event->stack_pointer;
@@ -3330,8 +3870,8 @@ d_ctrl_thread__next_dmn_event(Arena *arena, DMN_CtrlCtx *ctrl_ctx, D_Msg *msg, D
       Temp scratch2 = scratch_begin(&scratch.arena, 1);
       
       //- rjf: unpack module
-      D_Handle process_handle = d_handle_from_dmn(D_ServerID_LocalHost, event->process);
-      D_Handle module_handle = d_handle_from_dmn(D_ServerID_LocalHost, event->module);
+      D_Handle process_handle = d_handle_from_dmn(server_id, event->process);
+      D_Handle module_handle = d_handle_from_dmn(server_id, event->module);
       String8 module_path = path_normalized_from_string(scratch2.arena, event->string);
       U64 exe_timestamp = properties_from_file_path(module_path).modified;
       DMN_ModuleInfo *module_info = event->module_info;
@@ -3493,10 +4033,15 @@ d_ctrl_thread__next_dmn_event(Arena *arena, DMN_CtrlCtx *ctrl_ctx, D_Msg *msg, D
     //- rjf: exit process
     case DMN_EventKind_ExitProcess:
     {
+      // rjf: uncount this process
+      D_ServerState *ss = d_server_state_from_id(server_id);
+      ss->process_counter -= 1;
+      
+      // rjf: push
       D_Event *out_evt = d_event_list_push(scratch.arena, &evts);
       out_evt->kind       = D_EventKind_EndProc;
       out_evt->msg_id     = msg->msg_id;
-      out_evt->entity     = d_handle_from_dmn(D_ServerID_LocalHost, event->process);
+      out_evt->entity     = d_handle_from_dmn(server_id, event->process);
       out_evt->u64_code   = event->code;
     }break;
     
@@ -3506,7 +4051,7 @@ d_ctrl_thread__next_dmn_event(Arena *arena, DMN_CtrlCtx *ctrl_ctx, D_Msg *msg, D
       D_Event *out_evt = d_event_list_push(scratch.arena, &evts);
       out_evt->kind       = D_EventKind_EndThread;
       out_evt->msg_id     = msg->msg_id;
-      out_evt->entity     = d_handle_from_dmn(D_ServerID_LocalHost, event->thread);
+      out_evt->entity     = d_handle_from_dmn(server_id, event->thread);
       out_evt->entity_id  = event->code;
     }break;
     
@@ -3514,7 +4059,7 @@ d_ctrl_thread__next_dmn_event(Arena *arena, DMN_CtrlCtx *ctrl_ctx, D_Msg *msg, D
     case DMN_EventKind_UnloadModule:
     {
       //- rjf: unpack module
-      D_Handle module_handle = d_handle_from_dmn(D_ServerID_LocalHost, event->module);
+      D_Handle module_handle = d_handle_from_dmn(server_id, event->module);
       D_Entity *module_ent = d_entity_from_handle(module_handle);
       D_Entity *process_ent = d_process_from_entity(module_ent);
       String8 module_path = event->string;
@@ -3551,8 +4096,8 @@ d_ctrl_thread__next_dmn_event(Arena *arena, DMN_CtrlCtx *ctrl_ctx, D_Msg *msg, D
         D_Event *out_evt = d_event_list_push(scratch.arena, &evts);
         out_evt->kind       = D_EventKind_DebugString;
         out_evt->msg_id     = msg->msg_id;
-        out_evt->entity     = d_handle_from_dmn(D_ServerID_LocalHost, event->thread);
-        out_evt->parent     = d_handle_from_dmn(D_ServerID_LocalHost, event->process);
+        out_evt->entity     = d_handle_from_dmn(server_id, event->thread);
+        out_evt->parent     = d_handle_from_dmn(server_id, event->process);
         out_evt->string     = str8_substr(event->string, r1u64(string_idx*d_ctrl_state->c2u_ring_max_string_size, (string_idx+1)*d_ctrl_state->c2u_ring_max_string_size));
       }
     }break;
@@ -3563,8 +4108,8 @@ d_ctrl_thread__next_dmn_event(Arena *arena, DMN_CtrlCtx *ctrl_ctx, D_Msg *msg, D
       D_Event *out_evt = d_event_list_push(scratch.arena, &evts);
       out_evt->kind       = D_EventKind_ThreadName;
       out_evt->msg_id     = msg->msg_id;
-      out_evt->entity     = d_handle_from_dmn(D_ServerID_LocalHost, event->thread);
-      out_evt->parent     = d_handle_from_dmn(D_ServerID_LocalHost, event->process);
+      out_evt->entity     = d_handle_from_dmn(server_id, event->thread);
+      out_evt->parent     = d_handle_from_dmn(server_id, event->process);
       out_evt->string     = event->string;
       out_evt->entity_id  = event->code;
     }break;
@@ -3575,8 +4120,8 @@ d_ctrl_thread__next_dmn_event(Arena *arena, DMN_CtrlCtx *ctrl_ctx, D_Msg *msg, D
       D_Event *out_evt = d_event_list_push(scratch.arena, &evts);
       out_evt->kind       = D_EventKind_ThreadColor;
       out_evt->msg_id     = msg->msg_id;
-      out_evt->entity     = d_handle_from_dmn(D_ServerID_LocalHost, event->thread);
-      out_evt->parent     = d_handle_from_dmn(D_ServerID_LocalHost, event->process);
+      out_evt->entity     = d_handle_from_dmn(server_id, event->thread);
+      out_evt->parent     = d_handle_from_dmn(server_id, event->process);
       out_evt->entity_id  = event->code;
       out_evt->rgba       = event->user_data;
     }break;
@@ -3586,7 +4131,7 @@ d_ctrl_thread__next_dmn_event(Arena *arena, DMN_CtrlCtx *ctrl_ctx, D_Msg *msg, D
     {
       D_Event *out_evt = d_event_list_push(scratch.arena, &evts);
       out_evt->kind       = D_EventKind_SetVAddrRangeNote;
-      out_evt->parent     = d_handle_from_dmn(D_ServerID_LocalHost, event->process);
+      out_evt->parent     = d_handle_from_dmn(server_id, event->process);
       out_evt->msg_id     = msg->msg_id;
       out_evt->vaddr_rng  = r1u64(event->address, event->address + event->size);
       out_evt->string     = event->string;
@@ -3597,8 +4142,8 @@ d_ctrl_thread__next_dmn_event(Arena *arena, DMN_CtrlCtx *ctrl_ctx, D_Msg *msg, D
     {
       D_Event *out_evt = d_event_list_push(scratch.arena, &evts);
       out_evt->kind       = D_EventKind_SetBreakpoint;
-      out_evt->entity     = d_handle_from_dmn(D_ServerID_LocalHost, event->thread);
-      out_evt->parent     = d_handle_from_dmn(D_ServerID_LocalHost, event->process);
+      out_evt->entity     = d_handle_from_dmn(server_id, event->thread);
+      out_evt->parent     = d_handle_from_dmn(server_id, event->process);
       out_evt->vaddr_rng  = r1u64(event->address, event->address+event->size);
       out_evt->bp_flags   = d_breakpoint_flags_from_dmn_trap_flags(event->flags);
     }break;
@@ -3609,17 +4154,23 @@ d_ctrl_thread__next_dmn_event(Arena *arena, DMN_CtrlCtx *ctrl_ctx, D_Msg *msg, D
       // TODO(rjf): this needs to be reflected in the resolved trap list too!!!!!!!!
       D_Event *out_evt = d_event_list_push(scratch.arena, &evts);
       out_evt->kind       = D_EventKind_UnsetBreakpoint;
-      out_evt->entity     = d_handle_from_dmn(D_ServerID_LocalHost, event->thread);
-      out_evt->parent     = d_handle_from_dmn(D_ServerID_LocalHost, event->process);
+      out_evt->entity     = d_handle_from_dmn(server_id, event->thread);
+      out_evt->parent     = d_handle_from_dmn(server_id, event->process);
       out_evt->vaddr_rng  = r1u64(event->address, event->address+event->size);
       out_evt->bp_flags   = d_breakpoint_flags_from_dmn_trap_flags(event->flags);
     }break;
   }
   d_c2u_push_events(&evts);
   
+  //- rjf: set server id
+  if(server_id_out)
+  {
+    *server_id_out = server_id;
+  }
+  
   scratch_end(scratch);
   ProfEnd();
-  return(event);
+  return event;
 }
 
 //- rjf: eval helpers
@@ -3941,9 +4492,14 @@ internal D_Handle
 d_ctrl_thread__handle_from_addr_or_connect(String8 addr)
 {
   D_Handle handle = {0};
+  if(addr.size == 0)
+  {
+    handle = d_handle_from_server_id(D_ServerID_LocalHost);
+  }
   
   //- rjf: try to find existing handle for this server address
   B32 found = 0;
+  if(addr.size != 0)
   {
     D_EntityArray servers = d_entity_array_from_kind(D_EntityKind_Server);
     for EachIndex(idx, servers.count)
@@ -3958,44 +4514,25 @@ d_ctrl_thread__handle_from_addr_or_connect(String8 addr)
   }
   
   //- rjf: if not found, connect to server & handshake
-  if(!found)
+  if(!found && addr.size != 0)
   {
+    Temp scratch = scratch_begin(0, 0);
     SOCK_Endpoint endpoint = sock_endpoint_from_string(addr);
     
     // rjf: handshake & get state
     B32 good_handshake = 1;
+    D_CtrlThread_StatusF("Connecting to server at %S.", sock_string_from_endpoint(scratch.arena, endpoint))
     {
-      Temp scratch = scratch_begin(0, 0);
-      
-      // rjf: send handshake packet
-      {
-        DS_Msg server_msg = {0};
-        {
-          server_msg.kind   = DS_MsgKind_Handshake;
-          server_msg.msg_id = 1;
-        }
-        String8 send_packet = ds_packet_from_msg(scratch.arena, &server_msg);
-        sock_send(d_ctrl_state->sock_session, SOCK_Protocol_TCP, endpoint, send_packet, max_U64);
-      }
-      
-      // rjf: receive state packet(s)
-      {
-        SOCK_Protocol recv_protocol = SOCK_Protocol_TCP;
-        SOCK_Endpoint recv_endpoint = {0};
-        String8 recv_packet = {0};
-        sock_recv(scratch.arena, d_ctrl_state->sock_session, &recv_protocol, &recv_endpoint, &recv_packet, now_time_us()+10000000);
-        if(recv_packet.size == 0)
-        {
-          good_handshake = 0;
-        }
-      }
+      // rjf: handshake & get state
+      DS_Msg server_msg = {DS_MsgKind_Handshake};
+      DS_Response response = d_server_msg(scratch.arena, endpoint, &server_msg);
+      good_handshake = response.good;
       
       // rjf: report failure
       if(!good_handshake)
       {
         log_user_errorf("Couldn't successfully connect to server at %S (%S).", sock_string_from_endpoint(scratch.arena, endpoint), addr);
       }
-      scratch_end(scratch);
     }
     
     // rjf: push connect event
@@ -4034,25 +4571,61 @@ d_ctrl_thread__handle_from_addr_or_connect(String8 addr)
       DLLPushBack_NP(d_ctrl_state->server_slots[slot_idx].first, d_ctrl_state->server_slots[slot_idx].last, ss, hash_next, hash_prev);
     }
     
+    // rjf: cache (server_id -> endpoint) mapping
+    if(good_handshake)
+    {
+      U64 slot_idx = server_id%d_ctrl_state->open_server_cache.slots_count;
+      RWMutexScope(d_ctrl_state->open_server_cache.rw_mutex, 1)
+      {
+        D_OpenServerNode *node = 0;
+        for(D_OpenServerNode *n = d_ctrl_state->open_server_cache.slots[slot_idx].first; n != 0; n = n->next)
+        {
+          if(n->server_id == server_id)
+          {
+            node = n;
+            break;
+          }
+        }
+        if(node == 0)
+        {
+          node = d_ctrl_state->open_server_cache.free_node;
+          if(node)
+          {
+            SLLStackPop(d_ctrl_state->open_server_cache.free_node);
+          }
+          else
+          {
+            node = push_array(d_ctrl_state->open_server_cache.arena, D_OpenServerNode, 1);
+          }
+          DLLPushBack(d_ctrl_state->open_server_cache.slots[slot_idx].first, d_ctrl_state->open_server_cache.slots[slot_idx].last, node);
+          node->server_id = server_id;
+        }
+        node->endpoint = endpoint;
+      }
+    }
+    
     // rjf: form handle
     handle.server_id = server_id;
+    scratch_end(scratch);
   }
   
   return handle;
 }
 
-//- rjf: control system socket wakeup function
-
-internal void
-d_ctrl_sock_wakeup(void)
+internal D_ServerState *
+d_server_state_from_id(D_ServerID id)
 {
-  // NOTE(rjf): if we receive something from a socket while in a run state
-  // (e.g. blocked locally on a dmn_ctrl_run), then we want to generate a
-  // halt, so that we can wake up and process the received packet.
-  if(d_ctrl_state->ctrl_thread_dmn_run_block)
+  D_ServerState *result = 0;
+  U64 slot_idx = id%d_ctrl_state->server_slots_count;
+  for(D_ServerState *ss = d_ctrl_state->server_slots[slot_idx].first; ss != 0; ss = ss->hash_next)
   {
-    dmn_halt(0, 0);
+    if(ss->server_id == id)
+    {
+      result = ss;
+      break;
+    }
   }
+  return result;
 }
 
 //- rjf: log flusher
@@ -4077,6 +4650,30 @@ d_ctrl_thread__end_and_flush_log(void)
 //- rjf: msg kind implementations
 
 internal void
+d_ctrl_thread__status(String8 string)
+{
+  Temp scratch = scratch_begin(0, 0);
+  D_EventList evts = {0};
+  D_Event *evt = d_event_list_push(scratch.arena, &evts);
+  evt->kind = D_EventKind_Status;
+  evt->string = string;
+  d_c2u_push_events(&evts);
+  scratch_end(scratch);
+}
+
+internal void
+d_ctrl_thread__statusf(char *fmt, ...)
+{
+  Temp scratch = scratch_begin(0, 0);
+  va_list args;
+  va_start(args, fmt);
+  String8 string = str8fv(scratch.arena, fmt, args);
+  d_ctrl_thread__status(string);
+  va_end(args);
+  scratch_end(scratch);
+}
+
+internal void
 d_ctrl_thread__open_remote_server(DMN_CtrlCtx *ctrl_ctx, D_Msg *msg)
 {
   d_ctrl_thread__handle_from_addr_or_connect(msg->address);
@@ -4099,6 +4696,8 @@ internal void
 d_ctrl_thread__launch(DMN_CtrlCtx *ctrl_ctx, D_Msg *msg)
 {
   Temp scratch = scratch_begin(0, 0);
+  SOCK_Endpoint server_endpoint = sock_endpoint_from_string(msg->address);
+  String8 server_endpoint_string = sock_string_from_endpoint(scratch.arena, server_endpoint);
   
   //////////////////////////////
   //- rjf: message -> launch parameters for debug servers
@@ -4116,38 +4715,51 @@ d_ctrl_thread__launch(DMN_CtrlCtx *ctrl_ctx, D_Msg *msg)
   };
   
   //////////////////////////////
-  //- rjf: remote? -> get server handle
+  //- rjf: remote & deploy? -> deploy
   //
-  D_Handle server = {.server_id = D_ServerID_LocalHost};
-  if(msg->address.size != 0)
+  if(msg->address.size != 0 && msg->deploy)
   {
-    server = d_ctrl_thread__handle_from_addr_or_connect(msg->address);
+    // rjf: get executable path
+    String8 exe_path = str8_list_first(&launch_params.command_line);
+    
+    // rjf: executable path -> data
+    String8 exe_data = data_from_file_path(scratch.arena, exe_path);
+    
+    // rjf: data -> hash
+    U128 exe_hash = u128_hash_from_str8(exe_data);
+    
+    // rjf: determine if this hash exists remotely
+    B32 already_deployed = 0;
+    D_CtrlThread_StatusF("Checking if \"%S\" (ID: `%I64x_%I64x`) is deployed.", exe_path, exe_hash.u64[0], exe_hash.u64[1])
+    {
+      DS_Msg msg = {DS_MsgKind_DeployStatus, .path = exe_path, .hash = exe_hash};
+      DS_Response response = d_server_msg(scratch.arena, server_endpoint, &msg);
+      already_deployed = response.good;
+    }
+    
+    // rjf: if this hash does *not* exist remotely -> deploy
+    if(!already_deployed) D_CtrlThread_StatusF("\"%S\" (ID: `%I64x_%I64x`) not yet deployed. Uploading...", exe_path, exe_hash.u64[0], exe_hash.u64[1])
+    {
+      DS_Msg msg = {DS_MsgKind_Deploy, .path = exe_path, .hash = exe_hash, .data = exe_data};
+      DS_Response response = d_server_msg(scratch.arena, server_endpoint, &msg);
+    }
   }
   
   //////////////////////////////
   //- rjf: remote? -> send message to launch, wait on new PID
   //
   U64 pid = 0;
-  if(msg->address.size != 0)
+  if(msg->address.size != 0) D_CtrlThread_StatusF("Launching target on %S...", server_endpoint_string)
   {
-    SOCK_Endpoint server_endpoint = sock_endpoint_from_string(msg->address);
+    Temp scratch = scratch_begin(0, 0);
     DS_Msg server_msg = {DS_MsgKind_Launch, .launch_params = &launch_params};
-    String8 server_packet = ds_packet_from_msg(scratch.arena, &server_msg);
-    String8 server_response_packet = {0};
-    SOCK_Endpoint server_response_endpoint = {0};
-    if(!sock_send(d_ctrl_state->sock_session, SOCK_Protocol_TCP, server_endpoint, server_packet, now_time_us()+10000000))
+    DS_Response response = d_server_msg(scratch.arena, server_endpoint, &server_msg);
+    pid = response.pid;
+    if(!response.good)
     {
-      log_user_errorf("Couldn't successfully send launch command to %S (%S).", sock_string_from_endpoint(scratch.arena, server_endpoint), msg->address);
+      log_user_errorf("Couldn't launch target on server at %S.", server_endpoint_string);
     }
-    else if(!sock_recv(scratch.arena, d_ctrl_state->sock_session, 0, &server_response_endpoint, &server_response_packet, now_time_us()+10000000))
-    {
-      log_user_errorf("Didn't receive launch command response from %S (%S) in time.", sock_string_from_endpoint(scratch.arena, server_endpoint), msg->address);
-    }
-    else
-    {
-      DS_Response response = ds_response_from_packet(scratch.arena, server_response_packet);
-      pid = response.pid;
-    }
+    scratch_end(scratch);
   }
   
   //////////////////////////////
@@ -4156,6 +4768,17 @@ d_ctrl_thread__launch(DMN_CtrlCtx *ctrl_ctx, D_Msg *msg)
   else
   {
     pid = ds_ctrl_launch(ctrl_ctx, &launch_params);
+  }
+  
+  //////////////////////////////
+  //- rjf: connect to server if needed, tick up launch/attach counter
+  //
+  if(pid != 0)
+  {
+    D_Handle server_handle = d_ctrl_thread__handle_from_addr_or_connect(msg->address);
+    D_ServerID server_id = server_handle.server_id;
+    D_ServerState *ss = d_server_state_from_id(server_id);
+    ss->launch_or_attach_counter += 1;
   }
   
   //////////////////////////////
@@ -4189,50 +4812,61 @@ d_ctrl_thread__attach(DMN_CtrlCtx *ctrl_ctx, D_Msg *msg)
   ProfBeginFunction();
   Temp scratch = scratch_begin(0, 0);
   
-  //////////////////////////////
-  //- rjf: remote? -> send message to attach, wait on success
-  //
-  B32 attach_successful = 0;
-  if(msg->address.size != 0)
+  //- rjf: local? -> attach locally
+  B32 attach_good = 0;
+  if(msg->address.size == 0)
   {
-    // TODO(rjf)
+    attach_good = ds_ctrl_attach(ctrl_ctx, msg->entity_id);
   }
   
-  //////////////////////////////
-  //- rjf: local? -> attach locally
-  //
+  //- rjf: remote? -> attach remotely, wait for response
   else
   {
-    //- rjf: attach
-    attach_successful = dmn_ctrl_attach(ctrl_ctx, msg->entity_id);
-    
-    //- rjf: run to handshake
-    if(attach_successful)
+    String8 address = msg->address;
+    SOCK_Endpoint endpoint = sock_endpoint_from_string(address);
+    DS_Msg attach_msg = {DS_MsgKind_Attach, .pid = msg->entity_id};
+    DS_Response response = d_server_msg(scratch.arena, endpoint, &attach_msg);
+    attach_good = response.good;
+  }
+  
+  //- rjf: connect to server if needed & inc launch/attach counter
+  if(attach_good)
+  {
+    D_Handle server_handle = d_ctrl_thread__handle_from_addr_or_connect(msg->address);
+    D_ServerID server_id = server_handle.server_id;
+    D_ServerState *ss = d_server_state_from_id(server_id);
+    ss->launch_or_attach_counter += 1;
+  }
+  
+  //- rjf: run to handshake
+  if(attach_good)
+  {
+    D_Handle server = d_ctrl_thread__handle_from_addr_or_connect(msg->address);
+    D_ServerID server_id = server.server_id;
+    DMN_Handle unfrozen_process = {0};
+    D_RunCtrls *run_ctrls = d_ctrl_thread__run_ctrls(scratch.arena);
+    run_ctrls->run_entities_are_processes = 1;
+    run_ctrls->run_entities_are_unfrozen = 1;
+    for(B32 done = 0; done == 0;)
     {
-      DMN_Handle unfrozen_process = {0};
-      DMN_RunCtrls run_ctrls = {0};
-      run_ctrls.run_entities_are_unfrozen = 1;
-      run_ctrls.run_entities_are_processes = 1;
-      for(B32 done = 0; done == 0;)
+      DMN_Event *event = d_ctrl_thread__next_dmn_event(scratch.arena, ctrl_ctx, msg, run_ctrls, 0, 0);
+      switch(event->kind)
       {
-        DMN_Event *event = d_ctrl_thread__next_dmn_event(scratch.arena, ctrl_ctx, msg, &run_ctrls, 0);
-        switch(event->kind)
+        default:{}break;
+        case DMN_EventKind_CreateProcess:
         {
-          default:{}break;
-          case DMN_EventKind_CreateProcess:
-          {
-            unfrozen_process = event->process;
-            run_ctrls.run_entities = &unfrozen_process;
-            run_ctrls.run_entity_count = 1;
-          }break;
-          case DMN_EventKind_Halt:
-          case DMN_EventKind_Exception:
-          case DMN_EventKind_Error:
-          case DMN_EventKind_HandshakeComplete:
-          {
-            done = 1;
-          }break;
-        }
+          unfrozen_process = event->process;
+          D_ServerRunCtrls *server_ctrls = d_ctrl_thread__server_run_ctrls_from_id_or_push(scratch.arena, run_ctrls, server_id);
+          server_ctrls->run_entities.count = 1;
+          server_ctrls->run_entities.handles = &unfrozen_process;
+        }break;
+        case DMN_EventKind_Halt:
+        case DMN_EventKind_Exception:
+        case DMN_EventKind_Error:
+        case DMN_EventKind_HandshakeComplete:
+        {
+          done = 1;
+        }break;
       }
     }
   }
@@ -4244,7 +4878,7 @@ d_ctrl_thread__attach(DMN_CtrlCtx *ctrl_ctx, D_Msg *msg)
     event->kind       = D_EventKind_Stopped;
     event->cause      = D_EventCause_Finished;
     event->msg_id     = msg->msg_id;
-    event->entity_id = !!attach_successful * msg->entity_id;
+    event->entity_id = !!attach_good * msg->entity_id;
     d_c2u_push_events(&evts);
   }
   
@@ -4702,7 +5336,12 @@ d_ctrl_thread__open_crash_dump(DMN_CtrlCtx *ctrl_ctx, D_Msg *msg)
           {
             if(n->v.path.size != 0)
             {
-              module_info.local_debug_info_path = str8_copy(module_info_arena, n->v.path);
+              String8 debug_path_absolutified = n->v.path;
+              if(path_style_from_str8(n->v.path) == PathStyle_Relative)
+              {
+                debug_path_absolutified = path_absolute_dst_from_relative_dst_src(scratch.arena, n->v.path, str8_chop_last_slash(dump_modules[idx].path));
+              }
+              module_info.local_debug_info_path = str8_copy(module_info_arena, debug_path_absolutified);
               module_info.dbg_name = str8_skip_last_slash(module_info.local_debug_info_path);
               module_info.dbg_guid = n->v.guid;
               module_info.dbg_age  = n->v.age;
@@ -4790,33 +5429,53 @@ d_ctrl_thread__kill(DMN_CtrlCtx *ctrl_ctx, D_Msg *msg)
   Temp scratch = scratch_begin(0, 0);
   B32 kill_worked = 0;
   D_EventCause cause = D_EventCause_Finished;
-  switch((D_ControllerKindEnum)msg->entity.controller_kind)
+  switch(msg->entity.controller_kind)
   {
-    //- rjf: demon kills
+    //////////////////////////////
+    //- rjf: demon debugging
+    //
     case D_ControllerKind_Demon:
     {
-      DMN_Handle process = d_dmn_from_handle(msg->entity);
-      U32 exit_code = msg->exit_code;
+      D_Entity *process = d_entity_from_handle(msg->entity);
+      D_Entity *server = d_entity_ancestor_from_kind(process, D_EntityKind_Server);
+      DMN_Handle process_dmn = d_dmn_from_handle(process->handle);
       
-      //- rjf: send kill
-      kill_worked = dmn_ctrl_kill(ctrl_ctx, process, exit_code);
+      //- rjf: send kill - local demon debugging case
+      if(msg->entity.server_id == D_ServerID_LocalHost)
+      {
+        U32 exit_code = msg->exit_code;
+        kill_worked = ds_ctrl_kill(ctrl_ctx, process_dmn, exit_code);
+      }
+      
+      //- rjf: send kill - remote demon debugging case
+      else if(msg->entity.server_id != D_ServerID_LocalHost)
+      {
+        SOCK_Endpoint endpoint = d_endpoint_from_server_id(process->handle.server_id);
+        DS_Msg kill_msg = {DS_MsgKind_Kill, .entity = d_dmn_from_handle(process->handle)};
+        DS_Response response = d_server_msg(scratch.arena, endpoint, &kill_msg);
+        kill_worked = response.good;
+      }
       
       //- rjf: wait for process to be dead
       if(kill_worked)
       {
-        DMN_RunCtrls run_ctrls = {0};
-        run_ctrls.run_entities_are_unfrozen = 1;
-        run_ctrls.run_entities_are_processes = 1;
-        run_ctrls.run_entities = &process;
-        run_ctrls.run_entity_count = 1;
+        // rjf: set up run controls for the server which owns this process
+        D_RunCtrls *run_ctrls = d_ctrl_thread__run_ctrls(scratch.arena);
+        run_ctrls->run_entities_are_unfrozen = 1;
+        run_ctrls->run_entities_are_processes = 1;
+        D_ServerRunCtrls *server_ctrls = d_ctrl_thread__server_run_ctrls_from_id_or_push(scratch.arena, run_ctrls, server->handle.server_id);
+        server_ctrls->run_entities.count = 1;
+        server_ctrls->run_entities.handles = &process_dmn;
+        
+        // rjf: wait for the kill event
         for(B32 done = 0; done == 0;)
         {
-          DMN_Event *event = d_ctrl_thread__next_dmn_event(scratch.arena, ctrl_ctx, msg, &run_ctrls, 0);
+          DMN_Event *event = d_ctrl_thread__next_dmn_event(scratch.arena, ctrl_ctx, msg, run_ctrls, 0, 0);
           switch(event->kind)
           {
             default:{}break;
             case DMN_EventKind_ExitProcess:
-            if(dmn_handle_match(event->process, process))
+            if(dmn_handle_match(event->process, process_dmn))
             {
               done = 1;
             }break;
@@ -4827,15 +5486,19 @@ d_ctrl_thread__kill(DMN_CtrlCtx *ctrl_ctx, D_Msg *msg)
       }
     }break;
     
-    //- rjf: dump kills
+    //////////////////////////////
+    //- rjf: dump debugging
+    //
     case D_ControllerKind_Dump:
     {
       kill_worked = 1;
       d_ctrl_thread__close_dump_process(msg->msg_id, msg->entity);
-    }break;
+    }
   }
   
+  //////////////////////////////
   //- rjf: record stop
+  //
   {
     D_EventList evts = {0};
     D_Event *event = d_event_list_push(scratch.arena, &evts);
@@ -4859,6 +5522,7 @@ d_ctrl_thread__kill_all(DMN_CtrlCtx *ctrl_ctx, D_Msg *msg)
   ProfBeginFunction();
   Temp scratch = scratch_begin(0, 0);
   U32 exit_code = msg->exit_code;
+  D_RunCtrls *run_ctrls = d_ctrl_thread__run_ctrls(scratch.arena);
   
   //- rjf: gather all currently existing processes
   D_EntityArray initial_processes = d_entity_array_from_kind(D_EntityKind_Process);
@@ -4883,7 +5547,6 @@ d_ctrl_thread__kill_all(DMN_CtrlCtx *ctrl_ctx, D_Msg *msg)
   D_EventCause cause = D_EventCause_Finished;
   if(first_task != 0)
   {
-    DMN_RunCtrls run_ctrls = {0};
     for(B32 done = 0; !done;)
     {
       // rjf: kill remaining processes
@@ -4893,7 +5556,28 @@ d_ctrl_thread__kill_all(DMN_CtrlCtx *ctrl_ctx, D_Msg *msg)
         B32 kill_worked = 0;
         switch((D_ControllerKindEnum)t->process->handle.controller_kind)
         {
-          case D_ControllerKind_Demon:{kill_worked = dmn_ctrl_kill(ctrl_ctx, d_dmn_from_handle(t->process->handle), exit_code);}break;
+          case D_ControllerKind_Demon:
+          {
+            D_Entity *process = d_entity_from_handle(t->process->handle);
+            D_Entity *server = d_entity_ancestor_from_kind(process, D_EntityKind_Server);
+            DMN_Handle process_dmn = d_dmn_from_handle(process->handle);
+            
+            //- rjf: send kill - local demon debugging case
+            if(t->process->handle.server_id == D_ServerID_LocalHost)
+            {
+              U32 exit_code = msg->exit_code;
+              kill_worked = ds_ctrl_kill(ctrl_ctx, process_dmn, exit_code);
+            }
+            
+            //- rjf: send kill - remote demon debugging case
+            else if(t->process->handle.server_id != D_ServerID_LocalHost)
+            {
+              SOCK_Endpoint endpoint = d_endpoint_from_server_id(process->handle.server_id);;
+              DS_Msg kill_msg = {DS_MsgKind_Kill, .entity = d_dmn_from_handle(t->process->handle)};
+              DS_Response response = d_server_msg(scratch.arena, endpoint, &kill_msg);
+              kill_worked = response.good;
+            }
+          }break;
           case D_ControllerKind_Dump: {kill_worked = 1; d_ctrl_thread__close_dump_process(msg->msg_id, t->process->handle);}break;
         }
         if(kill_worked)
@@ -4903,7 +5587,8 @@ d_ctrl_thread__kill_all(DMN_CtrlCtx *ctrl_ctx, D_Msg *msg)
       }
       
       // rjf: get next event
-      DMN_Event *event = d_ctrl_thread__next_dmn_event(scratch.arena, ctrl_ctx, msg, &run_ctrls, 0);
+      D_ServerID event_server_id = 0;
+      DMN_Event *event = d_ctrl_thread__next_dmn_event(scratch.arena, ctrl_ctx, msg, run_ctrls, 0, &event_server_id);
       
       // rjf: process event
       switch(event->kind)
@@ -4911,7 +5596,7 @@ d_ctrl_thread__kill_all(DMN_CtrlCtx *ctrl_ctx, D_Msg *msg)
         default:{}break;
         case DMN_EventKind_CreateProcess:
         {
-          D_Entity *new_process = d_entity_from_handle(d_handle_from_dmn(D_ServerID_LocalHost, event->process));
+          D_Entity *new_process = d_entity_from_handle(d_handle_from_dmn(event_server_id, event->process));
           Task *t = push_array(scratch.arena, Task, 1);
           t->process = new_process;
           DLLPushBack(first_task, last_task, t);
@@ -4948,31 +5633,66 @@ d_ctrl_thread__detach(DMN_CtrlCtx *ctrl_ctx, D_Msg *msg)
 {
   ProfBeginFunction();
   Temp scratch = scratch_begin(0, 0);
-  DMN_Handle process = d_dmn_from_handle(msg->entity);
+  B32 detach_worked = 0;
+  D_EventCause cause = D_EventCause_Finished;
   
   //- rjf: detach
-  B32 detach_worked = dmn_ctrl_detach(ctrl_ctx, process);
-  
-  //- rjf: wait for process to be dead
-  if(detach_worked)
+  switch(msg->entity.controller_kind)
   {
-    DMN_RunCtrls run_ctrls = {0};
-    run_ctrls.run_entities_are_unfrozen = 1;
-    run_ctrls.run_entities_are_processes = 1;
-    run_ctrls.run_entities = &process;
-    run_ctrls.run_entity_count = 1;
-    for(B32 done = 0; done == 0;)
+    //////////////////////////////
+    //- rjf: demon debugging
+    //
+    case D_ControllerKind_Demon:
     {
-      DMN_Event *event = d_ctrl_thread__next_dmn_event(scratch.arena, ctrl_ctx, msg, &run_ctrls, 0);
-      if(event->kind == DMN_EventKind_ExitProcess && dmn_handle_match(event->process, process))
+      //- rjf: send detach - local demon debugging case
+      if(msg->entity.server_id == D_ServerID_LocalHost)
       {
-        done = 1;
+        detach_worked = ds_ctrl_detach(ctrl_ctx, d_dmn_from_handle(msg->entity));
       }
-      if(event->kind == DMN_EventKind_Halt)
+      
+      //- rjf: send detach - remote demon debugging case
+      else
       {
-        done = 1;
+        String8 address = msg->address;
+        SOCK_Endpoint endpoint = sock_endpoint_from_string(address);
+        DS_Msg detach_msg = {DS_MsgKind_Detach, .entity = d_dmn_from_handle(msg->entity)};
+        DS_Response response = d_server_msg(scratch.arena, endpoint, &detach_msg);
+        detach_worked = response.good;
       }
-    }
+      
+      //- rjf: wait for process to be dead
+      DMN_Handle process_dmn = d_dmn_from_handle(msg->entity);
+      D_RunCtrls *run_ctrls = d_ctrl_thread__run_ctrls(scratch.arena);
+      run_ctrls->run_entities_are_unfrozen = 1;
+      run_ctrls->run_entities_are_processes = 1;
+      D_ServerRunCtrls *server_ctrls = d_ctrl_thread__server_run_ctrls_from_id_or_push(scratch.arena, run_ctrls, msg->entity.server_id);
+      server_ctrls->run_entities.handles = &process_dmn;
+      server_ctrls->run_entities.count = 1;
+      for(B32 done = 0; !done;)
+      {
+        DMN_Event *event = d_ctrl_thread__next_dmn_event(scratch.arena, ctrl_ctx, msg, run_ctrls, 0, 0);
+        switch(event->kind)
+        {
+          default:{}break;
+          case DMN_EventKind_ExitProcess:
+          if(dmn_handle_match(event->process, process_dmn))
+          {
+            done = 1;
+          }break;
+          case DMN_EventKind_Error:{done = 1; cause = D_EventCause_Error;}break;
+          case DMN_EventKind_Halt: {done = 1; cause = D_EventCause_InterruptedByHalt;}break;
+        }
+      }
+    }break;
+    
+    //////////////////////////////
+    //- rjf: dump debugging
+    //
+    case D_ControllerKind_Dump:
+    {
+      detach_worked = 1;
+      d_ctrl_thread__close_dump_process(msg->msg_id, msg->entity);
+    }break;
   }
   
   //- rjf: record stop
@@ -4980,7 +5700,7 @@ d_ctrl_thread__detach(DMN_CtrlCtx *ctrl_ctx, D_Msg *msg)
     D_EventList evts = {0};
     D_Event *event = d_event_list_push(scratch.arena, &evts);
     event->kind       = D_EventKind_Stopped;
-    event->cause      = D_EventCause_Finished;
+    event->cause      = cause;
     event->msg_id     = msg->msg_id;
     if(detach_worked)
     {
@@ -4999,6 +5719,7 @@ d_ctrl_thread__run(DMN_CtrlCtx *ctrl_ctx, D_Msg *msg)
   ProfBeginFunction();
   Temp scratch = scratch_begin(0, 0);
   DMN_Event *stop_event = 0;
+  D_ServerID stop_event_server_id = 0;
   D_EventCause stop_cause = D_EventCause_Null;
   D_EntityCtx *entity_ctx = &d_ctrl_state->ctrl_thread_entity_store->ctx;
   D_Handle target_thread = msg->entity;
@@ -5012,16 +5733,33 @@ d_ctrl_thread__run(DMN_CtrlCtx *ctrl_ctx, D_Msg *msg)
   //////////////////////////////
   //- rjf: gather all initial breakpoints
   //
-  DMN_TrapChunkList user_traps = {0};
+  typedef struct ServerTrapListNode ServerTrapListNode;
+  struct ServerTrapListNode
+  {
+    ServerTrapListNode *next;
+    D_ServerID server_id;
+    DMN_TrapChunkList user_traps;
+    DMN_TrapChunkList trap_net_traps;
+    DMN_TrapChunkList joined_traps;
+  };
+  U64 server_trap_list_slots_count = 8;
+  ServerTrapListNode **server_trap_list_slots = push_array(scratch.arena, ServerTrapListNode *, server_trap_list_slots_count);
   {
     D_Entity *thread = d_entity_from_handle(target_thread);
     D_EvalScope *eval_scope = d_ctrl_thread__eval_scope_begin(scratch.arena, &msg->user_bps, thread);
-    for(D_Entity *machine = entity_ctx->root->first;
-        machine != &d_entity_nil;
-        machine = machine->next)
+    for(D_Entity *server = entity_ctx->root->first;
+        server != &d_entity_nil;
+        server = server->next)
     {
-      if(machine->kind != D_EntityKind_Server) { continue; }
-      for(D_Entity *process = machine->first; process != &d_entity_nil; process = process->next)
+      if(server->kind != D_EntityKind_Server) { continue; }
+      
+      //- rjf: push server trap list node
+      ServerTrapListNode *trap_list_node = push_array(scratch.arena, ServerTrapListNode, 1);
+      SLLStackPush(server_trap_list_slots[server->handle.server_id%server_trap_list_slots_count], trap_list_node);
+      trap_list_node->server_id = server->handle.server_id;
+      
+      //- rjf: for each process in each server, resolve traps
+      for(D_Entity *process = server->first; process != &d_entity_nil; process = process->next)
       {
         if(process->kind != D_EntityKind_Process) { continue; }
         
@@ -5029,18 +5767,18 @@ d_ctrl_thread__run(DMN_CtrlCtx *ctrl_ctx, D_Msg *msg)
         for(D_Entity *module = process->first; module != &d_entity_nil; module = module->next)
         {
           if(module->kind != D_EntityKind_Module) { continue; }
-          d_ctrl_thread__append_resolved_module_user_bp_traps(scratch.arena, eval_scope, process->handle, module->handle, &msg->user_bps, &user_traps);
+          d_ctrl_thread__append_resolved_module_user_bp_traps(scratch.arena, eval_scope, process->handle, module->handle, &msg->user_bps, &trap_list_node->user_traps);
         }
         
         // rjf: push process-declared breakpoins
         for(D_Entity *bp = process->first; bp != &d_entity_nil; bp = bp->next)
         {
           if(bp->kind != D_EntityKind_Breakpoint) { continue; }
-          d_ctrl_thread__append_program_defined_bp_traps(scratch.arena, bp, &user_traps);
+          d_ctrl_thread__append_program_defined_bp_traps(scratch.arena, bp, &trap_list_node->user_traps);
         }
         
         // rjf: push virtual-address user breakpoints per-process
-        d_ctrl_thread__append_resolved_process_user_bp_traps(scratch.arena, eval_scope, process->handle, &msg->user_bps, &user_traps);
+        d_ctrl_thread__append_resolved_process_user_bp_traps(scratch.arena, eval_scope, process->handle, &msg->user_bps, &trap_list_node->user_traps);
       }
     }
     d_ctrl_thread__eval_scope_end(eval_scope);
@@ -5072,13 +5810,25 @@ d_ctrl_thread__run(DMN_CtrlCtx *ctrl_ctx, D_Msg *msg)
   if(stop_event == 0)
   {
     // rjf: gather stuck threads
-    DMN_HandleList stuck_threads = {0};
-    for(D_Entity *machine = entity_ctx->root->first;
-        machine != &d_entity_nil;
-        machine = machine->next)
+    D_HandleList stuck_threads = {0};
+    for(D_Entity *server = entity_ctx->root->first;
+        server != &d_entity_nil;
+        server = server->next)
     {
-      if(machine->kind != D_EntityKind_Server) { continue; }
-      for(D_Entity *process = machine->first; process != &d_entity_nil; process = process->next)
+      if(server->kind != D_EntityKind_Server) { continue; }
+      ServerTrapListNode *trap_list_node = 0;
+      {
+        U64 slot_idx = server->handle.server_id%server_trap_list_slots_count;
+        for(ServerTrapListNode *n = server_trap_list_slots[slot_idx]; n != 0; n = n->next)
+        {
+          if(n->server_id == server->handle.server_id)
+          {
+            trap_list_node = n;
+            break;
+          }
+        }
+      }
+      for(D_Entity *process = server->first; process != &d_entity_nil; process = process->next)
       {
         if(process->kind != D_EntityKind_Process) { continue; }
         for(D_Entity *thread = process->first; thread != &d_entity_nil; thread = thread->next)
@@ -5092,7 +5842,7 @@ d_ctrl_thread__run(DMN_CtrlCtx *ctrl_ctx, D_Msg *msg)
           // rjf: not frozen? -> check if stuck & gather if so
           if(!thread_is_frozen)
           {
-            for(DMN_TrapChunkNode *n = user_traps.first; n != 0; n = n->next)
+            for(DMN_TrapChunkNode *n = trap_list_node->user_traps.first; n != 0; n = n->next)
             {
               B32 is_on_user_bp = 0;
               for(DMN_Trap *trap_ptr = n->v; trap_ptr < n->v+n->count; trap_ptr += 1)
@@ -5112,12 +5862,12 @@ d_ctrl_thread__run(DMN_CtrlCtx *ctrl_ctx, D_Msg *msg)
                 }
               }
               
-              if(is_on_user_bp && (!is_on_net_trap || !dmn_handle_match(d_dmn_from_handle(thread->handle), target_thread_dmn)))
+              if(is_on_user_bp && (!is_on_net_trap || !d_handle_match(thread->handle, target_thread)))
               {
-                dmn_handle_list_push(scratch.arena, &stuck_threads, d_dmn_from_handle(thread->handle));
+                d_handle_list_push(scratch.arena, &stuck_threads, thread->handle);
               }
               
-              if(is_on_user_bp && is_on_net_trap && dmn_handle_match(d_dmn_from_handle(thread->handle), target_thread_dmn))
+              if(is_on_user_bp && is_on_net_trap && d_handle_match(thread->handle, target_thread))
               {
                 target_thread_is_on_user_bp_and_trap_net_trap = 1;
               }
@@ -5128,30 +5878,33 @@ d_ctrl_thread__run(DMN_CtrlCtx *ctrl_ctx, D_Msg *msg)
     }
     
     // rjf: actually step stuck threads
-    for(DMN_HandleNode *node = stuck_threads.first;
+    for(D_HandleNode *node = stuck_threads.first;
         node != 0;
         node = node->next)
     {
-      D_Handle thread = d_handle_from_dmn(D_ServerID_LocalHost, node->v);
+      D_Handle thread = node->v;
+      DMN_Handle thread_dmn = d_dmn_from_handle(thread);
       U64 thread_pre_rip = d_ip_from_thread(thread);
       U64 thread_post_rip = thread_pre_rip;
+      D_RunCtrls *run_ctrls = d_ctrl_thread__run_ctrls(scratch.arena);
+      run_ctrls->run_entities_are_unfrozen = 1;
+      D_ServerRunCtrls *server_ctrls = d_ctrl_thread__server_run_ctrls_from_id_or_push(scratch.arena, run_ctrls, thread.server_id);
+      server_ctrls->run_entities.handles = &thread_dmn;
+      server_ctrls->run_entities.count = 1;
       for(B32 done = 0; !done;)
       {
-        DMN_RunCtrls run_ctrls = {0};
-        run_ctrls.run_entities_are_unfrozen = 1;
-        run_ctrls.run_entities = &node->v;
-        run_ctrls.run_entity_count = 1;
         if(thread_post_rip == thread_pre_rip)
         {
-          run_ctrls.single_step_thread = node->v;
+          run_ctrls->single_step_thread = thread;
         }
-        DMN_Event *event = d_ctrl_thread__next_dmn_event(scratch.arena, ctrl_ctx, msg, &run_ctrls, 0);
+        D_ServerID server_id = 0;
+        DMN_Event *event = d_ctrl_thread__next_dmn_event(scratch.arena, ctrl_ctx, msg, run_ctrls, 0, &server_id);
         thread_post_rip = d_ip_from_thread(thread);
         switch(event->kind)
         {
           default:{}break;
           case DMN_EventKind_ExitThread:
-          if(d_handle_match(d_handle_from_dmn(D_ServerID_LocalHost, event->thread), thread))
+          if(d_handle_match(d_handle_from_dmn(server_id, event->thread), thread))
           {
             stop_cause = D_EventCause_Error;
             goto stop;
@@ -5163,11 +5916,12 @@ d_ctrl_thread__run(DMN_CtrlCtx *ctrl_ctx, D_Msg *msg)
           stop:;
           {
             stop_event = event;
+            stop_event_server_id = server_id;
             done = 1;
           }break;
           case DMN_EventKind_SingleStep:
           {
-            done = dmn_handle_match(node->v, event->thread);
+            done = dmn_handle_match(thread_dmn, event->thread);
           }break;
         }
       }
@@ -5175,46 +5929,79 @@ d_ctrl_thread__run(DMN_CtrlCtx *ctrl_ctx, D_Msg *msg)
   }
   
   //////////////////////////////
-  //- rjf: gather frozen threads
+  //- rjf: gather frozen threads for all servers
   //
-  D_EntityList frozen_threads = {0};
-  for(D_Entity *machine = entity_ctx->root->first;
-      machine != &d_entity_nil;
-      machine = machine->next)
+  typedef struct ServerFrozenThreadsNode ServerFrozenThreadsNode;
+  struct ServerFrozenThreadsNode
   {
-    if(machine->kind != D_EntityKind_Server) { continue; }
-    for(D_Entity *process = machine->first; process != &d_entity_nil; process = process->next)
+    ServerFrozenThreadsNode *next;
+    D_ServerID server_id;
+    DMN_HandleArray frozen_threads;
+  };
+  U64 server_frozen_threads_slots_count = 8;
+  ServerFrozenThreadsNode **server_frozen_threads_slots = push_array(scratch.arena, ServerFrozenThreadsNode *, server_frozen_threads_slots_count);
+  {
+    for(D_Entity *server = entity_ctx->root->first;
+        server != &d_entity_nil;
+        server = server->next)
     {
-      if(process->kind != D_EntityKind_Process) { continue; }
-      for(D_Entity *thread = process->first; thread != &d_entity_nil; thread = thread->next)
+      if(server->kind != D_EntityKind_Server) { continue; }
+      Temp scratch2 = scratch_begin(&scratch.arena, 1);
+      
+      // rjf: gather frozen threads on this server
+      DMN_HandleList frozen_threads_list = {0};
+      for(D_Entity *process = server->first; process != &d_entity_nil; process = process->next)
       {
-        if(thread->is_frozen)
+        if(process->kind != D_EntityKind_Process) { continue; }
+        for(D_Entity *thread = process->first; thread != &d_entity_nil; thread = thread->next)
         {
-          d_entity_list_push(scratch.arena, &frozen_threads, thread);
+          if(thread->is_frozen)
+          {
+            dmn_handle_list_push(scratch2.arena, &frozen_threads_list, d_dmn_from_handle(thread->handle));
+          }
         }
       }
+      
+      // rjf: store
+      ServerFrozenThreadsNode *frozen_threads_node = push_array(scratch.arena, ServerFrozenThreadsNode, 1);
+      SLLStackPush(server_frozen_threads_slots[server->handle.server_id%server_frozen_threads_slots_count], frozen_threads_node);
+      frozen_threads_node->server_id = server->handle.server_id;
+      frozen_threads_node->frozen_threads = dmn_handle_array_from_list(scratch.arena, &frozen_threads_list);
+      
+      scratch_end(scratch2);
     }
   }
   
   //////////////////////////////
-  //- rjf: resolve trap net
+  //- rjf: resolve trap net - add to server(s)
   //
-  DMN_TrapChunkList trap_net_traps = {0};
-  for(D_TrapNode *node = msg->traps.first;
-      node != 0;
-      node = node->next)
   {
-    DMN_Trap trap = {d_dmn_from_handle(target_process), node->v.vaddr};
-    dmn_trap_chunk_list_push(scratch.arena, &trap_net_traps, 256, &trap);
-  }
-  
-  //////////////////////////////
-  //- rjf: join user breakpoints and trap net traps
-  //
-  DMN_TrapChunkList joined_traps = {0};
-  {
-    dmn_trap_chunk_list_concat_shallow_copy(scratch.arena, &joined_traps, &trap_net_traps);
-    dmn_trap_chunk_list_concat_shallow_copy(scratch.arena, &joined_traps, &user_traps);
+    // rjf: for now, we can only have one selected thread, so we just have one list of
+    // trap net traps, and then we just need to add those to the target thread server.
+    DMN_TrapChunkList trap_net_traps = {0};
+    for(D_TrapNode *node = msg->traps.first;
+        node != 0;
+        node = node->next)
+    {
+      DMN_Trap trap = {d_dmn_from_handle(target_process), node->v.vaddr};
+      dmn_trap_chunk_list_push(scratch.arena, &trap_net_traps, 256, &trap);
+    }
+    
+    // rjf: add to server
+    {
+      D_ServerID server_id = target_thread.server_id;
+      U64 slot_idx = server_id%server_trap_list_slots_count;
+      for(ServerTrapListNode *n = server_trap_list_slots[slot_idx]; n != 0; n = n->next)
+      {
+        if(n->server_id == server_id)
+        {
+          n->trap_net_traps = trap_net_traps;
+          dmn_trap_chunk_list_concat_shallow_copy(scratch.arena, &n->joined_traps, &n->trap_net_traps);
+          dmn_trap_chunk_list_concat_shallow_copy(scratch.arena, &n->joined_traps, &n->user_traps);
+          break;
+        }
+      }
+    }
   }
   
   //////////////////////////////
@@ -5236,29 +6023,93 @@ d_ctrl_thread__run(DMN_CtrlCtx *ctrl_ctx, D_Msg *msg)
     B32 spoof_mode = 0;
     D_Spoof spoof = {0};
     DMN_TrapChunkList entry_traps = {0};
+    
+    ////////////////////////////
+    //- rjf: produce run controls, fill controls that are loop invariants
+    //
+    D_RunCtrls *run_ctrls = d_ctrl_thread__run_ctrls(scratch.arena);
+    {
+      run_ctrls->priority_thread = target_thread;
+      for(D_Entity *server = entity_ctx->root->first;
+          server != &d_entity_nil;
+          server = server->next)
+      {
+        if(server->kind != D_EntityKind_Server) { continue; }
+        D_ServerID server_id = server->handle.server_id;
+        
+        // rjf: server ID -> frozen threads on that server
+        DMN_HandleArray frozen_threads = {0};
+        {
+          U64 slot_idx = server_id%server_frozen_threads_slots_count;
+          for(ServerFrozenThreadsNode *n = server_frozen_threads_slots[slot_idx]; n != 0; n = n->next)
+          {
+            if(n->server_id == server_id)
+            {
+              frozen_threads = n->frozen_threads;
+              break;
+            }
+          }
+        }
+        
+        // rjf: server ID -> joined traps (both trap net & user bp traps)
+        DMN_TrapChunkList trap_list = {0};
+        {
+          U64 slot_idx = server_id%server_trap_list_slots_count;
+          for(ServerTrapListNode *n = server_trap_list_slots[slot_idx]; n != 0; n = n->next)
+          {
+            if(n->server_id == server_id)
+            {
+              trap_list = n->joined_traps;
+              break;
+            }
+          }
+        }
+        
+        // rjf: fill the run controls for this server
+        D_ServerRunCtrls *server_ctrls = d_ctrl_thread__server_run_ctrls_from_id_or_push(scratch.arena, run_ctrls, server_id);
+        server_ctrls->run_entities = frozen_threads;
+        server_ctrls->traps = trap_list;
+        server_ctrls->ignore_previous_exception = 1;
+      }
+    }
+    
+    //- rjf: loop
     for(U64 run_loop_idx = 0;; run_loop_idx += 1)
     {
       //////////////////////////
+      //- rjf: choose spoof
+      //
+      D_Spoof *run_spoof = 0;
+#if 0 // TODO(rjf): @multimachine not doing spoofs anymore, turning this off for cross-server stuff for now
+      if(spoof_mode)
+      {
+        run_spoof = &spoof;
+      }
+#endif
+      
+      //////////////////////////
       //- rjf: choose low level traps
       //
+#if 0 // TODO(rjf): @multimachine not doing spoofs anymore, turning this off for cross-server stuff for now
       DMN_TrapChunkList *trap_list = &joined_traps;
       if(spoof_mode)
       {
         trap_list = &user_traps;
       }
+#endif
       
       //////////////////////////
-      //- rjf: choose spoof
+      //- rjf: stop prioritizing scheduling the priority thread after loop 0
       //
-      D_Spoof *run_spoof = 0;
-      if(spoof_mode)
+      if(run_loop_idx == 1)
       {
-        run_spoof = &spoof;
+        run_ctrls->priority_thread = d_handle_zero();
       }
       
       //////////////////////////
       //- rjf: setup run controls
       //
+#if 0 // TODO(rjf): @multimachine
       DMN_RunCtrls run_ctrls = {0};
       if(run_loop_idx == 0)
       {
@@ -5277,12 +6128,14 @@ d_ctrl_thread__run(DMN_CtrlCtx *ctrl_ctx, D_Msg *msg)
         }
       }
       run_ctrls.traps = *trap_list;
+#endif
       
       //////////////////////////
       //- rjf: get next run-related event
       //
       log_infof("get_next_event:\n{\n");
-      DMN_Event *event = d_ctrl_thread__next_dmn_event(scratch.arena, ctrl_ctx, msg, &run_ctrls, run_spoof);
+      D_ServerID server_id = D_ServerID_LocalHost;
+      DMN_Event *event = d_ctrl_thread__next_dmn_event(scratch.arena, ctrl_ctx, msg, run_ctrls, run_spoof, &server_id);
       log_infof("}\n\n");
       
       //////////////////////////
@@ -5292,6 +6145,7 @@ d_ctrl_thread__run(DMN_CtrlCtx *ctrl_ctx, D_Msg *msg)
       B32 hard_stop = 0;
       D_EventCause hard_stop_cause = d_event_cause_from_dmn_event_kind(event->kind);
       B32 use_stepping_logic = 0;
+      DMN_TrapChunkList new_traps = {0};
       switch(event->kind)
       {
         default:{}break;
@@ -5313,44 +6167,16 @@ d_ctrl_thread__run(DMN_CtrlCtx *ctrl_ctx, D_Msg *msg)
         {
           D_EvalScope *eval_scope = d_ctrl_thread__eval_scope_begin(scratch.arena, &msg->user_bps, &d_entity_nil);
           {
-            DMN_TrapChunkList new_traps = {0};
-            d_ctrl_thread__append_resolved_process_user_bp_traps(scratch.arena, eval_scope, d_handle_from_dmn(D_ServerID_LocalHost, event->process), &msg->user_bps, &new_traps);
-            log_infof("step_rule: create_process -> resolve traps\n");
-            log_infof("new_traps:\n{\n");
-            for(DMN_TrapChunkNode *n = new_traps.first; n != 0; n = n->next)
-            {
-              for(U64 idx = 0; idx < n->count; idx += 1)
-              {
-                DMN_Trap *trap = &n->v[idx];
-                log_infof("{process:[0x%I64x], vaddr:0x%I64x}\n", trap->process.u64[0], trap->vaddr);
-              }
-            }
-            log_infof("}\n\n");
-            dmn_trap_chunk_list_concat_shallow_copy(scratch.arena, &joined_traps, &new_traps);
-            dmn_trap_chunk_list_concat_shallow_copy(scratch.arena, &user_traps, &new_traps);
+            d_ctrl_thread__append_resolved_process_user_bp_traps(scratch.arena, eval_scope, d_handle_from_dmn(server_id, event->process), &msg->user_bps, &new_traps);
           }
           d_ctrl_thread__eval_scope_end(eval_scope);
         }break;
         case DMN_EventKind_LoadModule:
         {
-          D_Entity *thread = d_entity_from_handle(d_handle_from_dmn(D_ServerID_LocalHost, event->thread));
+          D_Entity *thread = d_entity_from_handle(d_handle_from_dmn(server_id, event->thread));
           D_EvalScope *eval_scope = d_ctrl_thread__eval_scope_begin(scratch.arena, &msg->user_bps, thread);
           {
-            DMN_TrapChunkList new_traps = {0};
-            d_ctrl_thread__append_resolved_module_user_bp_traps(scratch.arena, eval_scope, d_handle_from_dmn(D_ServerID_LocalHost, event->process), d_handle_from_dmn(D_ServerID_LocalHost, event->module), &msg->user_bps, &new_traps);
-            log_infof("step_rule: load_module -> resolve traps\n");
-            log_infof("new_traps:\n{\n");
-            for(DMN_TrapChunkNode *n = new_traps.first; n != 0; n = n->next)
-            {
-              for(U64 idx = 0; idx < n->count; idx += 1)
-              {
-                DMN_Trap *trap = &n->v[idx];
-                log_infof("{process:[0x%I64x], vaddr:0x%I64x}\n", trap->process.u64[0], trap->vaddr);
-              }
-            }
-            log_infof("}\n\n");
-            dmn_trap_chunk_list_concat_shallow_copy(scratch.arena, &joined_traps, &new_traps);
-            dmn_trap_chunk_list_concat_shallow_copy(scratch.arena, &user_traps, &new_traps);
+            d_ctrl_thread__append_resolved_module_user_bp_traps(scratch.arena, eval_scope, d_handle_from_dmn(server_id, event->process), d_handle_from_dmn(server_id, event->module), &msg->user_bps, &new_traps);
           }
           d_ctrl_thread__eval_scope_end(eval_scope);
         }break;
@@ -5358,7 +6184,7 @@ d_ctrl_thread__run(DMN_CtrlCtx *ctrl_ctx, D_Msg *msg)
         {
           D_Entity *bp = &d_entity_nil;
           {
-            D_Entity *process = d_entity_from_handle(d_handle_from_dmn(D_ServerID_LocalHost, event->process));
+            D_Entity *process = d_entity_from_handle(d_handle_from_dmn(server_id, event->process));
             for(D_Entity *child = process->first; child != &d_entity_nil; child = child->next)
             {
               if(child->kind == D_EntityKind_Breakpoint &&
@@ -5373,10 +6199,7 @@ d_ctrl_thread__run(DMN_CtrlCtx *ctrl_ctx, D_Msg *msg)
           }
           if(bp != &d_entity_nil)
           {
-            DMN_TrapChunkList new_traps = {0};
             d_ctrl_thread__append_program_defined_bp_traps(scratch.arena, bp, &new_traps);
-            dmn_trap_chunk_list_concat_shallow_copy(scratch.arena, &joined_traps, &new_traps);
-            dmn_trap_chunk_list_concat_shallow_copy(scratch.arena, &user_traps, &new_traps);
           }
         }break;
       }
@@ -5390,7 +6213,7 @@ d_ctrl_thread__run(DMN_CtrlCtx *ctrl_ctx, D_Msg *msg)
         Access *access = access_open();
         
         //- rjf: unpack process/module info
-        D_Entity *process = d_entity_from_handle(d_handle_from_dmn(D_ServerID_LocalHost, event->process));
+        D_Entity *process = d_entity_from_handle(d_handle_from_dmn(server_id, event->process));
         D_Entity *module = d_entity_child_from_kind(process, D_EntityKind_Module);
         U64 module_base_vaddr = module->vaddr_range.min;
         DI_Key dbgi_key = d_dbgi_key_from_module(module);
@@ -5608,16 +6431,39 @@ d_ctrl_thread__run(DMN_CtrlCtx *ctrl_ctx, D_Msg *msg)
         }
         
         //- rjf: found entry points -> add to joined traps
-        dmn_trap_chunk_list_concat_shallow_copy(scratch.arena, &joined_traps, &entry_traps);
+        dmn_trap_chunk_list_concat_shallow_copy(scratch.arena, &new_traps, &entry_traps);
         
         access_close(access);
       }
       
       //////////////////////////
+      //- rjf: if we got new traps, contribute them to the event-generating-server's run controls
+      //
+      if(new_traps.trap_count != 0)
+      {
+        // rjf: log
+        log_infof("step_rule: new traps -> resolve traps\n");
+        log_infof("new_traps:\n{\n");
+        for(DMN_TrapChunkNode *n = new_traps.first; n != 0; n = n->next)
+        {
+          for(U64 idx = 0; idx < n->count; idx += 1)
+          {
+            DMN_Trap *trap = &n->v[idx];
+            log_infof("{process:[0x%I64x], vaddr:0x%I64x}\n", trap->process.u64[0], trap->vaddr);
+          }
+        }
+        log_infof("}\n\n");
+        
+        // rjf: contribute to server
+        D_ServerRunCtrls *server_ctrls = d_ctrl_thread__server_run_ctrls_from_id(run_ctrls, server_id);
+        dmn_trap_chunk_list_concat_shallow_copy(scratch.arena, &server_ctrls->traps, &new_traps);
+      }
+      
+      //////////////////////////
       //- rjf: unpack info about thread attached to event
       //
-      D_Entity *thread = d_entity_from_handle(d_handle_from_dmn(D_ServerID_LocalHost, event->thread));
-      D_Entity *process = d_entity_from_handle(d_handle_from_dmn(D_ServerID_LocalHost, event->process));
+      D_Entity *thread = d_entity_from_handle(d_handle_from_dmn(server_id, event->thread));
+      D_Entity *process = d_entity_from_handle(d_handle_from_dmn(server_id, event->process));
       Arch arch = thread->arch;
       U64 thread_rip_vaddr = d_ip_from_thread(thread->handle);
       D_Entity *module = d_module_from_process_vaddr(process, thread_rip_vaddr);
@@ -5696,29 +6542,33 @@ d_ctrl_thread__run(DMN_CtrlCtx *ctrl_ctx, D_Msg *msg)
         
         // rjf: user breakpoints
         {
-          if(event->user_data != 0)
+          D_ServerRunCtrls *server_ctrls = d_ctrl_thread__server_run_ctrls_from_id(run_ctrls, server_id);
+          if(server_ctrls != 0)
           {
-            hit_user_bp = 1;
-          }
-          for(DMN_TrapChunkNode *n = user_traps.first; n != 0; n = n->next)
-          {
-            DMN_Trap *trap = n->v;
-            DMN_Trap *opl = n->v + n->count;
-            for(;trap < opl; trap += 1)
+            if(event->user_data != 0)
             {
-              if(dmn_handle_match(trap->process, event->process) &&
-                 trap->vaddr == event->instruction_pointer &&
-                 (!dmn_handle_match(event->thread, d_dmn_from_handle(target_thread)) || !target_thread_is_on_user_bp_and_trap_net_trap))
+              hit_user_bp = 1;
+            }
+            for(DMN_TrapChunkNode *n = server_ctrls->traps.first; n != 0; n = n->next)
+            {
+              DMN_Trap *trap = n->v;
+              DMN_Trap *opl = n->v + n->count;
+              for(;trap < opl; trap += 1)
               {
-                D_Breakpoint *user_bp = (D_Breakpoint *)trap->id;
-                hit_user_bp = 1;
-                if(user_bp != 0 && !(trap->id & bit64) && user_bp->condition.size != 0)
+                if(dmn_handle_match(trap->process, event->process) &&
+                   trap->vaddr == event->instruction_pointer &&
+                   (!dmn_handle_match(event->thread, d_dmn_from_handle(target_thread)) || !target_thread_is_on_user_bp_and_trap_net_trap))
                 {
-                  str8_list_push(temp.arena, &conditions, user_bp->condition);
-                }
-                if(user_bp != 0 && !(trap->id & bit64) && user_bp->flags & D_BreakpointFlag_BreakSelectedThreadOnly)
-                {
-                  filter_unselected_threads = 1;
+                  D_Breakpoint *user_bp = (D_Breakpoint *)trap->id;
+                  hit_user_bp = (hit_user_bp || (user_bp != 0));
+                  if(user_bp != 0 && !(trap->id & bit64) && user_bp->condition.size != 0)
+                  {
+                    str8_list_push(temp.arena, &conditions, user_bp->condition);
+                  }
+                  if(user_bp != 0 && !(trap->id & bit64) && user_bp->flags & D_BreakpointFlag_BreakSelectedThreadOnly)
+                  {
+                    filter_unselected_threads = 1;
+                  }
                 }
               }
             }
@@ -5805,20 +6655,21 @@ d_ctrl_thread__run(DMN_CtrlCtx *ctrl_ctx, D_Msg *msg)
       D_EventCause cond_bp_single_step_stop_cause = D_EventCause_Null;
       if(hit_conditional_bp_but_filtered) LogInfoNamedBlockF("conditional_bp_hit_single_step")
       {
-        D_Handle thread = d_handle_from_dmn(D_ServerID_LocalHost, event->thread);
+        D_Handle thread = d_handle_from_dmn(server_id, event->thread);
         U64 thread_pre_rip = d_ip_from_thread(thread);
         U64 thread_post_rip = thread_pre_rip;
+        D_RunCtrls *single_step_run_ctrls = d_ctrl_thread__run_ctrls(scratch.arena);
+        single_step_run_ctrls->run_entities_are_unfrozen = 1;
+        D_ServerRunCtrls *server_ctrls = d_ctrl_thread__server_run_ctrls_from_id_or_push(scratch.arena, single_step_run_ctrls, server_id);
+        server_ctrls->run_entities.handles = &event->thread;
+        server_ctrls->run_entities.count = 1;
         for(B32 single_step_done = 0; !single_step_done;)
         {
-          DMN_RunCtrls single_step_ctrls = {0};
-          single_step_ctrls.run_entities_are_unfrozen = 1;
-          single_step_ctrls.run_entities = &event->thread;
-          single_step_ctrls.run_entity_count = 1;
           if(thread_post_rip == thread_pre_rip)
           {
-            single_step_ctrls.single_step_thread = event->thread;
+            single_step_run_ctrls->single_step_thread = thread;
           }
-          event = d_ctrl_thread__next_dmn_event(scratch.arena, ctrl_ctx, msg, &single_step_ctrls, 0);
+          event = d_ctrl_thread__next_dmn_event(scratch.arena, ctrl_ctx, msg, single_step_run_ctrls, 0, 0);
           thread_post_rip = d_ip_from_thread(thread);
           switch(event->kind)
           {
@@ -5835,7 +6686,7 @@ d_ctrl_thread__run(DMN_CtrlCtx *ctrl_ctx, D_Msg *msg)
             }break;
             case DMN_EventKind_SingleStep:
             {
-              single_step_done = d_handle_match(d_handle_from_dmn(D_ServerID_LocalHost, event->thread), thread);
+              single_step_done = d_handle_match(d_handle_from_dmn(server_id, event->thread), thread);
               cond_bp_single_step_stop_cause = d_event_cause_from_dmn_event_kind(event->kind);
             }break;
           }
@@ -5912,17 +6763,18 @@ d_ctrl_thread__run(DMN_CtrlCtx *ctrl_ctx, D_Msg *msg)
         {
           U64 thread_pre_rip = d_ip_from_thread(target_thread);
           U64 thread_post_rip = thread_pre_rip;
-          for(B32 single_step_done = 0; single_step_done == 0;)
+          D_RunCtrls *single_step_run_ctrls = d_ctrl_thread__run_ctrls(scratch.arena);
+          single_step_run_ctrls->run_entities_are_unfrozen = 1;
+          D_ServerRunCtrls *server_ctrls = d_ctrl_thread__server_run_ctrls_from_id_or_push(scratch.arena, single_step_run_ctrls, server_id);
+          server_ctrls->run_entities.handles = &event->thread;
+          server_ctrls->run_entities.count = 1;
+          for(B32 single_step_done = 0; !single_step_done;)
           {
-            DMN_RunCtrls single_step_ctrls = {0};
-            single_step_ctrls.run_entities_are_unfrozen = 1;
-            single_step_ctrls.run_entities = &target_thread_dmn;
-            single_step_ctrls.run_entity_count = 1;
             if(thread_post_rip == thread_pre_rip)
             {
-              single_step_ctrls.single_step_thread = target_thread_dmn;
+              single_step_run_ctrls->single_step_thread = target_thread;
             }
-            event = d_ctrl_thread__next_dmn_event(scratch.arena, ctrl_ctx, msg, &single_step_ctrls, 0);
+            event = d_ctrl_thread__next_dmn_event(scratch.arena, ctrl_ctx, msg, single_step_run_ctrls, 0, 0);
             thread_post_rip = d_ip_from_thread(target_thread);
             switch(event->kind)
             {
@@ -5996,20 +6848,21 @@ d_ctrl_thread__run(DMN_CtrlCtx *ctrl_ctx, D_Msg *msg)
       D_EventCause step_past_trap_net_stop_cause = D_EventCause_Null;
       if(step_past_trap_net) LogInfoNamedBlockF("trap_net__single_step_past_trap_net")
       {
-        D_Handle thread = d_handle_from_dmn(D_ServerID_LocalHost, event->thread);
+        D_Handle thread = d_handle_from_dmn(server_id, event->thread);
         U64 thread_pre_rip = d_ip_from_thread(thread);
         U64 thread_post_rip = thread_pre_rip;
-        for(B32 single_step_done = 0; single_step_done == 0;)
+        D_RunCtrls *single_step_run_ctrls = d_ctrl_thread__run_ctrls(scratch.arena);
+        single_step_run_ctrls->run_entities_are_unfrozen = 1;
+        D_ServerRunCtrls *server_ctrls = d_ctrl_thread__server_run_ctrls_from_id_or_push(scratch.arena, single_step_run_ctrls, server_id);
+        server_ctrls->run_entities.handles = &event->thread;
+        server_ctrls->run_entities.count = 1;
+        for(B32 single_step_done = 0; !single_step_done;)
         {
-          DMN_RunCtrls single_step_ctrls = {0};
-          single_step_ctrls.run_entities_are_unfrozen = 1;
-          single_step_ctrls.run_entities = &event->thread;
-          single_step_ctrls.run_entity_count = 1;
           if(thread_post_rip == thread_pre_rip)
           {
-            single_step_ctrls.single_step_thread = event->thread;
+            single_step_run_ctrls->single_step_thread = thread;
           }
-          DMN_Event *event = d_ctrl_thread__next_dmn_event(scratch.arena, ctrl_ctx, msg, &single_step_ctrls, 0);
+          DMN_Event *event = d_ctrl_thread__next_dmn_event(scratch.arena, ctrl_ctx, msg, single_step_run_ctrls, 0, 0);
           thread_post_rip = d_ip_from_thread(thread);
           switch(event->kind)
           {
@@ -6025,7 +6878,7 @@ d_ctrl_thread__run(DMN_CtrlCtx *ctrl_ctx, D_Msg *msg)
             }break;
             case DMN_EventKind_SingleStep:
             {
-              single_step_done = d_handle_match(d_handle_from_dmn(D_ServerID_LocalHost, event->thread), thread);
+              single_step_done = d_handle_match(d_handle_from_dmn(server_id, event->thread), thread);
               step_past_trap_net_stop_cause = d_event_cause_from_dmn_event_kind(event->kind);
             }break;
           }
@@ -6070,6 +6923,7 @@ d_ctrl_thread__run(DMN_CtrlCtx *ctrl_ctx, D_Msg *msg)
       if(stage_stop_cause != D_EventCause_Null)
       {
         stop_event = event;
+        stop_event_server_id = server_id;
         stop_cause = stage_stop_cause;
         break;
       }
@@ -6085,8 +6939,8 @@ d_ctrl_thread__run(DMN_CtrlCtx *ctrl_ctx, D_Msg *msg)
     D_Event *event = d_event_list_push(scratch.arena, &evts);
     event->kind = D_EventKind_Stopped;
     event->cause = stop_cause;
-    event->entity = d_handle_from_dmn(D_ServerID_LocalHost, stop_event->thread);
-    event->parent = d_handle_from_dmn(D_ServerID_LocalHost, stop_event->process);
+    event->entity = d_handle_from_dmn(stop_event_server_id, stop_event->thread);
+    event->parent = d_handle_from_dmn(stop_event_server_id, stop_event->process);
     event->exception_code = stop_event->code;
     event->exception_kind = d_exception_kind_from_dmn(stop_event->exception_kind);
     event->vaddr_rng = r1u64(stop_event->address, stop_event->address);
@@ -6125,23 +6979,26 @@ d_ctrl_thread__single_step(DMN_CtrlCtx *ctrl_ctx, D_Msg *msg)
   D_Handle thread = msg->entity;
   B32 thread_is_valid = !d_handle_match(thread, d_handle_zero());
   DMN_Event *stop_event = 0;
+  D_ServerID stop_event_server_id = D_ServerID_LocalHost;
   D_EventCause stop_cause = D_EventCause_Null;
   if(thread_is_valid)
   {
+    DMN_Handle thread_dmn = d_dmn_from_handle(thread);
+    D_RunCtrls *run_ctrls = d_ctrl_thread__run_ctrls(scratch.arena);
+    run_ctrls->run_entities_are_unfrozen = 1;
+    D_ServerRunCtrls *server_ctrls = d_ctrl_thread__server_run_ctrls_from_id_or_push(scratch.arena, run_ctrls, thread.server_id);
+    server_ctrls->run_entities.handles = &thread_dmn;
+    server_ctrls->run_entities.count = 1;
     U64 thread_pre_rip = d_ip_from_thread(thread);
     U64 thread_post_rip = thread_pre_rip;
-    for(B32 done = 0; done == 0;)
+    for(B32 done = 0; !done;)
     {
-      DMN_Handle thread_dmn = d_dmn_from_handle(thread);
-      DMN_RunCtrls run_ctrls = {0};
-      run_ctrls.run_entities_are_unfrozen = 1;
-      run_ctrls.run_entities = &thread_dmn;
-      run_ctrls.run_entity_count = 1;
       if(thread_post_rip == thread_pre_rip)
       {
-        run_ctrls.single_step_thread = thread_dmn;
+        run_ctrls->single_step_thread = thread;
       }
-      DMN_Event *event = d_ctrl_thread__next_dmn_event(scratch.arena, ctrl_ctx, msg, &run_ctrls, 0);
+      D_ServerID server_id = 0;
+      DMN_Event *event = d_ctrl_thread__next_dmn_event(scratch.arena, ctrl_ctx, msg, run_ctrls, 0, &server_id);
       thread_post_rip = d_ip_from_thread(thread);
       switch(event->kind)
       {
@@ -6155,6 +7012,7 @@ d_ctrl_thread__single_step(DMN_CtrlCtx *ctrl_ctx, D_Msg *msg)
         end_single_step:
         {
           stop_event = event;
+          stop_event_server_id = server_id;
           done = 1;
         }break;
       }
@@ -6169,8 +7027,8 @@ d_ctrl_thread__single_step(DMN_CtrlCtx *ctrl_ctx, D_Msg *msg)
     event->cause = stop_cause;
     if(stop_event != 0)
     {
-      event->entity = d_handle_from_dmn(D_ServerID_LocalHost, stop_event->thread);
-      event->parent = d_handle_from_dmn(D_ServerID_LocalHost, stop_event->process);
+      event->entity = d_handle_from_dmn(stop_event_server_id, stop_event->thread);
+      event->parent = d_handle_from_dmn(stop_event_server_id, stop_event->process);
       event->exception_code = stop_event->code;
       event->exception_kind = d_exception_kind_from_dmn(stop_event->exception_kind);
       event->vaddr_rng = r1u64(stop_event->address, stop_event->address);
@@ -6197,7 +7055,25 @@ d_process_read(D_Handle process, Rng1U64 range, void *dst)
     //- rjf: demon process reads
     case D_ControllerKind_Demon:
     {
-      result = dmn_process_read(d_dmn_from_handle(process), range, dst);
+      //- rjf: local server reads
+      if(process.server_id == D_ServerID_LocalHost)
+      {
+        result = dmn_process_read(d_dmn_from_handle(process), range, dst);
+      }
+      
+      //- rjf: remote server reads
+      else if(process.server_id != 0)
+      {
+        Temp scratch = scratch_begin(0, 0);
+        SOCK_Endpoint endpoint = d_endpoint_from_server_id(process.server_id);
+        DS_Msg msg = {DS_MsgKind_MemoryRead, .entity = d_dmn_from_handle(process), .vaddr_range = range};
+        DS_Response response = d_server_msg(scratch.arena, endpoint, &msg);
+        U64 bytes_read_desired = dim_1u64(range);
+        U64 bytes_read = Min(response.data.size, bytes_read_desired);
+        MemoryCopy(dst, response.data.str, bytes_read);
+        result = bytes_read;
+        scratch_end(scratch);
+      }
     }break;
     
     //- rjf: dump process reads
@@ -6255,15 +7131,34 @@ d_process_write(D_Handle process, Rng1U64 range, void *src)
   B32 result = 0;
   switch((D_ControllerKindEnum)process.controller_kind)
   {
+    //- rjf: demon process writes
     case D_ControllerKind_Demon:
     {
-      result = dmn_process_write(d_dmn_from_handle(process), range, src);
+      //- rjf: local server writes
+      if(process.server_id == D_ServerID_LocalHost)
+      {
+        result = dmn_process_write(d_dmn_from_handle(process), range, src);
+      }
+      
+      //- rjf: remote server writes
+      else if(process.server_id != 0)
+      {
+        Temp scratch = scratch_begin(0, 0);
+        SOCK_Endpoint endpoint = d_endpoint_from_server_id(process.server_id);
+        DS_Msg msg = {DS_MsgKind_MemoryWrite, .entity = d_dmn_from_handle(process), .vaddr_range = range, .data = str8((U8 *)src, dim_1u64(range))};
+        DS_Response response = d_server_msg(scratch.arena, endpoint, &msg);
+        result = response.good;
+        scratch_end(scratch);
+      }
+      
+      //- rjf: success -> increment memory gen counter
       if(result)
       {
         ins_atomic_u64_inc_eval(&d_ctrl_state->mem_gen);
       }
     }break;
     
+    //- rjf: dump process writes
     case D_ControllerKind_Dump:
     {
       // TODO(rjf)
@@ -6662,19 +7557,10 @@ d_tls_vaddr_artifact_create(String8 key, B32 *cancel_signal, AC_Status *status_o
     off += str8_deserial_read_struct(key, off, &module);
   }
   
-  // rjf: resolve to demon
-  DMN_Handle thread_dmn = d_dmn_from_handle(thread);
-  DMN_Handle module_dmn = d_dmn_from_handle(module);
-  
   // rjf: compute vaddr
   U64 pre_run_gen = d_run_gen();
   U64 tls_vaddr = 0;
-  B32 success = 1;
-  if(!dmn_handle_match(thread_dmn, dmn_handle_zero()) &&
-     !dmn_handle_match(module_dmn, dmn_handle_zero()))
-  {
-    success = dmn_thread_get_module_tls_vaddr(thread_dmn, module_dmn, &tls_vaddr);
-  }
+  B32 success = d_thread_get_module_tls_vaddr(thread, module, &tls_vaddr);
   U64 post_run_gen = d_run_gen();
   
   // rjf: if not successful due to run -> retry
@@ -7023,7 +7909,7 @@ d_call_stack_tree_artifact_create(String8 key, B32 *cancel_signal, AC_Status *st
         }
         thread_node = next_node;
       }
-      d_handle_list_push(arena, &thread_node->threads, &thread);
+      d_handle_list_push(arena, &thread_node->threads, thread);
       for(D_CallStackTreeNode *n = thread_node; n != &d_call_stack_tree_node_nil; n = n->parent)
       {
         n->all_descendant_threads_count += 1;
@@ -7071,4 +7957,90 @@ d_call_stack_tree(Access *access, U64 endt_us)
     }
   }
   return result;
+}
+
+////////////////////////////////
+//~ rjf: Socket Traffic Distribution Threads
+
+internal void
+d_sock_recv_thread_entry_point(void *p)
+{
+  ThreadNameF("d_sock_recv_thread");
+  U64 msg_id = 0;
+  B32 need_new_msg_id = 1;
+  for(;;)
+  {
+    Temp scratch = scratch_begin(0, 0);
+    SOCK_Protocol protocol = SOCK_Protocol_TCP;
+    SOCK_Endpoint endpoint = {0};
+    U8 *packet_buffer = push_array(scratch.arena, U8, DS_PACKET_SIZE);
+    if(sock_recv(d_ctrl_state->sock_session, &endpoint, &protocol, packet_buffer, max_U64))
+    {
+      String8 data = str8(packet_buffer, DS_PACKET_SIZE);
+      
+      // rjf: unpack header
+      DS_PacketHeader header = {0};
+      MemoryCopy(&header, data.str, sizeof(header));
+      
+      // rjf: determine if packet is valid, and where to send it
+      B32 valid_packet = 0;
+      B32 need_endpoint = 0;
+      B32 need_local_server_wakeup = 0;
+      GuardedRing *dst_ring = 0;
+      if(header.magic == DS_PACKET_MAGIC && header.version == DS_PACKET_VERSION)
+      {
+        valid_packet = 1;
+        if((DS_PacketKind)(header.flags & DS_PacketFlag_KindMask) == DS_PacketKind_Event)
+        {
+          need_endpoint = 1;
+          dst_ring = d_ctrl_state->sock_event_ring;
+          need_local_server_wakeup = 1;
+        }
+        else if((DS_PacketKind)(header.flags & DS_PacketFlag_KindMask) == DS_PacketKind_Response)
+        {
+          if(need_new_msg_id)
+          {
+            need_new_msg_id = 0;
+            str8_deserial_read_struct(data, sizeof(header), &msg_id);
+          }
+          U16 ring_id = d_packet_ring_id_from_msg_id(msg_id);
+          dst_ring = d_ctrl_state->sock_rings[ring_id].recv_ring;
+        }
+        else
+        {
+          valid_packet = 0;
+        }
+      }
+      
+      // rjf: valid packet? -> push into destination ring buffer
+      if(valid_packet)
+      {
+        RingGuard g = guarded_ring_open(dst_ring);
+        {
+          if(need_endpoint)
+          {
+            guarded_ring_write_struct_or_wait(&g, &endpoint, max_U64);
+          }
+          guarded_ring_write_struct_or_wait(&g, &data.size, max_U64);
+          guarded_ring_write_string_or_wait(&g, data, max_U64);
+        }
+        guarded_ring_close(&g);
+      }
+      
+      // rjf: last packet in a sequence? -> look for new msg ids
+      if(header.flags & DS_PacketFlag_Terminal)
+      {
+        need_new_msg_id = 1;
+        msg_id = 0;
+      }
+      
+      // rjf: last packet in an event sequence? -> if the local server is running, we want to wake it up with
+      // a halt.
+      if(header.flags & DS_PacketFlag_Terminal && need_local_server_wakeup && !ins_atomic_u32_eval(&d_ctrl_state->ctrl_thread_local_server_group_halt_guard))
+      {
+        ins_atomic_u32_eval_assign(&d_ctrl_state->ctrl_thread_local_server_group_halt, 1);
+        dmn_halt(0, 0);
+      }
+    }
+  }
 }

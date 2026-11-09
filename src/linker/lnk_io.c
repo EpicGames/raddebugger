@@ -171,21 +171,18 @@ lnk_log_read(String8 path, U64 size)
 }
 
 internal String8
-lnk_read_data_from_file_path(Arena *arena, String8 path, B8 *was_read_out)
+lnk_read_data_from_file_path(Arena *arena, String8 path, B8 *was_read)
 {
   Temp scratch = scratch_begin(&arena, 1);
   TP_Context *single_thread_ctx = tp_alloc(scratch.arena, 1, 1, str8_zero());
-  String8Array data_arr = lnk_read_data_from_file_path_parallel(single_thread_ctx, arena, (String8Array){ .count = 1, .v = &path }, was_read_out);
+  String8Array data_arr = lnk_read_data_from_file_path_parallel(single_thread_ctx, arena, (String8Array){ .count = 1, .v = &path }, was_read);
   scratch_end(scratch);
   return data_arr.v[0];
 }
 
-internal
 THREAD_POOL_TASK_FUNC(lnk_memory_map_file_task)
 {
   LNK_DiskReader *task = raw_task;
-
-  if (task->was_read) { task->was_read[task_id] = 0; }
 
   File file = file_open(AccessFlag_Read | AccessFlag_ShareRead, task->path_arr.v[task_id]);
   if (!file_match(file, file_zero())) {
@@ -202,22 +199,27 @@ THREAD_POOL_TASK_FUNC(lnk_memory_map_file_task)
         file_map_close(map);
       }
     }
-    file_close(file);
 
-    if (task->was_read) { task->was_read[task_id] = success; }
+    if (success) {
+      task->files[task_id] = file;
+    } else {
+      file_close(file);
+    }
   }
 }
 
 internal String8Array
-lnk_read_data_from_file_path_parallel(TP_Context *tp, Arena *arena, String8Array path_arr, B8 *was_read)
+lnk_read_data_from_file_path_parallel_with_handles(TP_Context *tp, Arena *arena, String8Array path_arr, File *files_out)
 {
   ProfBeginFunction();
+
+  MemoryZeroTyped(files_out, path_arr.count);
 
   LNK_DiskReader reader = {0};
   reader.path_arr       = path_arr;
   reader.data_arr.count = path_arr.count;
   reader.data_arr.v     = push_array(arena, String8, path_arr.count);
-  reader.was_read       = was_read;
+  reader.files          = files_out;
   tp_for_parallel(tp, 0, path_arr.count, lnk_memory_map_file_task, &reader);
 
   if (lnk_get_log_status(LNK_Log_IO_Read)) {
@@ -230,14 +232,36 @@ lnk_read_data_from_file_path_parallel(TP_Context *tp, Arena *arena, String8Array
   return (String8Array){ .count = path_arr.count, .v = reader.data_arr.v };
 }
 
+internal String8Array
+lnk_read_data_from_file_path_parallel(TP_Context *tp, Arena *arena, String8Array path_arr, B8 *was_read)
+{
+  Temp scratch = scratch_begin(&arena, 1);
+
+  File         *handles = push_array(scratch.arena, File, path_arr.count);
+  String8Array  result  = lnk_read_data_from_file_path_parallel_with_handles(tp, arena, path_arr, handles);
+
+  for EachIndex(i, path_arr.count) {
+    B8 success = !file_match(handles[i], file_zero());
+    if (was_read) {
+      was_read[i] = success;
+    }
+    if (success) {
+      file_close(handles[i]);
+    }
+  }
+
+  scratch_end(scratch);
+  return result;
+}
+
 internal void
 lnk_write_data_list_to_file_path(String8 path, String8 temp_path, String8List data)
 {
   ProfBeginV("Write %M to %S", data.total_size, path);
 
-  B32       open_with_rename = (temp_path.size > 0);
-  File file_handle      = {0};
-  String8   open_file_path   = {0};
+  B32     open_with_rename = (temp_path.size > 0);
+  File    file_handle      = {0};
+  String8 open_file_path   = {0};
   if (open_with_rename) {
     file_handle    = lnk_file_open_with_rename_permissions(temp_path);
     open_file_path = temp_path;

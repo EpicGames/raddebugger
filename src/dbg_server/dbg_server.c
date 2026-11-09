@@ -2,39 +2,44 @@
 // Licensed under the MIT license (https://opensource.org/license/mit/)
 
 ////////////////////////////////
-//~ rjf: Message Parsing
+//~ rjf: Generated Code
+
+#include "generated/dbg_server.meta.c"
+
+////////////////////////////////
+//~ rjf: Message/Response Parsing
 
 internal DS_Msg
-ds_msg_from_packet(Arena *arena, String8 data)
+ds_msg_from_data(Arena *arena, String8 data)
 {
-  //- rjf: read packet header
-  DS_PacketHeader header = {0};
-  {
-    str8_deserial_read_struct(data, 0, &header);
-  }
-  
-  //- rjf: get message payload part
-  String8 payload = str8_substr(data, r1u64(sizeof(header), sizeof(header)+header.payload_size));
-  
-  //- rjf: read message
   DS_Msg msg = {0};
-  if(header.magic == DS_PACKET_MAGIC && header.kind == DS_PacketKind_Msg && header.version == DS_PACKET_VERSION)
   {
     U64 off = 0;
     
     // rjf: read flat parts
-    off += str8_deserial_read_struct(payload, off, &msg.kind);
-    off += str8_deserial_read_struct(payload, off, &msg.flags);
-    off += str8_deserial_read_struct(payload, off, &msg.msg_id);
-    off += str8_deserial_read_struct(payload, off, &msg.vaddr_range);
-    off += str8_deserial_read_struct(payload, off, &msg.access_flags);
-    off += str8_deserial_read_struct(payload, off, &msg.entity);
-    off += str8_deserial_read_struct(payload, off, &msg.pid);
+    off += str8_deserial_read_struct(data, off, &msg.kind);
+    off += str8_deserial_read_struct(data, off, &msg.flags);
+    off += str8_deserial_read_struct(data, off, &msg.msg_id);
+    off += str8_deserial_read_struct(data, off, &msg.vaddr_range);
+    off += str8_deserial_read_struct(data, off, &msg.access_flags);
+    off += str8_deserial_read_struct(data, off, &msg.entity);
+    off += str8_deserial_read_struct(data, off, &msg.module);
+    off += str8_deserial_read_struct(data, off, &msg.pid);
+    off += str8_deserial_read_struct(data, off, &msg.code);
+    off += str8_deserial_read_struct(data, off, &msg.hash);
+    
+    // rjf: read data blobs
+    off += str8_deserial_read_struct(data, off, &msg.path.size);
+    msg.path = str8_substr(data, r1u64(off, off+msg.path.size));
+    off += msg.path.size;
+    off += str8_deserial_read_struct(data, off, &msg.data.size);
+    msg.data = str8_substr(data, r1u64(off, off+msg.data.size));
+    off += msg.data.size;
     
     // rjf: read launch parameters extension
     {
       B8 has_launch_params = 0;
-      off += str8_deserial_read_struct(payload, off, &has_launch_params);
+      off += str8_deserial_read_struct(data, off, &has_launch_params);
       if(has_launch_params)
       {
         msg.launch_params = push_array(arena, DS_LaunchParams, 1);
@@ -42,12 +47,12 @@ ds_msg_from_packet(Arena *arena, String8 data)
         // rjf: read command line strings
         {
           U64 cmd_line_string_count = 0;
-          off += str8_deserial_read_struct(payload, off, &cmd_line_string_count);
+          off += str8_deserial_read_struct(data, off, &cmd_line_string_count);
           for EachIndex(idx, cmd_line_string_count)
           {
             String8 string = {0};
-            off += str8_deserial_read_struct(payload, off, &string.size);
-            string = str8_substr(payload, r1u64(off, off+string.size));
+            off += str8_deserial_read_struct(data, off, &string.size);
+            string = str8_substr(data, r1u64(off, off+string.size));
             off += string.size;
             str8_list_push(arena, &msg.launch_params->command_line, string);
           }
@@ -55,20 +60,20 @@ ds_msg_from_packet(Arena *arena, String8 data)
         
         // rjf: read path
         {
-          off += str8_deserial_read_struct(payload, off, &msg.launch_params->path.size);
-          msg.launch_params->path = str8_substr(payload, r1u64(off, off+msg.launch_params->path.size));
+          off += str8_deserial_read_struct(data, off, &msg.launch_params->path.size);
+          msg.launch_params->path = str8_substr(data, r1u64(off, off+msg.launch_params->path.size));
           off += msg.launch_params->path.size;
         }
         
         // rjf: read environment strings
         {
           U64 env_string_count = 0;
-          off += str8_deserial_read_struct(payload, off, &env_string_count);
+          off += str8_deserial_read_struct(data, off, &env_string_count);
           for EachIndex(idx, env_string_count)
           {
             String8 string = {0};
-            off += str8_deserial_read_struct(payload, off, &string.size);
-            string = str8_substr(payload, r1u64(off, off+string.size));
+            off += str8_deserial_read_struct(data, off, &string.size);
+            string = str8_substr(data, r1u64(off, off+string.size));
             off += string.size;
             str8_list_push(arena, &msg.launch_params->env, string);
           }
@@ -76,51 +81,56 @@ ds_msg_from_packet(Arena *arena, String8 data)
         
         // rjf: read std i/o paths
         {
-          off += str8_deserial_read_struct(payload, off, &msg.launch_params->stdout_path.size);
-          msg.launch_params->stdout_path = str8_substr(payload, r1u64(off, off+msg.launch_params->stdout_path.size));
+          off += str8_deserial_read_struct(data, off, &msg.launch_params->stdout_path.size);
+          msg.launch_params->stdout_path = str8_substr(data, r1u64(off, off+msg.launch_params->stdout_path.size));
           off += msg.launch_params->stdout_path.size;
-          off += str8_deserial_read_struct(payload, off, &msg.launch_params->stdin_path.size);
-          msg.launch_params->stdin_path = str8_substr(payload, r1u64(off, off+msg.launch_params->stdin_path.size));
+          off += str8_deserial_read_struct(data, off, &msg.launch_params->stdin_path.size);
+          msg.launch_params->stdin_path = str8_substr(data, r1u64(off, off+msg.launch_params->stdin_path.size));
           off += msg.launch_params->stdin_path.size;
-          off += str8_deserial_read_struct(payload, off, &msg.launch_params->stderr_path.size);
-          msg.launch_params->stderr_path = str8_substr(payload, r1u64(off, off+msg.launch_params->stderr_path.size));
+          off += str8_deserial_read_struct(data, off, &msg.launch_params->stderr_path.size);
+          msg.launch_params->stderr_path = str8_substr(data, r1u64(off, off+msg.launch_params->stderr_path.size));
           off += msg.launch_params->stderr_path.size;
         }
         
         // rjf: read bits
-        off += str8_deserial_read_struct(payload, off, &msg.launch_params->debug_subprocesses);
-        off += str8_deserial_read_struct(payload, off, &msg.launch_params->inherit_env);
+        off += str8_deserial_read_struct(data, off, &msg.launch_params->debug_subprocesses);
+        off += str8_deserial_read_struct(data, off, &msg.launch_params->inherit_env);
       }
     }
     
     // rjf: read traps
     {
       U64 trap_count = 0;
-      off += str8_deserial_read_struct(payload, off, &trap_count);
+      off += str8_deserial_read_struct(data, off, &trap_count);
       for EachIndex(idx, trap_count)
       {
         DMN_Trap trap = {0};
-        off += str8_deserial_read_struct(payload, off, &trap.process);
-        off += str8_deserial_read_struct(payload, off, &trap.vaddr);
-        off += str8_deserial_read_struct(payload, off, &trap.id);
-        off += str8_deserial_read_struct(payload, off, &trap.flags);
-        off += str8_deserial_read_struct(payload, off, &trap.size);
+        off += str8_deserial_read_struct(data, off, &trap.process);
+        off += str8_deserial_read_struct(data, off, &trap.vaddr);
+        off += str8_deserial_read_struct(data, off, &trap.id);
+        off += str8_deserial_read_struct(data, off, &trap.flags);
+        off += str8_deserial_read_struct(data, off, &trap.size);
         dmn_trap_chunk_list_push(arena, &msg.traps, trap_count, &trap);
       }
+    }
+    
+    // rjf: read run entities
+    {
+      off += str8_deserial_read_struct(data, off, &msg.run_entities.count);
+      msg.run_entities.handles = push_array(arena, DMN_Handle, msg.run_entities.count);
+      off += str8_deserial_read_array(data, off, msg.run_entities.handles, msg.run_entities.count);
     }
   }
   return msg;
 }
 
 internal String8
-ds_packet_from_msg(Arena *arena, DS_Msg *msg)
+ds_data_from_msg(Arena *arena, DS_Msg *msg)
 {
   Temp scratch = scratch_begin(&arena, 1);
   String8List srl = {0};
   str8_serial_begin(scratch.arena, &srl);
   {
-    // NOTE(rjf): (header wrote to beginning of `srl` at end of path)
-    
     // rjf: write flat parts
     str8_serial_push_struct(scratch.arena, &srl, &msg->kind);
     str8_serial_push_struct(scratch.arena, &srl, &msg->flags);
@@ -128,7 +138,16 @@ ds_packet_from_msg(Arena *arena, DS_Msg *msg)
     str8_serial_push_struct(scratch.arena, &srl, &msg->vaddr_range);
     str8_serial_push_struct(scratch.arena, &srl, &msg->access_flags);
     str8_serial_push_struct(scratch.arena, &srl, &msg->entity);
+    str8_serial_push_struct(scratch.arena, &srl, &msg->module);
     str8_serial_push_struct(scratch.arena, &srl, &msg->pid);
+    str8_serial_push_struct(scratch.arena, &srl, &msg->code);
+    str8_serial_push_struct(scratch.arena, &srl, &msg->hash);
+    
+    // rjf: write data blob extensions
+    str8_serial_push_struct(scratch.arena, &srl, &msg->path.size);
+    str8_serial_push_string(scratch.arena, &srl, msg->path);
+    str8_serial_push_struct(scratch.arena, &srl, &msg->data.size);
+    str8_serial_push_string(scratch.arena, &srl, msg->data);
     
     // rjf: write launch parameters extension
     B8 has_launch_params = (msg->launch_params != 0);
@@ -192,15 +211,11 @@ ds_packet_from_msg(Arena *arena, DS_Msg *msg)
       }
     }
     
-    // rjf: push packet header (to front)
-    DS_PacketHeader header =
+    // rjf: write run entities
     {
-      .magic        = DS_PACKET_MAGIC,
-      .kind         = DS_PacketKind_Msg,
-      .version      = DS_PACKET_VERSION,
-      .payload_size = (U32)srl.total_size,
-    };
-    str8_list_push_front(scratch.arena, &srl, str8_copy(scratch.arena, str8_struct(&header)));
+      str8_serial_push_struct(scratch.arena, &srl, &msg->run_entities.count);
+      str8_serial_push_array(scratch.arena, &srl, msg->run_entities.handles, msg->run_entities.count);
+    }
   }
   String8 result = str8_serial_end(arena, &srl);
   scratch_end(scratch);
@@ -208,65 +223,44 @@ ds_packet_from_msg(Arena *arena, DS_Msg *msg)
 }
 
 internal DS_Response
-ds_response_from_packet(Arena *arena, String8 data)
+ds_response_from_data(String8 data)
 {
-  //- rjf: read packet header
-  DS_PacketHeader header = {0};
-  {
-    str8_deserial_read_struct(data, 0, &header);
-  }
-  
-  //- rjf: get message payload part
-  String8 payload = str8_substr(data, r1u64(sizeof(header), sizeof(header)+header.payload_size));
-  
-  //- rjf: read response
   DS_Response result = {0};
-  if(header.magic == DS_PACKET_MAGIC && header.kind == DS_PacketKind_Response && header.version == DS_PACKET_VERSION)
   {
     U64 off = 0;
     
     // rjf: read flat parts
-    off += str8_deserial_read_struct(payload, off, &result.msg_id);
-    off += str8_deserial_read_struct(payload, off, &result.entity);
-    off += str8_deserial_read_struct(payload, off, &result.pid);
-    off += str8_deserial_read_struct(payload, off, &result.good);
+    off += str8_deserial_read_struct(data, off, &result.msg_id);
+    off += str8_deserial_read_struct(data, off, &result.entity);
+    off += str8_deserial_read_struct(data, off, &result.pid);
+    off += str8_deserial_read_struct(data, off, &result.vaddr);
+    off += str8_deserial_read_struct(data, off, &result.good);
     
-    // rjf: read data payload
-    off += str8_deserial_read_struct(payload, off, &result.data.size);
-    result.data.str = push_array(arena, U8, result.data.size);
-    off += str8_deserial_read(payload, off, result.data.str, result.data.size, 1);
+    // rjf: read data data
+    off += str8_deserial_read_struct(data, off, &result.data.size);
+    result.data = str8_substr(data, r1u64(off, off+result.data.size));
+    off += result.data.size;
   }
   return result;
 }
 
 internal String8
-ds_packet_from_response(Arena *arena, DS_Response *response)
+ds_data_from_response(Arena *arena, DS_Response *response)
 {
   Temp scratch = scratch_begin(&arena, 1);
   String8List srl = {0};
   str8_serial_begin(scratch.arena, &srl);
   {
-    // NOTE(rjf): (header wrote to beginning of `srl` at end of path)
-    
     // rjf: write flat parts
     str8_serial_push_struct(scratch.arena, &srl, &response->msg_id);
     str8_serial_push_struct(scratch.arena, &srl, &response->entity);
     str8_serial_push_struct(scratch.arena, &srl, &response->pid);
+    str8_serial_push_struct(scratch.arena, &srl, &response->vaddr);
     str8_serial_push_struct(scratch.arena, &srl, &response->good);
     
     // rjf: write data payload
     str8_serial_push_struct(scratch.arena, &srl, &response->data.size);
     str8_serial_push_string(scratch.arena, &srl, response->data);
-    
-    // rjf: push packet header (to front)
-    DS_PacketHeader header =
-    {
-      .magic        = DS_PACKET_MAGIC,
-      .kind         = DS_PacketKind_Response,
-      .version      = DS_PACKET_VERSION,
-      .payload_size = (U32)srl.total_size,
-    };
-    str8_list_push_front(scratch.arena, &srl, str8_copy(scratch.arena, str8_struct(&header)));
   }
   String8 result = str8_serial_end(arena, &srl);
   scratch_end(scratch);
@@ -274,55 +268,45 @@ ds_packet_from_response(Arena *arena, DS_Response *response)
 }
 
 internal DMN_EventList
-ds_dmn_events_from_packet(Arena *arena, String8 data)
+ds_dmn_events_from_data(Arena *arena, String8 data)
 {
-  //- rjf: read packet header
-  DS_PacketHeader header = {0};
-  {
-    str8_deserial_read_struct(data, 0, &header);
-  }
-  
-  //- rjf: get message payload part
-  String8 payload = str8_substr(data, r1u64(sizeof(header), sizeof(header)+header.payload_size));
-  
   //- rjf: read events
   DMN_EventList evts = {0};
-  if(header.magic == DS_PACKET_MAGIC && header.kind == DS_PacketKind_Event && header.version == DS_PACKET_VERSION)
   {
     U64 off = 0;
     U64 demon_event_count = 0;
-    off += str8_deserial_read_struct(payload, off, &demon_event_count);
+    off += str8_deserial_read_struct(data, off, &demon_event_count);
     for EachIndex(idx, demon_event_count)
     {
       DMN_Event *evt = dmn_event_list_push(arena, &evts);
       
       // rjf: read flat parts
-      off += str8_deserial_read_struct(payload, off, &evt->kind);
-      off += str8_deserial_read_struct(payload, off, &evt->error_kind);
-      off += str8_deserial_read_struct(payload, off, &evt->memory_kind);
-      off += str8_deserial_read_struct(payload, off, &evt->exception_kind);
-      off += str8_deserial_read_struct(payload, off, &evt->process);
-      off += str8_deserial_read_struct(payload, off, &evt->thread);
-      off += str8_deserial_read_struct(payload, off, &evt->module);
-      off += str8_deserial_read_struct(payload, off, &evt->arch);
-      off += str8_deserial_read_struct(payload, off, &evt->address);
-      off += str8_deserial_read_struct(payload, off, &evt->size);
-      off += str8_deserial_read_struct(payload, off, &evt->code);
-      off += str8_deserial_read_struct(payload, off, &evt->flags);
-      off += str8_deserial_read_struct(payload, off, &evt->instruction_pointer);
-      off += str8_deserial_read_struct(payload, off, &evt->stack_pointer);
-      off += str8_deserial_read_struct(payload, off, &evt->user_data);
-      off += str8_deserial_read_struct(payload, off, &evt->exception_repeated);
-      off += str8_deserial_read_struct(payload, off, &evt->tls_root_vaddr);
+      off += str8_deserial_read_struct(data, off, &evt->kind);
+      off += str8_deserial_read_struct(data, off, &evt->error_kind);
+      off += str8_deserial_read_struct(data, off, &evt->memory_kind);
+      off += str8_deserial_read_struct(data, off, &evt->exception_kind);
+      off += str8_deserial_read_struct(data, off, &evt->process);
+      off += str8_deserial_read_struct(data, off, &evt->thread);
+      off += str8_deserial_read_struct(data, off, &evt->module);
+      off += str8_deserial_read_struct(data, off, &evt->arch);
+      off += str8_deserial_read_struct(data, off, &evt->address);
+      off += str8_deserial_read_struct(data, off, &evt->size);
+      off += str8_deserial_read_struct(data, off, &evt->code);
+      off += str8_deserial_read_struct(data, off, &evt->flags);
+      off += str8_deserial_read_struct(data, off, &evt->instruction_pointer);
+      off += str8_deserial_read_struct(data, off, &evt->stack_pointer);
+      off += str8_deserial_read_struct(data, off, &evt->user_data);
+      off += str8_deserial_read_struct(data, off, &evt->exception_repeated);
+      off += str8_deserial_read_struct(data, off, &evt->tls_root_vaddr);
       
       // rjf: read string
-      off += str8_deserial_read_struct(payload, off, &evt->string.size);
+      off += str8_deserial_read_struct(data, off, &evt->string.size);
       evt->string.str = push_array(arena, U8, evt->string.size);
-      off += str8_deserial_read(payload, off, evt->string.str, evt->string.size, 1);
+      off += str8_deserial_read(data, off, evt->string.str, evt->string.size, 1);
       
       // rjf: read module info
       B8 has_module_info = 0;
-      off += str8_deserial_read_struct(payload, off, &has_module_info);
+      off += str8_deserial_read_struct(data, off, &has_module_info);
       if(!has_module_info)
       {
         evt->module_info = &dmn_module_info_nil;
@@ -332,26 +316,26 @@ ds_dmn_events_from_packet(Arena *arena, String8 data)
         evt->module_info = push_array(arena, DMN_ModuleInfo, 1);
         
         // rjf: read flat parts
-        off += str8_deserial_read_struct(payload, off, &evt->module_info->arch);
-        off += str8_deserial_read_struct(payload, off, &evt->module_info->vsize);
-        off += str8_deserial_read_struct(payload, off, &evt->module_info->entry_point_voff);
-        off += str8_deserial_read_struct(payload, off, &evt->module_info->debug_info_guid);
-        off += str8_deserial_read_struct(payload, off, &evt->module_info->debug_info_timestamp);
-        off += str8_deserial_read_struct(payload, off, &evt->module_info->debug_info_age);
-        off += str8_deserial_read_struct(payload, off, &evt->module_info->tls_index);
-        off += str8_deserial_read_struct(payload, off, &evt->module_info->tls_offset);
-        off += str8_deserial_read_struct(payload, off, &evt->module_info->pe_intel_pdatas_vaddr_range);
-        off += str8_deserial_read_struct(payload, off, &evt->module_info->eh_frame_header_vaddr_range);
-        off += str8_deserial_read_struct(payload, off, &evt->module_info->raddbg_info_voff_range);
-        off += str8_deserial_read_struct(payload, off, &evt->module_info->raddbg_is_attached_marker_voff);
+        off += str8_deserial_read_struct(data, off, &evt->module_info->arch);
+        off += str8_deserial_read_struct(data, off, &evt->module_info->vsize);
+        off += str8_deserial_read_struct(data, off, &evt->module_info->entry_point_voff);
+        off += str8_deserial_read_struct(data, off, &evt->module_info->debug_info_guid);
+        off += str8_deserial_read_struct(data, off, &evt->module_info->debug_info_timestamp);
+        off += str8_deserial_read_struct(data, off, &evt->module_info->debug_info_age);
+        off += str8_deserial_read_struct(data, off, &evt->module_info->tls_index);
+        off += str8_deserial_read_struct(data, off, &evt->module_info->tls_offset);
+        off += str8_deserial_read_struct(data, off, &evt->module_info->pe_intel_pdatas_vaddr_range);
+        off += str8_deserial_read_struct(data, off, &evt->module_info->eh_frame_header_vaddr_range);
+        off += str8_deserial_read_struct(data, off, &evt->module_info->raddbg_info_voff_range);
+        off += str8_deserial_read_struct(data, off, &evt->module_info->raddbg_is_attached_marker_voff);
         
         // rjf: read paths
-        off += str8_deserial_read_struct(payload, off, &evt->module_info->module_path.size);
+        off += str8_deserial_read_struct(data, off, &evt->module_info->module_path.size);
         evt->module_info->module_path.str = push_array(arena, U8, evt->module_info->module_path.size);
-        off += str8_deserial_read(payload, off, evt->module_info->module_path.str, evt->module_info->module_path.size, 1);
-        off += str8_deserial_read_struct(payload, off, &evt->module_info->debug_info_path.size);
+        off += str8_deserial_read(data, off, evt->module_info->module_path.str, evt->module_info->module_path.size, 1);
+        off += str8_deserial_read_struct(data, off, &evt->module_info->debug_info_path.size);
         evt->module_info->debug_info_path.str = push_array(arena, U8, evt->module_info->debug_info_path.size);
-        off += str8_deserial_read(payload, off, evt->module_info->debug_info_path.str, evt->module_info->debug_info_path.size, 1);
+        off += str8_deserial_read(data, off, evt->module_info->debug_info_path.str, evt->module_info->debug_info_path.size, 1);
       }
     }
   }
@@ -359,14 +343,12 @@ ds_dmn_events_from_packet(Arena *arena, String8 data)
 }
 
 internal String8
-ds_packet_from_dmn_events(Arena *arena, DMN_EventList evts)
+ds_data_from_dmn_events(Arena *arena, DMN_EventList evts)
 {
   Temp scratch = scratch_begin(&arena, 1);
   String8List srl = {0};
   str8_serial_begin(scratch.arena, &srl);
   {
-    // NOTE(rjf): (header wrote to beginning of `srl` at end of path)
-    
     // rjf: write events
     str8_serial_push_struct(scratch.arena, &srl, &evts.count);
     for EachNode(n, DMN_EventNode, evts.first)
@@ -420,20 +402,94 @@ ds_packet_from_dmn_events(Arena *arena, DMN_EventList evts)
         str8_serial_push_string(scratch.arena, &srl, n->v.module_info->debug_info_path);
       }
     }
-    
-    // rjf: push packet header (to front)
-    DS_PacketHeader header =
-    {
-      .magic        = DS_PACKET_MAGIC,
-      .kind         = DS_PacketKind_Event,
-      .version      = DS_PACKET_VERSION,
-      .payload_size = (U32)srl.total_size,
-    };
-    str8_list_push_front(scratch.arena, &srl, str8_copy(scratch.arena, str8_struct(&header)));
   }
   String8 result = str8_serial_end(arena, &srl);
   scratch_end(scratch);
   return result;
+}
+
+internal String8List
+ds_packets_from_data(Arena *arena, DS_PacketKind kind, String8 data)
+{
+  String8List packets = {0};
+  U64 bytes_per_packet = DS_PACKET_SIZE;
+  U64 packet_header_size = sizeof(DS_PacketHeader);
+  U64 payload_per_packet = bytes_per_packet - packet_header_size;
+  U64 packets_count = (data.size + payload_per_packet-1) / payload_per_packet;
+  U64 off = 0;
+  for EachIndex(packet_idx, packets_count)
+  {
+    Temp scratch = scratch_begin(&arena, 1);
+    
+    // rjf: form header
+    DS_PacketHeader header =
+    {
+      .magic        = DS_PACKET_MAGIC,
+      .flags        = kind | (DS_PacketFlag_Terminal*(packet_idx+1 == packets_count)),
+      .version      = DS_PACKET_VERSION,
+    };
+    
+    // rjf: get portion of data that will be in this packet's payload
+    U64 bytes_left = data.size - off;
+    U64 payload_bytes_in_this_packet = Min(bytes_left, payload_per_packet);
+    String8 payload = str8_substr(data, r1u64(off, off+payload_bytes_in_this_packet));
+    
+    // rjf: build this packet
+    String8List packet_parts = {0};
+    str8_list_push(scratch.arena, &packet_parts, str8_struct(&header));
+    str8_list_push(scratch.arena, &packet_parts, payload);
+    if(payload_per_packet > payload.size)
+    {
+      U64 padding_bytes_size = payload_per_packet - payload.size;
+      U8 *padding_bytes = push_array(scratch.arena, U8, 0);
+      str8_list_push(scratch.arena, &packet_parts, str8(padding_bytes, padding_bytes_size));
+    }
+    String8 packet = str8_list_join(arena, &packet_parts, 0);
+    str8_list_push(arena, &packets, packet);
+    
+    // rjf: advance
+    off += payload_bytes_in_this_packet;
+    
+    scratch_end(scratch);
+  }
+  return packets;
+}
+
+internal String8
+ds_data_from_packets(Arena *arena, String8List packets, DS_PacketKind *packet_kind_out)
+{
+  Temp scratch = scratch_begin(&arena, 1);
+  String8List payload_pieces = {0};
+  DS_PacketKind kind = DS_PacketKind_Null;
+  for(String8Node *n = packets.first; n != 0; n = n->next)
+  {
+    String8 packet = n->string;
+    if(packet.size >= sizeof(DS_PacketHeader))
+    {
+      DS_PacketHeader header = {0};
+      MemoryCopy(&header, packet.str, sizeof(header));
+      if(header.magic == DS_PACKET_MAGIC && header.version == DS_PACKET_VERSION)
+      {
+        if(kind == DS_PacketKind_Null)
+        {
+          kind = header.flags & DS_PacketFlag_KindMask;
+        }
+        if((header.flags & DS_PacketFlag_KindMask) != kind)
+        {
+          break;
+        }
+        String8 payload = str8_skip(packet, sizeof(header));
+        str8_list_push(scratch.arena, &payload_pieces, payload);
+      }
+    }
+  }
+  String8 data = str8_list_join(arena, &payload_pieces, 0);
+  if(packet_kind_out)
+  {
+    packet_kind_out[0] = kind;
+  }
+  scratch_end(scratch);
+  return data;
 }
 
 ////////////////////////////////

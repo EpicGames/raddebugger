@@ -4709,6 +4709,75 @@ TEST(reloc_against_removed_comdat)
   T_Ok(g_last_exit_code == 0);
 }
 
+TEST(comdat_vs_larger_common)
+{
+  T_Ok(t_write_def_obj("comdat.obj", (T_COFF_DefObj){
+    .machine = T_COFF_DefSetMachine(X64),
+    .sections = (T_COFF_DefSection[]){
+      { "rdata", ".rdata", str8_lit_comp("\x01\x02\x03\x04"), .flags = "r:data", .raw_flags = COFF_SectionFlag_LnkCOMDAT },
+      {0}
+    },
+    .symbols = (T_COFF_DefSymbol[]){
+      T_COFF_DefSymbol_Secdef("rdata", COFF_ComdatSelect_Any),
+      T_COFF_DefSymbol_Extern("TEST", "rdata", 0),
+      {0}
+    }
+  }));
+
+  T_Ok(t_write_def_obj("common.obj", (T_COFF_DefObj){
+    .machine = T_COFF_DefSetMachine(X64),
+    .symbols = (T_COFF_DefSymbol[]){ T_COFF_DefSymbol_Common("TEST", 16), {0} }
+  }));
+
+  T_Ok(t_write_def_obj("entry.obj", (T_COFF_DefObj){
+    .machine = T_COFF_DefSetMachine(X64),
+    .sections = (T_COFF_DefSection[]){
+      {
+        "text", ".text",
+        str8_lit_comp(
+          "\x48\xC7\xC0\x00\x00\x00\x00" // mov rax, $imm
+          "\xC3"                         // ret
+        ),
+        .flags = "rx:code",
+        .relocs = (T_COFF_DefReloc[]){ T_COFF_DefReloc(X64_Addr32Nb, 3, "TEST"), {0} }
+      },
+      {0}
+    },
+    .symbols = (T_COFF_DefSymbol[]){
+      T_COFF_DefSymbol_Extern("entry", "text", 0),
+      T_COFF_DefSymbol_Undef("TEST"),
+      {0}
+    }
+  }));
+
+  char *orders[] = {
+    "comdat.obj common.obj entry.obj", // COMDAT defined first, replaced by common
+    "common.obj comdat.obj entry.obj", // common defined first, COMDAT discarded on arrival
+  };
+  for EachElement(i, orders) {
+    t_invoke_linkerf("/subsystem:console /entry:entry /nodefaultlib /opt:noref,noicf /out:a.exe %s", orders[i]);
+    T_Ok(g_last_exit_code == 0);
+
+    String8             exe           = t_read_file(arena, str8_lit("a.exe"));
+    PE_BinInfo          pe            = pe_bin_info_from_data(arena, exe);
+    COFF_SectionHeader *section_table = (COFF_SectionHeader *)str8_substr(exe, pe.section_table_range).str;
+    String8             string_table  = str8_substr(exe, pe.string_table_range);
+
+    // common symbol must win and land in .bss
+    COFF_SectionHeader *bss = coff_section_header_from_name(string_table, section_table, pe.section_count, str8_lit(".bss"));
+    T_Ok(bss != 0);
+    T_Ok(bss->vsize >= 16);
+
+    // reloc against TEST must resolve into the common block, not the discarded COMDAT
+    COFF_SectionHeader *text = coff_section_header_from_name(string_table, section_table, pe.section_count, str8_lit(".text"));
+    T_Ok(text != 0);
+    String8 text_data = str8_substr(exe, rng_1u64(text->foff, text->foff + text->fsize));
+    T_Ok(text_data.size >= 7);
+    U32     test_rva  = *(U32 *)(text_data.str + 3);
+    T_Ok(bss->voff <= test_rva && test_rva < bss->voff + bss->vsize);
+  }
+}
+
 TEST(sect_align)
 {
   T_Ok(t_write_def_obj("test.obj", (T_COFF_DefObj){
@@ -8808,6 +8877,56 @@ TEST(ghash_basic)
   }
 }
 
+// Empty translation units can carry C13 file information without any symbol
+// records. The module then starts with a FileChksms header, not a CV signature
+// followed by a symbol stream.
+TEST(pdb_c13_without_symbols)
+{
+  CV_DebugS debug_s = {0};
+  CV_C13Checksum checksum = { .name_off = 1, .kind = CV_C13ChecksumKind_Null };
+  U64 checksum_size = AlignPow2(sizeof(checksum), CV_C13SubSectionAlign);
+  String8 checksums = cv_debug_s_alloc_subsection(arena, &debug_s, CV_C13SubSectionKind_FileChksms, checksum_size);
+  MemoryCopy(checksums.str, &checksum, sizeof(checksum));
+
+  String8 file_names = str8_lit("\0checksums_only.c\0");
+  String8 strings = cv_debug_s_alloc_subsection(arena, &debug_s, CV_C13SubSectionKind_StringTable, file_names.size);
+  MemoryCopyStr8(strings.str, file_names);
+
+  String8List debug_data = cv_data_from_debug_s_c13(arena, &debug_s, 1);
+  T_Ok(t_write_def_obj("checksums_only.obj", (T_COFF_DefObj){
+    .machine = T_COFF_DefSetMachine(X64),
+    .sections = (T_COFF_DefSection[]){
+      { "debug_s", ".debug$S", str8_list_join(arena, &debug_data, 0), .flags = "r:data@4", .raw_flags = COFF_SectionFlag_MemDiscardable },
+      {0}
+    },
+  }));
+  T_Ok(t_write_entry_obj());
+
+  t_invoke_linkerf("/subsystem:console /entry:entry /nodefaultlib /debug:full /out:a.exe entry.obj checksums_only.obj");
+  T_Ok(g_last_exit_code == 0);
+
+  String8 raw_pdb = t_read_file(arena, str8_lit("a.pdb"));
+  MSF_Parsed *msf = msf_parsed_from_data(arena, raw_pdb);
+  PDB_DbiParsed *dbi = pdb_dbi_from_data(arena, msf_data_from_stream(msf, PDB_FixedStream_Dbi));
+  PDB_CompUnitArray *modules = pdb_comp_unit_array_from_data(arena, pdb_data_from_dbi_range(dbi, PDB_DbiRange_ModuleInfo));
+  B32 found = 0;
+  for EachIndex(i, modules->count) {
+    PDB_CompUnit *mod = modules->units[i];
+    if (str8_match(str8_skip_last_slash(mod->obj_name), str8_lit("checksums_only.obj"), 0)) {
+      found = 1;
+      T_Ok(mod->range_off[PDB_DbiCompUnitRange_Symbols] == mod->range_off[PDB_DbiCompUnitRange_Symbols + 1]);
+      T_Ok(mod->range_off[PDB_DbiCompUnitRange_C13] == 0);
+      String8 module = msf_data_from_stream(msf, mod->sn);
+      T_Ok(module.size >= sizeof(CV_C13SubSectionHeader) + checksum_size);
+      CV_C13SubSectionHeader header;
+      MemoryCopy(&header, module.str, sizeof(header));
+      T_Ok(header.kind == CV_C13SubSectionKind_FileChksms);
+      T_Ok(header.size == checksum_size);
+    }
+  }
+  T_Ok(found);
+}
+
 TEST(patch_cv_symbol_tree)
 {
   String8List raw_symbols = {0};
@@ -8818,7 +8937,8 @@ TEST(patch_cv_symbol_tree)
   str8_list_push(arena, &raw_symbols, cv_make_symbol(arena, CV_SymKind_END,            cv_make_end(arena)));
 
   String8 symbol_data = str8_list_join(arena, &raw_symbols, 0);
-  U64 tree_size = cv_patch_symbol_tree_offsets(symbol_data, sizeof(CV_Signature), 4);
+  U64 tree_size = 0;
+  T_Ok(cv_patch_symbol_tree_offsets(symbol_data, sizeof(CV_Signature), 4, &tree_size));
   T_Ok(tree_size == 84);
 
   {
@@ -10868,6 +10988,153 @@ TEST(coff_section_name_offsets)
 
   MemoryZeroStruct(&inline_header);
   T_Ok(coff_name_from_section_header(str8_zero(), &inline_header).size == 0);
+}
+
+#if 0
+
+TEST(compressed_obj)
+{
+  T_Ok(t_write_entry_obj());
+  T_Ok(t_invoke_linkerf("/compress entry.obj"));
+  T_Ok(t_invoke_linkerf("/subsystem:console /entry:entry /nod entry.obj"));
+}
+
+TEST(mixed_segment_sizes)
+{
+  // generate object files with mixed segment sizes, linker must allocate correct backing for each object
+  U64      segment_sizes[]  = { KB(64), KB(128), KB(512) };
+  U64      segment_counts[] = { 3, 3, 3 };
+  U64      segment_tails[]  = { 137, 11, 231 };
+  char    *obj_names[]      = { "small.obj", "medium.obj", "large.obj" };
+  char    *sect_names[]     = { ".small", ".medium", ".large" };
+  String8  expected[ArrayCount(segment_sizes)] = {0};
+  for EachElement(i, segment_sizes) {
+    U64 size = segment_counts[i] * segment_sizes[i] + segment_tails[i];
+    expected[i] = str8(push_array_no_zero(arena, U8, size), size);
+
+    // populate sections with deterministic data
+    U32 state = 0x12345678u + (U32)i;
+    for EachIndex(k, size) {
+      state ^= state << 13;
+      state ^= state >> 17;
+      state ^= state << 5;
+      expected[i].str[k] = (U8)state;
+    }
+
+    T_Ok(t_write_def_obj(obj_names[i], (T_COFF_DefObj){
+                         .machine = T_COFF_DefSetMachine(X64),
+                         .sections = (T_COFF_DefSection[]){
+                            { "payload", sect_names[i], expected[i], .flags = "rw:data@1" },
+                            {0},
+                         },
+                        }));
+
+    T_Ok(t_invoke_linkerf("/compress /rad_obj_segment_size:%llu %s", segment_sizes[i], obj_names[i]));
+  }
+
+  T_Ok(t_write_entry_obj());
+
+  t_invoke_linkerf("/rad_log:debug /subsystem:console /entry:entry /nod /opt:noref /opt:noicf /rad_cfm_cache_cap:%llu /rad_cfm_worker_count:1 /out:a.exe entry.obj small.obj large.obj medium.obj", MB(8));
+
+  // verify that linker prints correct error message on mixed segment sizes
+  String8 output      = g_errors;
+  U64     match_count = 0;
+  while (output.size) {
+    if (t_match_line(&output, str8_lit("Error(*): mixed segment sizes is not a supported case; please compress objects with the same segment size;*"))) {
+      match_count += 1;
+    }
+  }
+  T_Ok(match_count == 1);
+}
+
+TEST(pressure_cfm_cache)
+{
+  // generate object files with mixed segment sizes, linker must allocate correct backing for each object
+  U64      segment_counts[] = { 30, 40, 30 };
+  U64      segment_tails[]  = { 137, 11, 231 };
+  char    *obj_names[]      = { "small.obj", "medium.obj", "large.obj" };
+  char    *sect_names[]     = { ".small", ".medium", ".large" };
+  String8  expected[ArrayCount(segment_counts)] = {0};
+
+  U64 segment_size = KB(512);
+  for EachElement(i, segment_counts) {
+    U64 size = segment_counts[i] * segment_size + segment_tails[i];
+    expected[i] = str8(push_array_no_zero(arena, U8, size), size);
+
+    // populate sections with deterministic data
+    U32 state = 0x12345678u + (U32)i;
+    for EachIndex(k, size) {
+      state ^= state << 13;
+      state ^= state >> 17;
+      state ^= state << 5;
+      expected[i].str[k] = (U8)state;
+    }
+
+    T_Ok(t_write_def_obj(obj_names[i], (T_COFF_DefObj){
+                         .machine = T_COFF_DefSetMachine(X64),
+                         .sections = (T_COFF_DefSection[]){
+                            { "payload", sect_names[i], expected[i], .flags = "rw:data@1" },
+                            {0},
+                         },
+                        }));
+
+    T_Ok(t_invoke_linkerf("/compress /rad_obj_segment_size:%llu %s", segment_size, obj_names[i]));
+  }
+
+  String8List objs_list = {0};
+  for EachElement(i, obj_names) { str8_list_pushf(arena, &objs_list, obj_names[i]); }
+  String8 objs = str8_list_join(arena, &objs_list, &(StringJoin){.sep=str8_lit(" ")});
+
+  T_Ok(t_write_entry_obj());
+
+  // retained payloads require the linker to read more segments than the CFM cache can hold;
+  // by forcing a small cache cap, successful linking requires eviction
+  T_Ok(t_invoke_linkerf("/rad_log:debug /subsystem:console /entry:entry /nod /opt:noref,noicf /rad_workers:1 /rad_cfm_worker_count:1 /rad_cfm_prefetch_size:0 /rad_cfm_cache_cap:%llu /out:a.exe entry.obj %S", 4 * segment_size, objs));
+
+  // segment sizes that are greater than cache size must produce a linker error
+  {
+    t_invoke_linkerf("/rad_log:debug /subsystem:console /entry:entry /nod /opt:noref,noicf /rad_workers:1 /rad_cfm_worker_count:1 /rad_cfm_prefetch_size:0 /rad_cfm_cache_cap:%llu /out:a.exe entry.obj %S", KB(64), objs);
+
+    U64 match_count = 0;
+    for (String8 output = g_errors; output.size; ) {
+      if (t_match_line(&output, str8_lit("Error(*): failed to open compressed file map, reason OutOfMemory, path *"))) {
+        match_count += 1;
+      }
+    }
+    T_Ok(match_count == 1);
+  }
+}
+#endif
+
+TEST(basic_librarian_test)
+{
+  T_Ok(t_write_def_obj("test.obj", (T_COFF_DefObj){
+                       .machine  = T_COFF_DefSetMachine(X64),
+                       .sections = (T_COFF_DefSection[]){
+                         { "text", ".text", str8_lit_comp("foobar") },
+                         {0}
+                       },
+                       .symbols = (T_COFF_DefSymbol[]){
+                         T_COFF_DefSymbol_ExternFunc("foobar", "text", 0),
+                         {0},
+                       }
+                       }));
+
+  t_invoke_linkerf("/lib test.obj /out:test.lib");
+  T_Ok(g_last_exit_code == 0);
+
+  T_Ok(t_write_entry_obj());
+
+  t_invoke_linkerf("/subsystem:console /entry:entry /include:foobar /export:foobar /out:a.exe test.lib entry.obj");
+  T_Ok(g_last_exit_code == 0);
+
+  String8              exe    = t_read_file(arena, str8_lit("a.exe"));
+  PE_BinInfo           pe     = pe_bin_info_from_data(arena, exe);
+  COFF_SectionHeader  *sectab = (COFF_SectionHeader *)str8_substr(exe, pe.section_table_range).str;
+  PE_ParsedExportTable exptab = pe_exports_from_data(arena, pe.section_count, sectab, exe, pe.data_dir_franges[PE_DataDirectoryIndex_EXPORT], pe.data_dir_vranges[PE_DataDirectoryIndex_EXPORT]);
+  T_Ok(exptab.export_count == 1);
+  PE_ParsedExport foobar = exptab.exports[0];
+  T_Ok(str8_match(foobar.name, str8_lit("foobar"), 0));
 }
 
 // TODO: linker currenlty skips over the IFC records and should instead load the .ifc; type merger also has to expand type index space with the help of IFC records

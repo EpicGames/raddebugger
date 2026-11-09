@@ -36,6 +36,7 @@ internal void
 tp_worker_main(void *raw_worker)
 {
   TP_Worker  *worker = raw_worker;
+  ProfThreadName("Thread Pool Worker %llu", worker->id);
   TP_Context *pool   = worker->pool;
   while (tp_run_tasks(pool, worker)) {}
 }
@@ -44,6 +45,7 @@ internal void
 tp_worker_main_shared(void *raw_worker)
 {
   TP_Worker  *worker = raw_worker;
+  ProfThreadName("Thread Pool Worker %llu (Shared)", worker->id);
   TP_Context *pool   = worker->pool;
   for (;;) {
     if (semaphore_take(pool->exec_semaphore, max_U64)) {
@@ -180,7 +182,6 @@ tp_temp_begin(TP_Arena *arena)
   return temp;
 }
 
-internal
 THREAD_POOL_TASK_FUNC(tp_release_scratch_free_blocks_task)
 {
   TCTX *tctx = tctx_selected();
@@ -242,49 +243,51 @@ tp_for_parallel(TP_Context *pool, TP_Arena *task_arena, U64 task_count, TP_TaskF
   }
 }
 
-internal Rng1U64 *
-tp_divide_work(Arena *arena, U64 item_count, U32 worker_count)
+internal Rng1U64
+tp_work_range(U64 item_count, U32 range_count, U64 task_id)
 {
-  U64      per_count = CeilIntegerDiv(item_count, worker_count);
-  Rng1U64 *range_arr = push_array_no_zero(arena, Rng1U64, worker_count + 1);
-  for (U64 i = 0; i < worker_count; i += 1) {
-    range_arr[i] = rng_1u64(Min(item_count, i * per_count), 
-                            Min(item_count, i * per_count + per_count));
+  AssertAlways(item_count <= ~0ull / range_count);
+  U64 min = task_id * item_count / range_count;
+  U64 max = (task_id + 1) * item_count / range_count;
+  return r1u64(min, max);
+}
+
+internal void
+tp_broadcast_many_(TP_Context *tp, U64 task_id, void **ptrs, U64 *sizes)
+{
+  if (task_id == 0) {
+    tp->broadcast      = ptrs[0];
+    tp->broadcast_many = ptrs;
   }
+  barrier_wait(tp->barrier);
 
-  // thread_pool_dummy_range:
-  range_arr[worker_count] = rng_1u64(item_count, item_count);
-
-  return range_arr;
+  if (task_id != 0) {
+    for (U64 i = 0; ptrs[i] != 0; i += 1) {
+      MemoryCopy(ptrs[i], tp->broadcast_many[i], sizes[i]);
+    }
+  }
+  barrier_wait(tp->barrier);
 }
 
 internal void
 tp_broadcast_(TP_Context *tp, U64 task_id, void *ptr, U64 ptr_size)
 {
-  if (task_id == 0) {
-    tp->broadcast      = ptr;
-    tp->broadcast_size = ptr_size;
-  }
-  barrier_wait(tp->barrier);
-
-  if (task_id != 0) {
-    MemoryCopy(ptr, tp->broadcast, tp->broadcast_size);
-  }
-  barrier_wait(tp->barrier);
+  void *ptrs[] = { ptr, 0 };
+  U64 sizes[] = { ptr_size };
+  tp_broadcast_many_(tp, task_id, ptrs, sizes);
 }
 
 internal U64
 tp_sum_u64(TP_Context *tp, U64 task_id, U64 v)
 {
-  if (task_id == 0) {
-    tp->sum = 0;
-  }
+  U64  sum = 0;
+  U64 *sum_ptr = task_id == 0 ? &sum : 0;
+  tp_broadcast(&sum_ptr);
+
+  ins_atomic_u64_add_eval(sum_ptr, v);
   barrier_wait(tp->barrier);
 
-  ins_atomic_u64_add_eval(&tp->sum, v);
-  barrier_wait(tp->barrier);
-
-  U64 result = tp->sum;
+  U64 result = *sum_ptr;
   barrier_wait(tp->barrier);
   return result;
 }

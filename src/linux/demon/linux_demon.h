@@ -5,6 +5,15 @@
 #define LINUX_DEMON_H
 
 ////////////////////////////////
+//~ rjf: Implicit Layer Dependencies
+
+#include "elf/elf.h"
+#include "gnu/gnu.h"
+#include "gnu/gnu_parse.h"
+#include "elf/elf_parse.h"
+#include "stap/stap_parse.h"
+
+////////////////////////////////
 //~ rjf: Linux Includes
 
 #include <sys/ptrace.h>
@@ -375,7 +384,7 @@ struct LNX_DMN_State
   LNX_DMN_Process *last_process;
   U64 process_count;
   
-  // rjf: pending process/thread counts
+  // rjf: pending counts
   U64 process_pending_creation;
   U64 threads_pending_creation;
   

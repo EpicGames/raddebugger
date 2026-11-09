@@ -364,7 +364,17 @@ internal B32
 release_memory_placeholders(void *ptr, U64 size, U64 block_size)
 {
   Assert(block_size > 0 && size > 0);
-  if (size > block_size && VirtualFree(ptr, size, MEM_RELEASE|MEM_COALESCE_PLACEHOLDERS) == 0) { return 0; }
+  if (size > block_size && VirtualFree(ptr, size, MEM_RELEASE|MEM_COALESCE_PLACEHOLDERS) == 0) {
+    // coalescing is rejected when the range already is one placeholder (never split, or
+    // split and fully re-coalesced); anything else is a real failure
+    MEMORY_BASIC_INFORMATION info = {0};
+    if (VirtualQuery(ptr, &info, sizeof(info)) != sizeof(info) ||
+        info.State          != MEM_RESERVE ||
+        info.AllocationBase != ptr         ||
+        info.RegionSize     != size) {
+      return 0;
+    }
+  }
   return VirtualFree(ptr, 0, MEM_RELEASE) != 0;
 }
 
@@ -386,6 +396,25 @@ internal B32
 split_memory_placeholder(void *ptr, U64 size, U64 first_size)
 {
   return first_size == size || (first_size && first_size < size && VirtualFree(ptr, first_size, MEM_RELEASE|MEM_PRESERVE_PLACEHOLDER));
+}
+
+internal B32
+carve_memory_placeholder(void *ptr, U64 size)
+{
+  // splits the enclosing placeholder into up to three (before, range, after)
+  if (VirtualFree(ptr, size, MEM_RELEASE|MEM_PRESERVE_PLACEHOLDER)) { return 1; }
+
+  // the split is rejected (ERROR_INVALID_ADDRESS) when the range already is a whole placeholder
+  MEMORY_BASIC_INFORMATION info = {0};
+  if (VirtualQuery(ptr, &info, sizeof(info)) == sizeof(info) &&
+      info.State          == MEM_RESERVE &&
+      info.AllocationBase == ptr         &&
+      info.BaseAddress    == ptr         &&
+      info.RegionSize     == size) {
+    return 1;
+  }
+
+  return 0;
 }
 
 internal B32
@@ -524,7 +553,11 @@ internal void *
 shared_memory_view_open(SharedMemory handle, Rng1U64 range)
 {
   return MapViewOfFile((HANDLE)(handle.u64[0]),
+#ifdef RADLINK_UBA_COW_WORKAROUND
+                       FILE_MAP_WRITE,
+#else
                        FILE_MAP_ALL_ACCESS,
+#endif
                        (U32)((range.min & 0xffffffff00000000) >> 32),
                        (U32)((range.min & 0x00000000ffffffff)),
                        dim_1u64(range));
@@ -2118,6 +2151,7 @@ win32_exception_filter(EXCEPTION_POINTERS* exception_ptrs)
 #undef OS_WINDOWS // shlwapi uses its own OS_WINDOWS include inside
 #define OS_WINDOWS 1
 
+#if !BASE_NOENTRY
 internal void
 w32_entry_point_caller(int argc, WCHAR **wargv)
 {
@@ -2325,3 +2359,4 @@ int wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPWSTR lpCmdLine, int
   return 0;
 }
 #endif
+#endif // !BASE_NOENTRY

@@ -104,6 +104,7 @@
 #include "linker/lnk_cmd_line.h"
 #include "linker/lnk_cmd_line.c"
 #include "linker/lnk_log.h"
+#include "linker/lnk_log.c"
 #include "linker/lnk_name_trie.h"
 #include "linker/lnk_debug_helper.h"
 #include "torture.h"

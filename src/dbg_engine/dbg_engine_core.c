@@ -9,8 +9,65 @@
 ////////////////////////////////
 //~ rjf: @eval2 Bundled Evaluation Path
 
+thread_static D_EvalCache *d_eval_cache = 0;
+
+internal D_EvalCache *
+d_eval_cache_alloc(void)
+{
+  Arena *arena = arena_alloc();
+  D_EvalCache *cache = push_array(arena, D_EvalCache, 1);
+  cache->arena = arena;
+  cache->slots_count = 4096;
+  cache->string_slots = push_array(arena, D_EvalSlot, cache->slots_count);
+  cache->id_slots = push_array(arena, D_EvalSlot, cache->slots_count);
+  cache->arena_eval_start_pos = arena_pos(arena);
+  cache->top_parent = &cache->nil_parent;
+  cache->cons_type_map = e2_cons_type_map_alloc();
+  return cache;
+}
+
+internal void
+d_eval_cache_select(D_EvalCache *cache)
+{
+  d_eval_cache = cache;
+  arena_pop_to(cache->arena, cache->arena_eval_start_pos);
+  e2_select_cons_type_map(cache->cons_type_map);
+}
+
+internal D_EvalID
+d_eval_push_parent(D_EvalID id)
+{
+  D_EvalID previous_top = d_eval_cache->top_parent->v;
+  D_EvalIDNode *n = d_eval_cache->free_parent;
+  if(n != 0)
+  {
+    SLLStackPop(d_eval_cache->free_parent);
+  }
+  else
+  {
+    n = push_array(d_eval_cache->arena, D_EvalIDNode, 1);
+  }
+  SLLStackPush(d_eval_cache->top_parent, n);
+  n->v = id;
+  return previous_top;
+}
+
+internal D_EvalID
+d_eval_pop_parent(void)
+{
+  D_EvalID result = 0;
+  if(d_eval_cache->top_parent != &d_eval_cache->nil_parent)
+  {
+    result = d_eval_cache->top_parent->v;
+    D_EvalIDNode *n = d_eval_cache->top_parent;
+    SLLStackPop(d_eval_cache->top_parent);
+    SLLStackPush(d_eval_cache->free_parent, n);
+  }
+  return result;
+}
+
 internal D_Eval
-d_eval_from_string(Arena *arena, String8 string)
+d_eval_from_string(String8 string)
 {
   D_Eval eval = {0};
   {
@@ -23,9 +80,17 @@ d_eval_from_string(Arena *arena, String8 string)
       B32 identifier_is_type = 0;
       for(;;)
       {
-        E2_Parse parse = e2_parse_from_string(arena, &state, identifier_is_type, E2_LangKind_CLike, string);
+        E2_Parse parse = e2_parse_from_string(d_eval_cache->arena, &state, identifier_is_type, E2_LangKind_CLike, string);
         identifier_is_type = 0;
         expr = parse.expr;
+        switch(parse.status)
+        {
+          default:{}break;
+          case E2_ParseStatus_CheckIdentifierIsType:
+          {
+            
+          }break;
+        }
         e2_msg_list_concat_in_place(&msgs, &parse.msgs);
         if(e2_parse_status_is_terminal(parse.status))
         {
@@ -42,7 +107,7 @@ d_eval_from_string(Arena *arena, String8 string)
       E2_CompileState state = {0};
       for(;;)
       {
-        E2_Compile compile = e2_compile_from_expr(arena, &state, resolve_result, compile_time_eval_result, expr);
+        E2_Compile compile = e2_compile_from_expr(d_eval_cache->arena, &state, resolve_result, compile_time_eval_result, expr);
         resolve_result = &e2_irnode_nil;
         MemoryZeroStruct(&compile_time_eval_result);
         irtree = compile.irtree;
@@ -52,7 +117,22 @@ d_eval_from_string(Arena *arena, String8 string)
           default:{}break;
           case E2_CompileStatus_MissedIdentifierResolution:
           {
-            resolve_result = e2_irnode_const_u64_or_smaller(arena, 123);
+            resolve_result = e2_irnode_const_u64_or_smaller(d_eval_cache->arena, 123);
+          }break;
+          case E2_CompileStatus_NewIdentifierDefinition:
+          {
+          }break;
+          case E2_CompileStatus_MemberAccess:
+          {
+          }break;
+          case E2_CompileStatus_IndexAccess:
+          {
+          }break;
+          case E2_CompileStatus_Call:
+          {
+          }break;
+          case E2_CompileStatus_CompileTimeEval:
+          {
           }break;
         }
         if(e2_compile_status_is_terminal(compile.status))
@@ -63,7 +143,7 @@ d_eval_from_string(Arena *arena, String8 string)
     }
     
     //- rjf: ir tree -> bytecode
-    String8 bytecode = e2_bytecode_from_irnode(arena, irtree);
+    String8 bytecode = e2_bytecode_from_irnode(d_eval_cache->arena, irtree);
     
     //- rjf: bytecode -> value
     E2_Val val = {0};
@@ -72,7 +152,7 @@ d_eval_from_string(Arena *arena, String8 string)
       E2_SpaceMap space_map = {0};
       for(;;)
       {
-        E2_Interp interp = e2_interp_from_bytecode(arena, &state, &space_map, bytecode);
+        E2_Interp interp = e2_interp_from_bytecode(d_eval_cache->arena, &state, &space_map, bytecode);
         val = interp.val;
         e2_msg_list_concat_in_place(&msgs, &interp.msgs);
         if(e2_interp_status_is_terminal(interp.status))
@@ -104,7 +184,19 @@ d_init(void)
     Arena *arena = arena_alloc();
     d_ctrl_state = push_array(arena, D_CtrlState, 1);
     d_ctrl_state->arena = arena;
-    d_ctrl_state->sock_session = sock_session_open(0, d_ctrl_sock_wakeup);
+    d_ctrl_state->sock_session = sock_session_open(0, 0, DS_PACKET_SIZE);
+    d_ctrl_state->sock_send_mutex = rw_mutex_alloc();
+    d_ctrl_state->sock_event_ring = guarded_ring_alloc(arena, KB(256));
+    d_ctrl_state->sock_rings_count = get_system_info()->logical_processor_count;
+    d_ctrl_state->sock_rings = push_array(arena, D_SockRingSlot, d_ctrl_state->sock_rings_count);
+    for EachIndex(idx, d_ctrl_state->sock_rings_count)
+    {
+      d_ctrl_state->sock_rings[idx].recv_ring = guarded_ring_alloc(arena, KB(8));
+      d_ctrl_state->sock_rings[idx].completion_ring = guarded_ring_alloc(arena, KB(1));
+      SLLStackPush(d_ctrl_state->free_sock_ring, &d_ctrl_state->sock_rings[idx]);
+    }
+    d_ctrl_state->sock_ring_alloc_rw_mutex = rw_mutex_alloc();
+    d_ctrl_state->sock_ring_alloc_cv = cond_var_alloc();
     for EachEnumVal(Arch, arch)
     {
       ARCH_Info *arch_info = arch_info_from_arch(arch);
@@ -169,6 +261,11 @@ d_init(void)
     d_ctrl_state->dump_cache.slots_count = 64;
     d_ctrl_state->dump_cache.slots = push_array(arena, D_DumpSlot, d_ctrl_state->dump_cache.slots_count);
     d_ctrl_state->dump_cache.stripes = stripe_array_alloc(arena);
+    d_ctrl_state->open_server_cache.arena = arena_alloc();
+    d_ctrl_state->open_server_cache.slots_count = 8;
+    d_ctrl_state->open_server_cache.slots = push_array(arena, D_OpenServerSlot, d_ctrl_state->open_server_cache.slots_count);
+    d_ctrl_state->open_server_cache.rw_mutex = rw_mutex_alloc();
+    d_ctrl_state->sock_recv_thread = thread_launch(d_sock_recv_thread_entry_point, 0);
   }
   
   //- rjf: set up user state
@@ -181,6 +278,7 @@ d_init(void)
     d_user_state->ctrl_entity_store = d_entity_ctx_rw_store_alloc();
     d_user_state->ctrl_stop_arena = arena_alloc();
     d_user_state->ctrl_msg_arena = arena_alloc();
+    d_user_state->last_ctrl_status_arena = arena_alloc();
     
     // rjf: set up caches
     for(U64 idx = 0; idx < ArrayCount(d_user_state->tls_base_caches); idx += 1)

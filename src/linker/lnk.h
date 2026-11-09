@@ -35,10 +35,11 @@ typedef struct LNK_Input
   B32      disallow;
   B32      is_thin;
   B32      owns_file_map;
-  B32      has_disk_read_failed;
+  File     handle;
   B32      exclude_from_debug_info;
   LNK_Lib *lib;
   U32      member_idx;
+  CFM_Map *cfm_map;
 
   COFF_DataType type;
   union {
@@ -78,6 +79,8 @@ typedef struct LNK_Inputer
   HashTable     *missing_lib_ht;
   LNK_InputList  libs;
   LNK_InputList  new_libs[LNK_InputSource_Count];
+
+  CFM_Context *cfm;
 } LNK_Inputer;
 
 typedef struct LNK_LibrarianInputs
@@ -292,7 +295,6 @@ typedef struct
       U64                     buffer_size;
       U8                     *buffer;
       LNK_BaseRelocPageArray  pages;
-      Rng1U64                *ranges;
     } serialize;
   };
 } LNK_BaseRelocsTask;
@@ -323,7 +325,6 @@ typedef struct
   union {
     struct {
       Arena     *arena;
-      Rng1U64   *ranges;
       HashTable **defns;
     } gather_sects;
     struct {
@@ -337,7 +338,7 @@ typedef struct
     struct {
       B8                        **was_symbol_patched;
       LNK_Section                *common_block_sect;
-      Rng1U64                    *common_block_ranges;
+       U64                        common_block_count;
       LNK_CommonBlockContrib     *common_block_contribs;
       COFF_SymbolValueInterpType  fixup_type;
     } patch_symtabs;
@@ -351,7 +352,7 @@ typedef struct
 typedef struct
 {
   String8  data;
-  Rng1U64 *ranges;
+  U32      chunk_count;
   U128    *hashes;
 } LNK_Blake3Hasher;
 
@@ -415,7 +416,7 @@ internal LNK_Input * lnk_inputer_push_lib_linkgen(LNK_Inputer *inputer, LNK_Inpu
 internal LNK_Input * lnk_inputer_push_lib_thin(LNK_Inputer *inputer, LNK_Config *config, LNK_InputSourceType input_source, String8 lib_path);
 
 internal B32               lnk_has_pending_input_work(LNK_Inputer *inputer, LNK_Link *link);
-internal LNK_InputPtrArray lnk_inputer_flush(Arena *arena, TP_Context *tp, LNK_Inputer *inputer, LNK_InputList *all_inputs, LNK_InputList *new_inputs);
+internal LNK_InputPtrArray lnk_inputer_flush(Arena *arena, TP_Context *tp, LNK_Config *config, LNK_Inputer *inputer, LNK_InputList *all_inputs, LNK_InputList *new_inputs);
 internal void              lnk_inputer_release_file_maps(TP_Context *tp, LNK_Inputer *inputer);
 
 // --- Link Context ------------------------------------------------------------
@@ -447,3 +448,10 @@ internal LNK_ImageContext lnk_build_image(TP_Arena *arena, TP_Context *tp, LNK_C
 
 internal void lnk_log_link_stats(LNK_ObjList obj_list, LNK_LibList *lib_index, LNK_SectionTable *sectab);
 internal void lnk_log_timers(void);
+
+// --- Fast Exit ---------------------------------------------------------------
+
+internal B32  lnk_fast_exit_is_child(void);
+internal void lnk_fast_exit_child_init(void);
+internal void lnk_fast_exit_signal(U32 exit_code);
+internal B32  lnk_fast_exit_run_child(U32 *exit_code_out);

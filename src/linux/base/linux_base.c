@@ -1089,6 +1089,13 @@ split_memory_placeholder(void *ptr, U64 size, U64 first_size)
 }
 
 internal B32
+carve_memory_placeholder(void *ptr, U64 size)
+{
+  // MAP_FIXED replaces any sub-range of a reservation; nothing to carve
+  return ptr != 0 && size > 0;
+}
+
+internal B32
 coalesce_memory_placeholders(void *ptr, U64 size)
 {
   return 1;
@@ -1891,6 +1898,7 @@ lnx_signal_handler(int sig, siginfo_t *info, void *arg)
   }
 }
 
+#if !BASE_NOENTRY
 int
 main(int argc, char **argv)
 {
@@ -2064,3 +2072,4 @@ main(int argc, char **argv)
   //- rjf: call into "real" entry point
   main_thread_base_entry_point(argc, argv);
 }
+#endif // !BASE_NOENTRY

@@ -13,7 +13,9 @@
   X(SizeBreakdown)        \
   X(LinkStats)            \
   X(Timers)               \
-  X(Links)
+  X(Links)                \
+  X(CFM)                  \
+/* end */
 
 typedef enum
 {
@@ -62,6 +64,8 @@ typedef enum
   LNK_Error_RelocationAgainstRemovedSection,
   LNK_Error_FailIfMismatch,
   LNK_Error_Boot,
+  LNK_Error_MixedSegmentSizes,
+  LNK_Error_Cfm,
   LNK_Error_StopLast,
   
   LNK_Error_ContinueFirst,
@@ -79,6 +83,7 @@ typedef enum
   LNK_Error_UnresolvedSymbol,
   LNK_Error_PrecompSigMismatch,
   LNK_Error_PrecompObjNotFound,
+  LNK_Error_FastExit,
   LNK_Error_ContinueLast,
   
   LNK_Warning_First,

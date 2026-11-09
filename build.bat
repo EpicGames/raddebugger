@@ -185,10 +185,8 @@ if "%oodle%"=="1" (
     exit /b 1
   )
   echo [Oodle SDK: !oodle_sdk_path!]
-  set "compile=!compile! -DOODLE_SDK=1 -I"!oodle_sdk_path!\include""
-  if exist "!oodle_sdk_path!\redist\oo2core_*_win64.dll" (
-    copy /y "!oodle_sdk_path!\redist\oo2core_*_win64.dll" "%~dp0build\" >nul || exit /b 1
-  )
+  set "compile=!compile! -DOODLE_SDK=1 -I"!oodle_sdk_path!\include" -DOODLE_STATIC"
+  set LINK=/LIBPATH:!oodle_sdk_path!\static_lib
 )
 
 :: --- Build Everything (@build_targets) --------------------------------------
@@ -219,6 +217,14 @@ if "%mule_peb_trample%"=="1" (
   if exist mule_peb_trample_new.rdi move mule_peb_trample_new.rdi mule_peb_trample_old_%random%.rdi
   %compile% ..\src\mule\mule_peb_trample.c %compile_link% %out%mule_peb_trample_new.exe || exit /b 1
   move mule_peb_trample_new.exe mule_peb_trample.exe
+)
+if "%radcobj%"=="1" (
+  set didbuild=1
+  set radcobj_crt=
+  if "%msvc%"=="1" set radcobj_crt=/Zl
+  %compile% !radcobj_crt! %only_compile% ..\src\linker\radcobj_main.c %obj_out%radcobj.obj || exit /b 1
+  %~dp0build\prelink.exe /nod /include:radcobj_match_magic /include:radcobj_validate /include:radcobj_encode /include:radcobj_decode_range /include:radcobj_decode /include:radcobj_raw_view %~dp0build\radcobj.obj /out:prelink.radcobj.obj || exit /b1
+  %mklib% -out:radcobj.lib %~dp0build\prelink.radcobj.obj || exit /b 1
 )
 popd
 

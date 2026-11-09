@@ -1388,14 +1388,14 @@ d_push_active_dbgi_key_list(Arena *arena)
 //- rjf: per-run caches
 
 internal U64
-d_query_cached_rip_from_thread(D_Entity *thread)
+d_cached_rip_from_thread(D_Entity *thread)
 {
-  U64 result = d_query_cached_rip_from_thread_unwind(thread, 0);
+  U64 result = d_cached_rip_from_thread_unwind(thread, 0);
   return result;
 }
 
 internal U64
-d_query_cached_rip_from_thread_unwind(D_Entity *thread, U64 unwind_count)
+d_cached_rip_from_thread_unwind(D_Entity *thread, U64 unwind_count)
 {
   U64 result = 0;
   if(unwind_count == 0)
@@ -1417,7 +1417,7 @@ d_query_cached_rip_from_thread_unwind(D_Entity *thread, U64 unwind_count)
 }
 
 internal U64
-d_query_cached_cfa_from_thread_unwind(D_Entity *thread, U64 unwind_count)
+d_cached_cfa_from_thread_unwind(D_Entity *thread, U64 unwind_count)
 {
   U64 cfa = 0;
   Access *access = access_open();
@@ -1431,7 +1431,7 @@ d_query_cached_cfa_from_thread_unwind(D_Entity *thread, U64 unwind_count)
 }
 
 internal E_String2NumMap *
-d_query_cached_locals_map_from_dbgi_key_voff(DI_Key dbgi_key, U64 voff)
+d_cached_locals_map_from_dbgi_key_voff(DI_Key dbgi_key, U64 voff)
 {
   ProfBeginFunction();
   E_String2NumMap *map = &e_string2num_map_nil;
@@ -1485,7 +1485,7 @@ d_query_cached_locals_map_from_dbgi_key_voff(DI_Key dbgi_key, U64 voff)
 }
 
 internal E_String2NumMap *
-d_query_cached_member_map_from_dbgi_key_voff(DI_Key dbgi_key, U64 voff)
+d_cached_member_map_from_dbgi_key_voff(DI_Key dbgi_key, U64 voff)
 {
   ProfBeginFunction();
   E_String2NumMap *map = &e_string2num_map_nil;
@@ -1629,8 +1629,14 @@ d_tick(Arena *arena, D_TargetArray *targets, D_BreakpointArray *breakpoints, D_P
           {
             arena_clear(d_user_state->ctrl_stop_arena);
             MemoryCopyStruct(&d_user_state->ctrl_last_stop_event, event);
-            d_user_state->ctrl_last_stop_event.string = push_str8_copy(d_user_state->ctrl_stop_arena, d_user_state->ctrl_last_stop_event.string);
+            d_user_state->ctrl_last_stop_event.string = str8_copy(d_user_state->ctrl_stop_arena, d_user_state->ctrl_last_stop_event.string);
           }
+        }break;
+        
+        case D_EventKind_Status:
+        {
+          arena_clear(d_user_state->last_ctrl_status_arena);
+          d_user_state->last_ctrl_status = str8_copy(d_user_state->last_ctrl_status_arena, event->string);
         }break;
       }
       log_infof("}\n\n");
@@ -1919,6 +1925,10 @@ d_tick(Arena *arena, D_TargetArray *targets, D_BreakpointArray *breakpoints, D_P
               log_user_error(s("Cannot run with all threads frozen."));
             }
           }
+          else
+          {
+            log_user_error(s("Cannot run with no attached processes."));
+          }
         }break;
         case D_CmdKind_StepIntoInst:
         case D_CmdKind_StepOverInst:
@@ -2033,17 +2043,17 @@ d_tick(Arena *arena, D_TargetArray *targets, D_BreakpointArray *breakpoints, D_P
           }
           else if(params->vaddr != 0)
           {
-            run_extra_bps.v[0].vaddr_expr = push_str8f(scratch.arena, "0x%I64x", params->vaddr);
+            run_extra_bps.v[0].vaddr_expr = str8f(scratch.arena, "0x%I64x", params->vaddr);
           }
           run_extra_bps.v[0].flags |= D_BreakpointFlag_BreakSelectedThreadOnly;
-          d_cmd(D_CmdKind_Run);
+          d_cmd(D_CmdKind_Run, .server = params->server, .process = params->process, .thread = params->thread);
         }break;
         case D_CmdKind_RunToName:
         {
           run_extra_bps.count = 1;
           run_extra_bps.v = push_array(scratch.arena, D_Breakpoint, 1);
           run_extra_bps.v[0].vaddr_expr = str8_copy(scratch.arena, params->string);
-          d_cmd(D_CmdKind_Run);
+          d_cmd(D_CmdKind_Run, .server = params->server, .process = params->process, .thread = params->thread);
         }break;
         case D_CmdKind_Run:
         {

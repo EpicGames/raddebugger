@@ -100,6 +100,10 @@ struct CV_C13InlineSiteDecoder
 {
   U64                cursor;
   U64                parent_voff;
+  U64Array           separated_code_voffs;
+  U64                code_offset_base;
+  B32                code_chunk_changed;
+  B32                error;
   CV_InlineRangeKind range_kind;
   U32                code_length;
   U32                code_offset;
@@ -126,6 +130,7 @@ enum
   CV_C13InlineSiteDecoderStepFlag_ExtendLastRange = (1 << 1),
   CV_C13InlineSiteDecoderStepFlag_EmitFile        = (1 << 2),
   CV_C13InlineSiteDecoderStepFlag_EmitLine        = (1 << 3),
+  CV_C13InlineSiteDecoderStepFlag_Error           = (1 << 4),
 };
 
 typedef struct CV_C13InlineSiteDecoderStep CV_C13InlineSiteDecoderStep;
@@ -184,6 +189,17 @@ struct CV_C13InlineeLinesParsedNode
   CV_C13InlineeLinesParsedNode *next;
   CV_C13InlineeLinesParsedNode *hash_next;
   CV_C13InlineeLinesParsed      v;
+};
+
+typedef struct CV_C13SubSection CV_C13SubSection;
+struct CV_C13SubSection
+{
+  CV_C13SubSectionKind kind;
+  U32                  declared_size;
+  U64                  data_offset;
+  String8              data;
+  U64                  next_offset;
+  B32                  truncated;
 };
 
 typedef struct CV_C13SubSectionNode CV_C13SubSectionNode;
@@ -274,7 +290,7 @@ internal U64 cv_decode_inline_annot_u32(String8 data, U64 offset, U32 *out_value
 internal U64 cv_decode_inline_annot_s32(String8 data, U64 offset, S32 *out_value);
 internal S32 cv_inline_annot_signed_from_unsigned_operand(U32 value);
 
-internal CV_C13InlineSiteDecoder      cv_c13_inline_site_decoder_init(U32 file_off, U32 first_source_ln, U32 parent_voff);
+internal CV_C13InlineSiteDecoder      cv_c13_inline_site_decoder_init(U32 file_off, U32 first_source_ln, U64 parent_voff);
 internal CV_C13InlineSiteDecoderStep cv_c13_inline_site_decoder_step(CV_C13InlineSiteDecoder *decoder, String8 binary_annots);
 
 //- Symbol/Leaf Helpers
@@ -292,7 +308,7 @@ internal B32                cv_is_leaf_pch(CV_LeafKind kind);
 internal CV_TypeIndexSource cv_type_index_source_from_leaf_kind(CV_LeafKind leaf_kind);
 
 internal CV_TypeIndexInfoList cv_get_symbol_type_index_offsets(Arena *arena, CV_SymKind kind, String8 data);
-internal CV_TypeIndexInfoList cv_get_leaf_type_index_offsets(Arena *arena, CV_LeafKind leaf_kind, String8 data);
+internal B32 cv_get_leaf_type_index_offsets(Arena *arena, CV_LeafKind leaf_kind, String8 data, CV_TypeIndexInfoList *list_out);
 internal CV_TypeIndexInfoList cv_get_inlinee_type_index_offsets(Arena *arena, String8 raw_data);
 internal String8Array         cv_get_data_around_type_indices(Arena *arena, CV_TypeIndexInfoList ti_list, String8 data);
 
@@ -311,6 +327,7 @@ internal CV_SymParsed * cv_sym_from_data(Arena *arena, String8 sym_data, U64 sym
 
 //- rjf: leaf stream parsing
 internal CV_LeafParsed * cv_leaf_from_data(Arena *arena, String8 leaf_data, CV_TypeId first);
+internal B32 cv_c13_sub_section_from_data(String8 data, U64 offset, CV_C13SubSection *out);
 internal CV_C13Parsed  * cv_c13_parsed_from_data(Arena *arena, String8 c13_data, String8 strtbl, COFF_SectionHeaderArray sections);
 
 //- rjf: record iterator

@@ -233,10 +233,12 @@ struct E2_Val
 //~ rjf: Evaluation "Asset" Parameters (Debug Info / Modules)
 
 typedef U64 E2_SpaceID;
+typedef U32 E2_DbgInfoID;
 
 typedef struct E2_DbgInfo E2_DbgInfo;
 struct E2_DbgInfo
 {
+  E2_DbgInfoID id;
   DI_Key dbgi_key;
   RDI_Parsed *rdi;
 };
@@ -531,7 +533,7 @@ struct E2_Interp
 thread_static E2_Assets *e2_assets = 0;
 thread_static E2_ConsTypeMap *e2_cons_type_map = 0;
 read_only global E2_ConsTypeNode e2_cons_type_node_nil = {&e2_cons_type_node_nil, &e2_cons_type_node_nil}; 
-read_only global E2_DbgInfo e2_dbg_info_nil = {{0}, &rdi_parsed_nil};
+read_only global E2_DbgInfo e2_dbg_info_nil = {0, {0}, &rdi_parsed_nil};
 read_only global E2_Expr e2_expr_nil = {0};
 read_only global E2_IRNode e2_irnode_nil = {0};
 
@@ -564,7 +566,7 @@ internal void e2_msg_list_concat_in_place(E2_MsgList *dst, E2_MsgList *src);
 //~ rjf: Assets
 
 internal void e2_select_assets(E2_Assets *assets);
-internal E2_DbgInfo *e2_dbgi_from_num(U32 num);
+internal E2_DbgInfo *e2_dbgi_from_id(E2_DbgInfoID id);
 
 ////////////////////////////////
 //~ rjf: Constructed Types
@@ -591,7 +593,7 @@ internal B32 e2_type_kind_is_unsigned(E2_TypeKind k);
 //- rjf: basic key constructors
 internal E2_TypeKey e2_type_key_zero(void);
 internal E2_TypeKey e2_type_key_basic(E2_TypeKind kind);
-internal E2_TypeKey e2_type_key_dbgi(E2_TypeKind kind, U32 dbg_info_num, U32 type_idx);
+internal E2_TypeKey e2_type_key_dbgi(E2_TypeKind kind, E2_DbgInfoID dbg_info_id, U32 type_idx);
 internal E2_TypeKey e2_type_key_reg(Arch arch, ARCH_RegCode reg_code);
 
 //- rjf: constructed type constructor
@@ -608,7 +610,7 @@ internal B32 e2_type_key_match(E2_TypeKey a, E2_TypeKey b);
 //- rjf: type key -> info
 internal E2_TypeKind e2_type_kind_from_key(E2_TypeKey k);
 internal U64 e2_byte_size_from_type_key(E2_TypeKey k);
-internal U32 e2_dbgi_num_from_type_key(E2_TypeKey k);
+internal E2_DbgInfoID e2_dbgi_id_from_type_key(E2_TypeKey k);
 internal E2_DbgInfo *e2_dbgi_from_type_key(E2_TypeKey k);
 internal U32 e2_dbgi_type_idx_from_key(E2_TypeKey k);
 internal U64 e2_cons_type_id_from_key(E2_TypeKey k);
