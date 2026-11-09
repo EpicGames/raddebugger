@@ -1526,22 +1526,24 @@ lnk_apply_cmd_option_to_config_ex(LNK_Config *config, LNK_CmdSwitch *cmd, String
       }
     } else {
       U64 error_code;
-      if (lnk_cmd_switch_parse_u64(obj, cmd_switch, value, &error_code, 0)) {
-        switch (error_code) {
-        case LNK_MsWarningCode_UnsuedDelayLoadDll: {
-          lnk_ignore_error(LNK_Warning_UnusedDelayLoadDll);
-        } break;
-        case LNK_MsWarningCode_MissingExternalTypeServer: {
-          lnk_ignore_error(LNK_Warning_MissingExternalTypeServer);
-        } break;
-        case LNK_MsWarningCode_SectionFlagsConflict: {
-          lnk_ignore_error(LNK_Warning_SectionFlagsConflict);
-        } break;
-        default: {
+      if (str8_is_integer(value, 10)) {
+        if (lnk_cmd_switch_parse_u64(obj, cmd_switch, value, &error_code, 0)) {
+          switch (error_code) {
+          case LNK_MsWarningCode_UnsuedDelayLoadDll: {
+            lnk_ignore_error(LNK_Warning_UnusedDelayLoadDll);
+          } break;
+          case LNK_MsWarningCode_MissingExternalTypeServer: {
+            lnk_ignore_error(LNK_Warning_MissingExternalTypeServer);
+          } break;
+          case LNK_MsWarningCode_SectionFlagsConflict: {
+            lnk_ignore_error(LNK_Warning_SectionFlagsConflict);
+          } break;
+          default: {
 #if BUILD_DEBUG
-          lnk_not_implemented("TODO: /IGNORE:%llu", error_code);
+            lnk_not_implemented("TODO: /IGNORE:%llu", error_code);
 #endif
-        } break;
+          } break;
+          }
         }
       }
     }
