@@ -2628,7 +2628,7 @@ lnk_link_image(TP_Context *tp, TP_Arena *arena, LNK_Config *config, LNK_Inputer 
 
       if (pe_is_res(res_data)) {
         str8_list_push(scratch.arena, &res_data_list, res_data);
-        String8 stable_res_path = lnk_make_full_path(scratch.arena, config->path_style, config->work_dir, node->string);
+        String8 stable_res_path = lnk_make_full_path(scratch.arena, config->path_style, g_io_work_dir, node->string);
         str8_list_push(scratch.arena, &res_path_list, stable_res_path);
       } else {
         lnk_error(LNK_Error_LoadRes, "file is not of RES format: %S", node->string);
@@ -2639,7 +2639,7 @@ lnk_link_image(TP_Context *tp, TP_Arena *arena, LNK_Config *config, LNK_Inputer 
     if (res_data_list.node_count > 0) {
       ProfBegin("Build * Resources *");
       String8 obj_name = str8_lit("* Resources *");
-      String8 obj_data = lnk_make_res_obj(arena->v[0], res_data_list, res_path_list, config->machine, config->time_stamp, config->work_dir, config->path_style, obj_name);
+      String8 obj_data = lnk_make_res_obj(arena->v[0], res_data_list, res_path_list, config->machine, config->time_stamp, g_io_work_dir, config->path_style, obj_name);
       lnk_inputer_push_obj_linkgen(inputer, 0, obj_name, obj_data);
       ProfEnd();
     }
@@ -2649,7 +2649,7 @@ lnk_link_image(TP_Context *tp, TP_Arena *arena, LNK_Config *config, LNK_Inputer 
     {
       ProfBegin("Build * Linker * Obj");
       String8 obj_name     = str8_lit("* Linker *");
-      String8 obj_data     = lnk_make_linker_coff_obj(arena->v[0], config->time_stamp, config->machine, config->work_dir, lnk_get_image_name(config), config->pdb_name, config->raw_cmd_line, obj_name);
+      String8 obj_data     = lnk_make_linker_coff_obj(arena->v[0], config->time_stamp, config->machine, g_io_work_dir, lnk_get_image_name(config), config->pdb_name, config->raw_cmd_line, obj_name);
       lnk_inputer_push_obj_linkgen(inputer, 0, obj_name, obj_data);
       ProfEnd();
     }
@@ -7765,6 +7765,9 @@ entry_point(CmdLine *cmdline)
 {
   Temp scratch = scratch_begin(0,0);
   lnk_log_begin();
+
+  // set up work directory for the IO
+  g_io_work_dir = get_current_path(scratch.arena);
 
   // init config from the command line
   LNK_Config *config = lnk_config_init(cmdline->exe_name, cmdline->argc, cmdline->argv);

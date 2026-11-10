@@ -24,6 +24,10 @@ typedef struct
   B32                 is_running;
 } LNK_BackgroundFileWriter;
 
+// --- Globals -----------------------------------------------------------------
+
+extern String8 g_io_work_dir;
+
 // --- Shared File API ---------------------------------------------------------
 
 shared_function int      lnk_open_file_read(char *path, uint64_t path_size, void *handle_buffer, uint64_t handle_buffer_max);

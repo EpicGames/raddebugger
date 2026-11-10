@@ -1093,7 +1093,7 @@ lnk_make_code_view_input(TP_Context *tp, TP_Arena *tp_arena, LNK_Config *config,
       LNK_Obj *obj     = obj_arr[obj_idx];
 
       // register file path -> obj idx map
-      String8 obj_path = path_absolute_dst_from_relative_dst_src(scratch.arena, obj_arr[obj_idx]->path, config->work_dir);
+      String8 obj_path = path_absolute_dst_from_relative_dst_src(scratch.arena, obj_arr[obj_idx]->path, g_io_work_dir);
       if (hash_map_search_path_u64(&debug_p_hm_path, obj_path)) {
         lnk_error_obj(LNK_Warning_DuplicateObjPath, obj, "duplicate obj path %S", obj_path);
       } else {
@@ -1119,7 +1119,7 @@ lnk_make_code_view_input(TP_Context *tp, TP_Arena *tp_arena, LNK_Config *config,
       if ( ! debug_t->has_pch) { continue; }
 
       // find PCH obj by file path
-      String8  obj_path            = path_absolute_dst_from_relative_dst_src(scratch.arena, precomp->obj_name, config->work_dir);
+      String8  obj_path            = path_absolute_dst_from_relative_dst_src(scratch.arena, precomp->obj_name, g_io_work_dir);
       U64     *debug_p_obj_idx_ptr = hash_map_search_path_u64(&debug_p_hm_path, obj_path);
       U64      debug_p_obj_idx     = debug_p_obj_idx_ptr ? *debug_p_obj_idx_ptr : max_U64;
 

@@ -11330,6 +11330,31 @@ TEST(basic_librarian_test)
   T_Ok(str8_match(foobar.name, str8_lit("foobar"), 0));
 }
 
+#if OS_WINDOWS
+TEST(input_with_long_path)
+{
+  String8 cwd = t_make_file_path(arena, str8_zero());
+
+  U8 *folder      = push_array(arena, U8, 100 + 1);
+  MemorySet(folder, 'f', 100);
+
+  U8* filename = push_array(arena, U8, 100 + 1);
+  MemorySet(filename, 'f', 100);
+
+  String8 path1 = str8f(arena, "\\\\?\\%S%s", cwd, folder);
+  T_Ok(make_directory(path1));
+
+  String8 path2 = str8f(arena, "\\\\?\\%S%s\\%s", cwd, folder, folder);
+  T_Ok(make_directory(path2));
+
+  String8 obj = str8f(arena, "%S\\%s.obj", path2, filename);
+
+  T_Ok(write_data_to_file_path(obj, t_make_entry_obj(arena)));
+  t_invoke_linkerf("%S /dll /entry:entry", str8_skip(obj,4));
+  T_Ok(g_last_exit_code == 0);
+}
+#endif
+
 // TODO: linker currenlty skips over the IFC records and should instead load the .ifc; type merger also has to expand type index space with the help of IFC records
 #if 0 && OS_WINDOWS
 TEST(msvc_cpp_module)

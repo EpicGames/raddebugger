@@ -161,7 +161,6 @@ typedef enum
   LNK_CmdSwitch_Rad_UnresolvedSymbolLimit,
   LNK_CmdSwitch_Rad_UnresolvedSymbolRefLimit,
   LNK_CmdSwitch_Rad_Version,
-  LNK_CmdSwitch_Rad_WorkDir,
   LNK_CmdSwitch_Rad_Workers,
   LNK_CmdSwitch_Rad_WriteTempFiles,
   LNK_CmdSwitch_RadTypeServer,
@@ -391,7 +390,6 @@ typedef struct LNK_Config
   String8List                 lib_dir_list;
   PathStyle                   path_style;
   LNK_ManifestOpt             manifest_opt;
-  String8                     work_dir;
   String8                     out_path;
   String8                     image_alt_path;
   String8                     imp_lib_name;

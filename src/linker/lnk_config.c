@@ -117,7 +117,6 @@ global LNK_CmdSwitch g_switch_map[] =
   { LNK_Tool_Linker, LNK_CmdSwitch_Rad_UnresolvedSymbolRefLimit,     0, LNK_CmdValueKind_Scalar, "RAD_UNRESOLVED_SYMBOL_REF_LIMIT",      ":#",                   "Limit number of unresolved symbol references linker reports."                     },
   { LNK_Tool_Linker, LNK_CmdSwitch_Rad_Version,                      0, LNK_CmdValueKind_Null,   "RAD_VERSION",                          "",                     "Print version and exit."                                                          },
   { LNK_Tool_All,    LNK_CmdSwitch_Rad_Workers,                      0, LNK_CmdValueKind_Scalar, "RAD_WORKERS",                          ":#",                   "Set number of workers created in the pool. When /RAD_SHARED_THREAD_POOL is specified this number cant exceed /RAD_SHARED_THREAD_POOL_MAX_WORKERS." },
-  { LNK_Tool_Linker, LNK_CmdSwitch_Rad_WorkDir,                      0, LNK_CmdValueKind_Scalar, "RAD_WORK_DIR",                         ":PATH",                "Working directory used for stable debug paths."                                                 },
   { LNK_Tool_Linker, LNK_CmdSwitch_LLVM_AddrSig,                     0, LNK_CmdValueKind_Scalar, "LLVM_ADDRSIG",                         "[:NO]",                "Use .llvm_addrsig to guide ICF."                                                                },
   { LNK_Tool_All,    LNK_CmdSwitch_Rad_Oodle2,                       0, LNK_CmdValueKind_Scalar, "RAD_OODLE2",                           ":FILEPATH",            "Path to Oodle2 SDK."                                                                            },
   { LNK_Tool_Linker|LNK_Tool_Compress,
@@ -2374,10 +2373,6 @@ lnk_apply_cmd_option_to_config_ex(LNK_Config *config, LNK_CmdSwitch *cmd, String
     }
   } break;
 
-  case LNK_CmdSwitch_Rad_WorkDir: {
-    lnk_cmd_switch_parse_string_copy(config->arena, obj, cmd_switch, value, &config->work_dir);
-  } break;
-
   case LNK_CmdSwitch_Help: {
     lnk_print_help(config->tool);
     abort_self(0);
@@ -3339,7 +3334,7 @@ lnk_config_apply_cmd_line(LNK_Config *config, String8 exe_name, LNK_CmdLine inpu
 
   lnk_log(LNK_Log_Debug, "--------------------------------------------------------------------------------");
   lnk_log(LNK_Log_Debug, "Command Line: %S", config->raw_cmd_line);
-  lnk_log(LNK_Log_Debug, "Work Dir: %S", config->work_dir);
+  lnk_log(LNK_Log_Debug, "Work Dir: %S", g_io_work_dir);
   lnk_log(LNK_Log_Debug, "--------------------------------------------------------------------------------");
 
   scratch_end(scratch);
@@ -3389,7 +3384,6 @@ lnk_config_init(String8 exe_name, U64 argc, char **argv)
   LNK_Config *config = push_array(arena, LNK_Config, 1);
   config->arena        = arena;
   config->raw_cmd_line = str8_copy(arena, cmd_line_string);
-  config->work_dir     = get_current_path(arena);
 
   LNK_CmdLine cmd_line = lnk_cmd_line_parse_windows_rules(arena, cmd_unwrap);
   lnk_config_apply_cmd_line(config, exe_name, cmd_line);

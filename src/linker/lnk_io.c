@@ -1,7 +1,37 @@
+String8 g_io_work_dir;
+
+internal String8
+lnk_normalize_path(Arena *arena, String8 path)
+{
+#if OS_WINDOWS
+  Temp scratch = scratch_begin(&arena, 1);
+  String8List split = str8_split_path(scratch.arena, path);
+  str8_path_list_resolve_dots_in_place(&split, PathStyle_SystemAbsolute);
+  if ( ! str8_match_wildcard(str8_list_first(&split), str8_lit("*:"), 0)) {
+    str8_list_push_front(scratch.arena, &split, g_io_work_dir);
+  }
+  String8 result = str8_list_join(arena, &split, &(StringJoin){.pre = str8_lit("\\\\?\\"), .sep = str8_lit("\\"), .post = str8_zero()});
+  scratch_end(scratch);
+#else
+  String8 result = str8_copy(arena, path);
+#endif
+  return result;
+}
+
+internal File
+lnk_file_open(AccessFlags access, String8 path)
+{
+  Temp scratch = scratch_begin(0,0);
+  String8 normalized_path = lnk_normalize_path(scratch.arena, path);
+  File result = file_open(access, normalized_path);
+  scratch_end(scratch);
+  return result;
+}
+
 shared_function int
 lnk_open_file_read(char *path, uint64_t path_size, void *handle_buffer, uint64_t handle_buffer_max)
 {
-  File handle = file_open(AccessFlag_Read|AccessFlag_ShareRead, str8((U8*)path, path_size));
+  File handle = lnk_file_open(AccessFlag_Read|AccessFlag_ShareRead, str8((U8*)path, path_size));
   Assert(sizeof(handle) <= handle_buffer_max);
   MemoryCopy(handle_buffer, &handle, sizeof(handle));
   return !file_match(handle, file_zero());
@@ -11,7 +41,7 @@ shared_function int
 lnk_open_file_write(char *path, uint64_t path_size, void *handle_buffer, uint64_t handle_buffer_max)
 {
   ProfBeginFunction();
-  File handle = file_open(AccessFlag_Write, str8((U8*)path, path_size));
+  File handle = lnk_file_open(AccessFlag_Write, str8((U8*)path, path_size));
   Assert(sizeof(handle) <= handle_buffer_max);
   MemoryCopy(handle_buffer, &handle, sizeof(handle));
   ProfEnd();
@@ -57,7 +87,9 @@ lnk_find_first_file(Arena *arena, String8List dir_list, String8 path)
   ProfBeginFunction();
   Temp scratch = scratch_begin(&arena, 1);
   String8 result = {0};
-  if (file_path_exists(path)) {
+  String8 absolute_path = full_path_from_path(scratch.arena, path);
+  String8 normal_path = lnk_normalize_path(scratch.arena, absolute_path);
+  if (file_path_exists(normal_path)) {
     PathStyle path_style = path_style_from_str8(path);
     if (path_style == PathStyle_Relative) {
       String8 current_path = get_current_path(scratch.arena);
@@ -66,13 +98,15 @@ lnk_find_first_file(Arena *arena, String8List dir_list, String8 path)
       str8_list_push(scratch.arena, &l, path);
       result = str8_path_list_join_by_style(arena, &l, PathStyle_SystemAbsolute);
     } else {
-      result = path;
+      result = push_str8_copy(arena, path);
     }
   } else {
     String8 file_name = str8_skip_last_slash(path);
     for EachNode(n, String8Node, dir_list.first) {
-      String8 full_path = push_str8f(scratch.arena, "%S/%S", n->string, file_name);
-      if (file_path_exists(full_path)) {
+      String8 candidate = push_str8f(scratch.arena, "%S/%S", n->string, file_name);
+      String8 full_path = full_path_from_path(scratch.arena, candidate);
+      String8 normal_full_path = lnk_normalize_path(scratch.arena, full_path);
+      if (file_path_exists(normal_full_path)) {
         result = push_str8_copy(arena, full_path);
         break;
       }
@@ -92,7 +126,8 @@ lnk_file_open_with_rename_permissions(String8 path)
   Temp scratch = scratch_begin(0,0);
 
   // open file with permissions to rename
-  String16            path16              = str16_from_8(scratch.arena, path);
+  String8  normalized_path = lnk_normalize_path(scratch.arena, path);
+  String16 path16          = str16_from_8(scratch.arena, normalized_path);
   SECURITY_ATTRIBUTES security_attributes = { sizeof(security_attributes) };
   HANDLE native_handle = CreateFileW((WCHAR*)path16.str,
                                      GENERIC_WRITE|DELETE,
@@ -136,10 +171,12 @@ lnk_file_rename(File handle, String8 new_name)
   Temp scratch = scratch_begin(0,0);
   B32 is_renamed = 0;
 #if OS_WINDOWS
-  String16 new_name16 = str16_from_8(scratch.arena, new_name);
+  String8 full_name = full_path_from_path(scratch.arena, new_name);
+  String8 normalized_name = lnk_normalize_path(scratch.arena, full_name);
+  String16 new_name16 = str16_from_8(scratch.arena, normalized_name);
 
   U64 file_rename_info_size = sizeof(FILE_RENAME_INFO);
-  U64 buffer_size           = file_rename_info_size + sizeof(new_name16.str)*new_name16.size;
+  U64 buffer_size           = file_rename_info_size + sizeof(new_name16.str[0])*new_name16.size;
   U8 *buffer                = push_array(scratch.arena, U8, buffer_size);
 
   FILE_RENAME_INFO *rename_info = (FILE_RENAME_INFO *)buffer;
@@ -182,9 +219,11 @@ lnk_read_data_from_file_path(Arena *arena, String8 path, B8 *was_read)
 
 THREAD_POOL_TASK_FUNC(lnk_memory_map_file_task)
 {
+  Temp scratch = scratch_begin(&arena, 1);
   LNK_DiskReader *task = raw_task;
 
-  File file = file_open(AccessFlag_Read | AccessFlag_ShareRead, task->path_arr.v[task_id]);
+  String8 normalized_path = lnk_normalize_path(scratch.arena, task->path_arr.v[task_id]);
+  File file = file_open(AccessFlag_Read | AccessFlag_ShareRead, normalized_path); 
   if (!file_match(file, file_zero())) {
     FileProperties props = properties_from_file(file);
     B32 success = props.size == 0;
@@ -206,21 +245,26 @@ THREAD_POOL_TASK_FUNC(lnk_memory_map_file_task)
       file_close(file);
     }
   }
+
+  scratch_end(scratch);
 }
 
 internal String8Array
 lnk_read_data_from_file_path_parallel_with_handles(TP_Context *tp, Arena *arena, String8Array path_arr, File *files_out)
 {
   ProfBeginFunction();
+  Temp scratch = scratch_begin(&arena,1);
 
   MemoryZeroTyped(files_out, path_arr.count);
 
+  String8Array normalized_paths = path_arr;
+
   LNK_DiskReader reader = {0};
-  reader.path_arr       = path_arr;
-  reader.data_arr.count = path_arr.count;
-  reader.data_arr.v     = push_array(arena, String8, path_arr.count);
+  reader.path_arr       = normalized_paths;
+  reader.data_arr.count = normalized_paths.count;
+  reader.data_arr.v     = push_array(arena, String8, normalized_paths.count);
   reader.files          = files_out;
-  tp_for_parallel(tp, 0, path_arr.count, lnk_memory_map_file_task, &reader);
+  tp_for_parallel(tp, 0, normalized_paths.count, lnk_memory_map_file_task, &reader);
 
   if (lnk_get_log_status(LNK_Log_IO_Read)) {
     for EachIndex(i, path_arr.count) {
@@ -228,6 +272,7 @@ lnk_read_data_from_file_path_parallel_with_handles(TP_Context *tp, Arena *arena,
     }
   }
 
+  scratch_end(scratch);
   ProfEnd();
   return (String8Array){ .count = path_arr.count, .v = reader.data_arr.v };
 }
