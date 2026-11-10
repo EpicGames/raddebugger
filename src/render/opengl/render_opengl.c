@@ -57,11 +57,22 @@ r_ogl_tex2d_from_handle(R_Handle h)
 internal R_OGL_FormatInfo
 r_ogl_format_info_from_tex2dformat(R_Tex2DFormat fmt)
 {
-  R_OGL_FormatInfo result;
-  result.internal_format = GL_RGBA;
-  result.format = GL_RGBA;
-  result.base_type = GL_UNSIGNED_BYTE;
-  // TODO(rjf)
+  R_OGL_FormatInfo result = {.internal_format = GL_RGBA, .format = GL_RGBA, .base_type = GL_UNSIGNED_BYTE};
+
+  switch(fmt)
+  {
+    default:{}break;
+    case R_Tex2DFormat_R8:    {result.internal_format = GL_RED; result.format = GL_RED; result.base_type = GL_UNSIGNED_BYTE;}break;
+    case R_Tex2DFormat_RG8:   {result.internal_format = GL_RG; result.format = GL_RG; result.base_type = GL_UNSIGNED_BYTE;}break;
+    case R_Tex2DFormat_RGBA8: {result.internal_format = GL_RGBA; result.format = GL_RGBA; result.base_type = GL_UNSIGNED_BYTE;}break;
+    case R_Tex2DFormat_BGRA8: {result.internal_format = GL_RGBA; result.format = GL_BGRA; result.base_type = GL_UNSIGNED_BYTE;}break;
+    case R_Tex2DFormat_R16:   {result.internal_format = GL_RED; result.format = GL_RED; result.base_type = GL_UNSIGNED_SHORT;}break;
+    case R_Tex2DFormat_RGBA16:{result.internal_format = GL_RGBA; result.format = GL_RGBA; result.base_type = GL_UNSIGNED_SHORT;}break;
+    case R_Tex2DFormat_R32:   {result.internal_format = GL_RED; result.format = GL_RED; result.base_type = GL_FLOAT;}break;
+    case R_Tex2DFormat_RG32:  {result.internal_format = GL_RG; result.format = GL_RG; result.base_type = GL_FLOAT;}break;
+    case R_Tex2DFormat_RGBA32:{result.internal_format = GL_RGBA; result.format = GL_RGBA; result.base_type = GL_FLOAT;}break;
+  }
+
   return result;
 }
 
@@ -285,6 +296,7 @@ r_tex2d_alloc(R_ResourceKind kind, Vec2S32 size, R_Tex2DFormat format, void *dat
   {
     glGenTextures(1, &tex2d->id);
     glBindTexture(GL_TEXTURE_2D, tex2d->id);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
     glTexImage2D(GL_TEXTURE_2D, 0, gl_fmt_info.internal_format, size.x, size.y, 0, gl_fmt_info.format, gl_fmt_info.base_type, data);
     glBindTexture(GL_TEXTURE_2D, 0);
   }
