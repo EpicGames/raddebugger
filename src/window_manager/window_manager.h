@@ -197,6 +197,7 @@ internal void           wm_window_clear_custom_border_data(WM_Window handle);
 internal void           wm_window_push_custom_title_bar(WM_Window handle, F32 thickness);
 internal void           wm_window_push_custom_edges(WM_Window handle, F32 thickness);
 internal void           wm_window_push_custom_title_bar_client_area(WM_Window handle, Rng2F32 rect);
+internal void           wm_window_push_custom_title_bar_maximize_button(WM_Window handle, Rng2F32 rect);
 internal Rng2F32        wm_rect_from_window(WM_Window window);
 internal Rng2F32        wm_client_rect_from_window(WM_Window window);
 internal F32            wm_dpi_from_window(WM_Window window);

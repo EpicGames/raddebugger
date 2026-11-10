@@ -49,6 +49,7 @@ struct W32_WM_Window
   Arena *paint_arena;
   W32_WM_TitleBarClientArea *first_title_bar_client_area;
   W32_WM_TitleBarClientArea *last_title_bar_client_area;
+  Rng2F32 title_bar_maximize_button_rect;
 };
 
 ////////////////////////////////
