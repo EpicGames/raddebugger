@@ -1830,7 +1830,7 @@ e2_parse_from_string(Arena *arena, E2_ParseState *state, B32 identifier_is_type,
     E2_ParseTask *start_task = state->top_task;
     S64 max_precedence = state->top_task->max_precedence;
     B32 type_ancestors = state->top_task->do_type_ancestors;
-    B32 need_new_expr = (expr == &e2_expr_nil && !type_ancestors && !state->caller_info_completes_task);
+    B32 need_new_expr = (expr == &e2_expr_nil && !type_ancestors);
     E2_Token token = {0};
     
     //- rjf: skip leading whitespace / comments
@@ -2173,7 +2173,7 @@ e2_parse_from_string(Arena *arena, E2_ParseState *state, B32 identifier_is_type,
     }
     
     //- rjf: parse left-hand-side type operators
-    if(!state->caller_info_completes_task && (expr != &e2_expr_nil || state->top_task->do_type_ancestors))
+    if(expr != &e2_expr_nil || state->top_task->do_type_ancestors)
     {
       U64 trailing_symbol_off = off;
       if(e2_try_token(lang, string, E2_TokenKind_Symbol, s(""), &trailing_symbol_off, &token))
@@ -2219,7 +2219,7 @@ e2_parse_from_string(Arena *arena, E2_ParseState *state, B32 identifier_is_type,
     //- rjf: if we're parsing a type, and we see a C-style type info recursion (to
     // express ancestors of the current type), then we need to generate a task to
     // descend and parse the ancestor type
-    if(!state->caller_info_completes_task && expr != &e2_expr_nil && (state->top_task->next_type_ancestor == 0 || state->top_task->next_type_ancestor == &e2_expr_nil))
+    if(expr != &e2_expr_nil && (state->top_task->next_type_ancestor == 0 || state->top_task->next_type_ancestor == &e2_expr_nil))
     {
       B32 parent_looking_for_type = (state->top_task->expr_kind != E2_ExprKind_Null &&
                                      state->top_task->child_count == 0 &&
@@ -2249,7 +2249,7 @@ e2_parse_from_string(Arena *arena, E2_ParseState *state, B32 identifier_is_type,
     }
     
     //- rjf: extend parsed expression tree with trailing operators
-    if(!state->caller_info_completes_task && expr != &e2_expr_nil)
+    if(expr != &e2_expr_nil)
     {
       U64 trailing_symbol_off = off;
       if(e2_try_token(lang, string, E2_TokenKind_Symbol, s(""), &trailing_symbol_off, &token) ||
@@ -2327,8 +2327,21 @@ e2_parse_from_string(Arena *arena, E2_ParseState *state, B32 identifier_is_type,
       }
     }
     
+    //- rjf: consume expected closers - can terminate a child list early
+    B32 closer_found = 1;
+    if(state->top_task->expected_closer.size != 0)
+    {
+      closer_found = e2_try_token(lang, string, E2_TokenKind_Symbol, state->top_task->expected_closer, &off, 0);
+    }
+    
+    //- rjf: report missing closers
+    if(state->top_task->child_count >= state->top_task->child_count_target && state->top_task->expected_closer.size != 0 && !closer_found)
+    {
+      e2_msgf(arena, &parse.msgs, r1u64(off, off), "Expected `%S`.", state->top_task->expected_closer);
+    }
+    
     //- rjf: attach formed expressions to parent task; pop task if done.
-    if(state->caller_info_completes_task || expr != &e2_expr_nil)
+    if(expr != &e2_expr_nil && closer_found)
     {
       //- rjf: if this task has a type ancestor: our finished expression is
       // actually a descendant of that. we want to push our finished expression
@@ -2342,8 +2355,18 @@ e2_parse_from_string(Arena *arena, E2_ParseState *state, B32 identifier_is_type,
         e2_expr_push_child_front(arena, expr, type_descendant);
       }
       
+      //- rjf: consume expected splitters
+      if(state->top_task->child_count >= state->top_task->splitter_min_child_count &&
+         state->top_task->expected_splitter.size != 0 &&
+         state->top_task->child_count < state->top_task->child_count_target)
+      {
+        if(!e2_try_token(lang, string, E2_TokenKind_Symbol, state->top_task->expected_splitter, &off, 0) && state->top_task->splitter_is_required)
+        {
+          e2_msgf(arena, &parse.msgs, r1u64(off, off), "Expected `%S`.", state->top_task->expected_splitter);
+        }
+      }
+      
       //- rjf: gather finished expression to current task; increase task child count
-      if(!state->caller_info_completes_task)
       {
         E2_ExprNode *n = push_array(arena, E2_ExprNode, 1);
         if(state->top_task->reverse_children)
@@ -2356,25 +2379,6 @@ e2_parse_from_string(Arena *arena, E2_ParseState *state, B32 identifier_is_type,
         }
         n->v = expr;
         state->top_task->child_count += 1;
-      }
-      
-      //- rjf: consume expected splitters
-      if(!state->caller_info_completes_task &&
-         state->top_task->child_count >= state->top_task->splitter_min_child_count &&
-         state->top_task->expected_splitter.size != 0 &&
-         state->top_task->child_count < state->top_task->child_count_target)
-      {
-        if(!e2_try_token(lang, string, E2_TokenKind_Symbol, state->top_task->expected_splitter, &off, 0) && state->top_task->splitter_is_required)
-        {
-          e2_msgf(arena, &parse.msgs, r1u64(off, off), "Expected `%S`.", state->top_task->expected_splitter);
-        }
-      }
-      
-      //- rjf: consume expected closers - can terminate a child list early
-      B32 closer_found = 0;
-      if(!state->caller_info_completes_task && state->top_task->expected_closer.size != 0)
-      {
-        closer_found = e2_try_token(lang, string, E2_TokenKind_Symbol, state->top_task->expected_closer, &off, 0);
       }
       
       //- rjf: determine if the task above a parenthesized sub-expression is expecting a type
@@ -2390,7 +2394,8 @@ e2_parse_from_string(Arena *arena, E2_ParseState *state, B32 identifier_is_type,
       
       //- rjf: determine if first child of a parenthesized sub-expression is a type
       B32 parenthesized_child_is_type = 0;
-      if(!state->top_task->do_type_ancestors && !parent_looking_for_type && closer_found && state->top_task->child_count == 1)
+      if(!state->top_task->do_type_ancestors && !parent_looking_for_type && state->top_task->child_count == 1 &&
+         str8_match(state->top_task->expected_closer, s(")"), 0))
       {
         E2_Expr *expr = state->top_task->first_child->v;
         parenthesized_child_is_type = 1;
@@ -2413,9 +2418,64 @@ e2_parse_from_string(Arena *arena, E2_ParseState *state, B32 identifier_is_type,
         }
       }
       
+      //- rjf: maybe a cast? -> decide if subsequent tokens form a cast operand
+      B32 subsequent_tokens_form_cast_operand = 0;
+      if(parenthesized_child_is_type)
+      {
+        // rjf: skip whitespace / comments
+        U64 check_delimiter_off = off;
+        for(;;)
+        {
+          E2_Token next_token = {0};
+          U64 next_off = check_delimiter_off + e2_read_token(lang, string, check_delimiter_off, &next_token);
+          if(next_token.kind == E2_TokenKind_Whitespace ||
+             next_token.kind == E2_TokenKind_Comment)
+          {
+            check_delimiter_off = next_off;
+          }
+          else
+          {
+            break;
+          }
+        }
+        
+        // rjf: separators, end-of-expressions all mean this cannot be a cast
+        if(!e2_try_token(lang, string, E2_TokenKind_Symbol, s(")"), &check_delimiter_off, 0) &&
+           !e2_try_token(lang, string, E2_TokenKind_Symbol, s("]"), &check_delimiter_off, 0) &&
+           !e2_try_token(lang, string, E2_TokenKind_Symbol, s("}"), &check_delimiter_off, 0) &&
+           !e2_try_token(lang, string, E2_TokenKind_Symbol, s(";"), &check_delimiter_off, 0) &&
+           check_delimiter_off < string.size)
+        {
+          E2_Token next_token = {E2_TokenKind_Null};
+          U64 try_off = check_delimiter_off;
+          if(e2_try_token(lang, string, E2_TokenKind_Symbol, s("("), &try_off, 0) ||
+             e2_try_token(lang, string, E2_TokenKind_Identifier, s(""), &try_off, 0) ||
+             e2_try_token(lang, string, E2_TokenKind_Numeric, s(""), &try_off, 0) ||
+             e2_try_token(lang, string, E2_TokenKind_StringLiteral, s(""), &try_off, 0) ||
+             e2_try_token(lang, string, E2_TokenKind_CharLiteral, s(""), &try_off, 0))
+          {
+            subsequent_tokens_form_cast_operand = 1;
+          }
+          else if(e2_try_token(lang, string, E2_TokenKind_Symbol, s(""), &try_off, &next_token))
+          {
+            String8 next_token_string = str8_substr(string, next_token.range);
+            for EachIndex(idx, lang_info->expr_kind_parse_infos_count)
+            {
+              E2_ExprKindParseInfo *expr_kind_info = &lang_info->expr_kind_parse_infos[idx];
+              if(expr_kind_info->parse_kind == E2_ExprParseKind_Prefix && str8_match(next_token_string, expr_kind_info->pre, 0))
+              {
+                subsequent_tokens_form_cast_operand = 1;
+                break;
+              }
+            }
+          }
+        }
+      }
+      
       //- rjf: closer found, completed child count == 1 & completed child is a
-      // type evaluation - then this is cast. push a task to fill the operand
-      B32 is_cast = parenthesized_child_is_type;
+      // type evaluation, *and* if the next token cannot form a chaining expression,
+      // then this is cast. push a task to fill the operand
+      B32 is_cast = (subsequent_tokens_form_cast_operand);
       if(!parent_looking_for_type && is_cast)
       {
         // rjf: pop the sub-task for the type expression
@@ -2442,7 +2502,7 @@ e2_parse_from_string(Arena *arena, E2_ParseState *state, B32 identifier_is_type,
           task->child_count = 1;
           task->child_count_target = e2_expr_kind_target_operand_count_table[E2_ExprKind_Cast];
           task->expr_kind = E2_ExprKind_Cast;
-          task->max_precedence = 1;
+          task->max_precedence = 2;
           SLLStackPush(state->top_task, task);
           expr = &e2_expr_nil;
           E2_ExprNode *child_n = push_array(arena, E2_ExprNode, 1);
@@ -2453,10 +2513,8 @@ e2_parse_from_string(Arena *arena, E2_ParseState *state, B32 identifier_is_type,
       
       //- rjf: caller-provided info completes a task, *or* closer found,
       // *or* task child count hits limit -> complete this subtree
-      else if(state->caller_info_completes_task || closer_found || state->top_task->child_count >= state->top_task->child_count_target)
+      else if(state->top_task->child_count >= state->top_task->child_count_target)
       {
-        B32 completed_with_caller_info = state->caller_info_completes_task;
-        state->caller_info_completes_task = 0;
         E2_ParseTask *completed_task = state->top_task;
         
         //- rjf: produced finished expression tree, given all children
@@ -2475,12 +2533,6 @@ e2_parse_from_string(Arena *arena, E2_ParseState *state, B32 identifier_is_type,
             finished_root->src_range = completed_task->src_range;
             finished_root->string = completed_task->identifier;
           }
-        }
-        
-        //- rjf: report missing closers
-        if(!completed_with_caller_info && completed_task->expected_closer.size != 0 && !closer_found)
-        {
-          e2_msgf(arena, &parse.msgs, r1u64(off, off), "Expected `%S`.", completed_task->expected_closer);
         }
         
         //- rjf: if this task parsed type ancestors:
@@ -3788,6 +3840,8 @@ e2_interp_from_bytecode(Arena *arena, E2_InterpState *state, E2_SpaceMap *space_
         case RDI_EvalOp_ConstU32:
         case RDI_EvalOp_ConstU64:
         case RDI_EvalOp_ConstU128:
+        case RDI_EvalOp_ConstU256:
+        case RDI_EvalOp_ConstU512:
         {
           push_vals[0] = decode_val;
         }break;

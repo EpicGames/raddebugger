@@ -13539,7 +13539,27 @@ rd_frame(void)
     ////////////////////////////
     //- rjf: begin evaluation @eval2
     //
-    d_eval_cache_select(rd_state->eval2_cache);
+    d_eval_cache_select(rd_state->eval2_cache, 0);
+    {
+      E2_Assets *assets = push_array(scratch.arena, E2_Assets, 1);
+      {
+        assets->dbg_infos_count = dbg_infos_count;
+        assets->dbg_infos = push_array(scratch.arena, E2_DbgInfo, assets->dbg_infos_count);
+        {
+          U64 idx = 0;
+          for(DbgInfoNode *n = first_dbg_info; n != 0; n = n->order_next)
+          {
+            DI_Key dbgi_key = n->key;
+            E2_DbgInfo *dbg_info = &assets->dbg_infos[idx];
+            dbg_info->id = idx+1;
+            dbg_info->dbgi_key = dbgi_key;
+            dbg_info->rdi = di_rdi_from_key(rd_state->frame_access, dbgi_key, 0, 0);
+            idx += 1;
+          }
+        }
+      }
+      e2_select_assets(assets);
+    }
     
     ////////////////////////////
     //- rjf: evaluate unpacked settings (must be used earlier than this point in the frame,

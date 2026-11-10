@@ -67,12 +67,12 @@ target:
 target:
 {
   executable: "build/radbin.exe"
-  working_directory: "build/"
+  working_directory: build
   arguments: "--rdi raddbg --capture --out:a.rdi"
 }
 target:
 {
   executable: "build/raddbg.exe"
-  working_directory: "build/"
+  working_directory: build
   arguments: "--bin --rdi C:/devel/test/test.pdb"
 }

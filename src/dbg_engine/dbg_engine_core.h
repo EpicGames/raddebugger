@@ -48,6 +48,7 @@ typedef struct D_EvalCache D_EvalCache;
 struct D_EvalCache
 {
   Arena *arena;
+  U64 async_endt_us;
   U64 arena_eval_start_pos;
   D_EvalID id_gen;
   U64 slots_count;
@@ -397,9 +398,10 @@ struct D_TrapNet
 //~ rjf: @eval2 Bundled Evaluation Path
 
 internal D_EvalCache *d_eval_cache_alloc(void);
-internal void d_eval_cache_select(D_EvalCache *cache);
+internal void d_eval_cache_select(D_EvalCache *cache, U64 async_endt_us);
 internal D_EvalID d_eval_push_parent(D_EvalID id);
 internal D_EvalID d_eval_pop_parent(void);
+internal D_Eval d_eval_from_leaf_identifier(String8 identifier, String8List qualifiers);
 internal D_Eval d_eval_from_string(String8 string);
 
 ////////////////////////////////

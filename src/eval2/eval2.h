@@ -378,7 +378,6 @@ struct E2_ParseState
   U64 last_caller_request_string_off;
   U64 caller_request_count;
   String8 last_requested_member_name;
-  B32 caller_info_completes_task;
 };
 
 typedef struct E2_Msg E2_Msg;
