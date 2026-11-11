@@ -1562,6 +1562,11 @@ lnk_apply_cmd_option_to_config_ex(LNK_Config *config, LNK_CmdSwitch *cmd, String
     value = str8_lit("NO");
   } // fall-through
   case LNK_CmdSwitch_InferAsanLibs: {
+    // ignore directive on command line request
+    if (obj != 0 && config->disable_asan_libs_directive) {
+      break;
+    }
+
     lnk_cmd_switch_parse_flag(obj, cmd_switch, value, &config->infer_asan_libs);
 
     // Make the command-line option /INFERASANLIBS:NO authorative for ASAN library resolution.
@@ -1569,8 +1574,7 @@ lnk_apply_cmd_option_to_config_ex(LNK_Config *config, LNK_CmdSwitch *cmd, String
     // library inference and reject directives that re-enable it. Otherwise, a stray MSVC
     // object file could force radlink to pull in duplicate ASAN libraries.
     if (obj == 0) {
-      LNK_CmdSwitch *cmd = lnk_cmd_switch_from_type(LNK_CmdSwitch_InferAsanLibs);
-      cmd->is_legal_directive = (config->infer_asan_libs == LNK_SwitchState_Yes);
+      config->disable_asan_libs_directive = config->infer_asan_libs == LNK_SwitchState_No;
     }
   } break;
 

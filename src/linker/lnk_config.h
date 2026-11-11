@@ -377,6 +377,7 @@ typedef struct LNK_Config
   U64                        *manifest_resource_id;
   B32                         no_default_libs;
   B32                         force;
+  B32                         disable_asan_libs_directive;
   LNK_SwitchState             infer_asan_libs;
   Version                     link_ver;
   Version                     os_ver;
