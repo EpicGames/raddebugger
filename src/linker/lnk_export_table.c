@@ -37,7 +37,7 @@ lnk_export_apply_match(Arena *arena, PE_ExportParse *exp, LNK_ExportMatch match)
 }
 
 internal void
-lnk_export_table_insert_definition(LNK_ExportTable *table, Arena *arena, U64 worker_id, LNK_ObjSymbolRef ref, String8 name)
+lnk_export_table_insert_definition(LNK_ExportTable *table, Arena *arena, U64 worker_id, LNK_SymbolHandle ref, String8 name)
 {
   LNK_ExportDefinition *definition = push_array(arena, LNK_ExportDefinition, 1);
   definition->name = push_str8_copy(arena, name);
@@ -74,9 +74,9 @@ lnk_export_table_insert_definition(LNK_ExportTable *table, Arena *arena, U64 wor
 }
 
 internal LNK_ExportMatch
-lnk_export_match_definition(LNK_SymbolTable *symtab, String8 name, LNK_ObjSymbolRef raw_ref)
+lnk_export_match_definition(LNK_SymbolTable *symtab, String8 name, LNK_SymbolHandle raw_ref)
 {
-  LNK_ObjSymbolRef ref = raw_ref;
+  LNK_SymbolHandle ref = raw_ref;
   if (symtab) {
     LNK_Symbol *symbol = lnk_symbol_table_search(symtab, name);
     // matching runs during input collection, before COMDAT section symlinks
@@ -104,7 +104,7 @@ lnk_export_table_match(LNK_ExportTable *table, LNK_SymbolTable *symtab, COFF_Mac
   // exact definitions (including resolved weak aliases) precede decoration
   LNK_ExportMatch result = {0};
   if (symtab) {
-    result = lnk_export_match_definition(symtab, name, (LNK_ObjSymbolRef){0});
+    result = lnk_export_match_definition(symtab, name, (LNK_SymbolHandle){0});
   } else {
     LNK_NameTrieNode *node = lnk_name_trie_search(table->exact, u64_hash_from_str8(name), name);
     if (node) {

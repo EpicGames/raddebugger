@@ -3064,7 +3064,7 @@ THREAD_POOL_TASK_FUNC(lnk_build_pdb_strings_modules_and_globals)
     for EachNode(chunk, LNK_SymbolHashTrieChunk, symbol_chunks.first) {
       for EachIndex(i, chunk->count) {
         LNK_Symbol        *symbol        = chunk->v[i].value;
-        LNK_ObjSymbolRef   symbol_ref    = lnk_ref_from_symbol(symbol);
+        LNK_SymbolHandle   symbol_ref    = lnk_ref_from_symbol(symbol);
         COFF_ParsedSymbol  symbol_parsed = lnk_parsed_from_symbol(symbol);
 
         // discard removed and non-section symbols

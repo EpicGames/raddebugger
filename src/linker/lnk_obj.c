@@ -569,7 +569,7 @@ THREAD_POOL_TASK_FUNC(lnk_input_coff_symbol_table)
       if (is_external && (interp == COFF_SymbolValueInterp_Regular || interp == COFF_SymbolValueInterp_Common || interp == COFF_SymbolValueInterp_Abs)) {
         B32 is_removed = interp == COFF_SymbolValueInterp_Regular && (obj->coff.sections.headers[symbol.section_number].flags & COFF_SectionFlag_LnkRemove);
         if ( ! is_removed) {
-          lnk_export_table_insert_definition(task->exports, arena, worker_id, (LNK_ObjSymbolRef){obj, (U32)symbol_idx}, name);
+          lnk_export_table_insert_definition(task->exports, arena, worker_id, (LNK_SymbolHandle){obj, (U32)symbol_idx}, name);
         }
       }
     }
@@ -629,10 +629,10 @@ THREAD_POOL_TASK_FUNC(lnk_input_coff_symbol_table)
   }
 }
 
-internal LNK_ObjSymbolRef *
+internal LNK_SymbolHandle *
 lnk_symlinks_from_obj(Arena *arena, LNK_SymbolTable *symtab, LNK_Obj *obj)
 {
-  LNK_ObjSymbolRef *symlinks = push_array(arena, LNK_ObjSymbolRef, obj->coff.sections.count_no_null + 1);
+  LNK_SymbolHandle *symlinks = push_array(arena, LNK_SymbolHandle, obj->coff.sections.count_no_null + 1);
   for LNK_EachCoffSymbol(it, obj) {
     U64               symbol_idx = it.symbol_idx;
     COFF_ParsedSymbol symbol     = it.v;
@@ -643,7 +643,7 @@ lnk_symlinks_from_obj(Arena *arena, LNK_SymbolTable *symtab, LNK_Obj *obj)
     COFF_SectionFlags section_flags = obj->coff.sections.headers[symbol.section_number].flags;
     if (~section_flags & COFF_SectionFlag_LnkCOMDAT) { continue; }
 
-    LNK_ObjSymbolRef *symlink = &symlinks[symbol.section_number];
+    LNK_SymbolHandle *symlink = &symlinks[symbol.section_number];
 
     // external symbols
     if (symbol.storage_class == COFF_SymStorageClass_External && symbol.aux_symbol_count == 0) {
@@ -666,7 +666,7 @@ lnk_symlinks_from_obj(Arena *arena, LNK_SymbolTable *symtab, LNK_Obj *obj)
         if (link_symbol) {
           // section symlink must point to a symbol with a valid section number;
           // make sure that it was not replaced by a common symbol
-          LNK_ObjSymbolRef  leader        = lnk_ref_from_symbol(link_symbol->value);
+          LNK_SymbolHandle  leader        = lnk_ref_from_symbol(link_symbol->value);
           COFF_ParsedSymbol leader_symbol = lnk_parsed_symbol_from_coff_symbol_idx_no_name(leader.obj, leader.symbol_idx);
           if (coff_interp_from_parsed_symbol(leader_symbol) == COFF_SymbolValueInterp_Regular) {
             *symlink = leader;
@@ -680,7 +680,7 @@ lnk_symlinks_from_obj(Arena *arena, LNK_SymbolTable *symtab, LNK_Obj *obj)
     else if (symbol.storage_class == COFF_SymStorageClass_Static) {
       if (symbol.aux_symbol_count == 0) {
         if (symlink->obj == 0) {
-          *symlink = (LNK_ObjSymbolRef){ obj, symbol_idx };
+          *symlink = (LNK_SymbolHandle){ obj, symbol_idx };
         }
       }
     }
@@ -797,10 +797,10 @@ lnk_obj_get_removed_section_number(LNK_Obj *obj)
 }
 
 internal B32
-lnk_obj_get_comdat_symlink_from_section_number(LNK_Obj *obj, U64 section_number, LNK_ObjSymbolRef *symlink_out)
+lnk_obj_get_comdat_symlink_from_section_number(LNK_Obj *obj, U64 section_number, LNK_SymbolHandle *symlink_out)
 {
   Assert(1 <= section_number && section_number <= obj->coff.sections.count_no_null);
-  LNK_ObjSymbolRef symlink = obj->symlinks[section_number];
+  LNK_SymbolHandle symlink = obj->symlinks[section_number];
   B32 is_valid = symlink.obj != 0;
   if (is_valid && symlink_out) {
     *symlink_out = symlink;

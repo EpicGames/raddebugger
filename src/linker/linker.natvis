@@ -102,7 +102,7 @@
 		</Expand>
 	</Type>
 
-  <Type Name="LNK_ObjSymbolRefNode">
+  <Type Name="LNK_SymbolHandleNode">
     <Expand>
       <ExpandedItem>v</ExpandedItem>
     </Expand>

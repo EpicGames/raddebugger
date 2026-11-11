@@ -9,7 +9,7 @@ typedef struct LNK_LibList LNK_LibList;
 typedef struct LNK_ExportDefinition
 {
   String8          name;
-  LNK_ObjSymbolRef ref;
+  LNK_SymbolHandle ref;
 } LNK_ExportDefinition;
 
 typedef struct LNK_ExportCandidate
@@ -39,14 +39,14 @@ typedef struct LNK_ExportMatch
 {
   LNK_ExportMatchKind  kind;
   String8              canonical_name;
-  LNK_ObjSymbolRef     definition;
+  LNK_SymbolHandle     definition;
   LNK_Lib             *lib;
   U32                  member_idx;
 } LNK_ExportMatch;
 
 internal LNK_ExportTable *lnk_export_table_init(TP_Arena *arena);
 internal String8          lnk_export_undecorated_name(COFF_MachineType machine, String8 name);
-internal void             lnk_export_table_insert_definition(LNK_ExportTable *table, Arena *arena, U64 worker_id, LNK_ObjSymbolRef ref, String8 name);
+internal void             lnk_export_table_insert_definition(LNK_ExportTable *table, Arena *arena, U64 worker_id, LNK_SymbolHandle ref, String8 name);
 internal LNK_ExportMatch  lnk_export_table_match(LNK_ExportTable *table, LNK_SymbolTable *symtab, COFF_MachineType machine, String8 name, LNK_LibList *libs);
 internal void             lnk_export_apply_match(Arena *arena, PE_ExportParse *exp, LNK_ExportMatch match);
 

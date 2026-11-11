@@ -59,7 +59,7 @@ typedef struct LNK_Obj
   LNK_ObjCoff       coff;                    // extracted COFF info about the object
   B8                exclude_from_debug_info; // is object linkgen
   U32               input_idx;               // input index of the object file
-  LNK_ObjSymbolRef *symlinks;                // indexed by COFF section number; slot zero is null
+  LNK_SymbolHandle *symlinks;                // indexed by COFF section number; slot zero is null
   LNK_Lib          *lib;                     // library that contains the object
   LNK_ObjNode      *self;                    // object node in the link list
   LNK_Input        *input;
@@ -253,7 +253,7 @@ internal U32              lnk_obj_get_features(LNK_Obj *obj);
 internal struct LNK_Lib * lnk_obj_get_lib(LNK_Obj *obj);
 internal String8          lnk_obj_get_lib_path(LNK_Obj *obj);
 internal U32              lnk_obj_get_removed_section_number(LNK_Obj *obj);
-internal B32              lnk_obj_get_comdat_symlink_from_section_number(LNK_Obj *obj, U64 section_number, LNK_ObjSymbolRef *symlink_out);
+internal B32              lnk_obj_get_comdat_symlink_from_section_number(LNK_Obj *obj, U64 section_number, LNK_SymbolHandle *symlink_out);
 internal U32List          lnk_obj_collect_associated_section_numbers(Arena *arena, LNK_Obj *obj, U32 root_section_number, COFF_SectionFlags skip_flags);
 
 // --- Symbol & Section Helpers ------------------------------------------------

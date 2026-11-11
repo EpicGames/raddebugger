@@ -2005,8 +2005,8 @@ THREAD_POOL_TASK_FUNC(lnk_search_lib_task)
         LNK_Symbol          *symbol      = c->v[i].value;
         LNK_SymbolSearchType search_type = lnk_search_type_from_symbol(symbol);
         if (search_type == LNK_SymbolSearch_WeakAntiDependency) {
-          LNK_ObjSymbolRef symbol_ref = lnk_ref_from_symbol(symbol);
-          LNK_ObjSymbolRef dep_symbol = {0};
+          LNK_SymbolHandle symbol_ref = lnk_ref_from_symbol(symbol);
+          LNK_SymbolHandle dep_symbol = {0};
           if (lnk_resolve_weak_symbol(symtab, symbol_ref, &dep_symbol)) {
             COFF_ParsedSymbol          dep_parsed = lnk_parsed_symbol_from_coff_symbol_idx_no_name(dep_symbol.obj, dep_symbol.symbol_idx);
             COFF_SymbolValueInterpType dep_interp = coff_interp_from_parsed_symbol(dep_parsed);
@@ -2291,7 +2291,7 @@ lnk_link_inputs(TP_Context      *tp,
             String8            member_name   = coff_decode_member_name(lib->long_names, member_info.header.name);
 
             U64                refs_count = 0;
-            LNK_ObjSymbolRef **refs       = lnk_ref_from_symbol_many(temp.arena, link_symbol, &refs_count);
+            LNK_SymbolHandle **refs       = lnk_ref_from_symbol_many(temp.arena, link_symbol, &refs_count);
             lnk_log(LNK_Log_Links, "\tFound %S in %S", link_symbol->name, str8_skip_last_slash(member_name));
             for EachIndex(i, refs_count) {
               lnk_log(LNK_Log_Links, "\t\tReferenced in %S", lnk_loc_from_obj(temp.arena, refs[i]->obj));
@@ -2776,9 +2776,9 @@ lnk_link_image(TP_Context *tp, TP_Arena *arena, LNK_Config *config, LNK_Inputer 
 
         String8List        ref_messages = {0};
         U64                refs_count   = 0;
-        LNK_ObjSymbolRef **refs         = lnk_ref_from_symbol_many(scratch.arena, symbol, &refs_count);
+        LNK_SymbolHandle **refs         = lnk_ref_from_symbol_many(scratch.arena, symbol, &refs_count);
         for EachIndex(ref_idx, refs_count) {
-          LNK_ObjSymbolRef   *ref           = refs[ref_idx];
+          LNK_SymbolHandle   *ref           = refs[ref_idx];
           LNK_Obj            *obj           = ref->obj;
           String8             string_table  = lnk_coff_string_table_from_obj(obj);
 
@@ -3050,13 +3050,13 @@ lnk_obj_indices_from_section_counts(Arena *arena, U64 worker_count, LNK_Obj **ob
 }
 
 internal B32
-lnk_resolve_reloc_target_symbol(Arena *arena, LNK_SymbolTable *symtab, LNK_ObjSymbolRef symbol, String8 pass_name, LNK_ObjSymbolRef *resolved_symbol_out, U32 *resolved_value_out)
+lnk_resolve_reloc_target_symbol(Arena *arena, LNK_SymbolTable *symtab, LNK_SymbolHandle symbol, String8 pass_name, LNK_SymbolHandle *resolved_symbol_out, U32 *resolved_value_out)
 {
   Temp temp = temp_begin(arena);
  
   B32              is_resolved  = 1;
   HashMap          seen_hm      = {0};
-  LNK_ObjSymbolRef result       = symbol;
+  LNK_SymbolHandle result       = symbol;
   U32              result_value = 0;
 
   for (;;) {
@@ -3068,7 +3068,7 @@ lnk_resolve_reloc_target_symbol(Arena *arena, LNK_SymbolTable *symtab, LNK_ObjSy
     }
 
     // resolve symbol
-    LNK_ObjSymbolRef next_ref = {0};
+    LNK_SymbolHandle next_ref = {0};
     if (lnk_resolve_symbol(symtab, result, &next_ref) == 0) {
       break;
     }
@@ -3147,7 +3147,7 @@ THREAD_POOL_TASK_FUNC(lnk_opt_ref_task)
       for EachNode(root_n, LNK_IncludeSymbolNode, config->include_symbol_list.first) {
         LNK_Symbol       *root     = lnk_symbol_table_search(symtab, root_n->v.name);
         if (root == 0) { continue; }
-        LNK_ObjSymbolRef  root_ref = lnk_ref_from_symbol(root);
+        LNK_SymbolHandle  root_ref = lnk_ref_from_symbol(root);
 
         LNK_RelocRefs r = {0};
         r.obj                 = root_ref.obj;
@@ -3205,7 +3205,7 @@ THREAD_POOL_TASK_FUNC(lnk_opt_ref_task)
           COFF_Reloc *reloc = &batch->v[i].relocs.v[reloc_idx];
 
           // reloc -> symbol
-          LNK_ObjSymbolRef ref_symbol = (LNK_ObjSymbolRef){ .obj = batch->v[i].obj, .symbol_idx = reloc->isymbol };
+          LNK_SymbolHandle ref_symbol = (LNK_SymbolHandle){ .obj = batch->v[i].obj, .symbol_idx = reloc->isymbol };
           lnk_resolve_reloc_target_symbol(scratch2.arena, symtab, ref_symbol, str8_lit("/OPT:REF"), &ref_symbol, 0);
 
           // skip unresolved symbol
@@ -3421,7 +3421,7 @@ lnk_icf_scope_from_section_number(LNK_Obj *obj, U32 section_number)
 
     // query COMDAT symlink that is associated with the section number
     // because the properties are stored in the symbol table
-    LNK_ObjSymbolRef comdat_ref = {0};
+    LNK_SymbolHandle comdat_ref = {0};
     if (lnk_obj_get_comdat_symlink_from_section_number(obj, section_number, &comdat_ref)) {
 
       // load COMDAT symbol name
@@ -3578,7 +3578,7 @@ THREAD_POOL_TASK_FUNC(lnk_opt_icf_task)
         if (symbol_off == off) { break; }
 
         if (symbol_idx < obj->coff.header.symbol_count) {
-          LNK_ObjSymbolRef target_ref      = { .obj = obj, .symbol_idx = symbol_idx };
+          LNK_SymbolHandle target_ref      = { .obj = obj, .symbol_idx = symbol_idx };
           B32              is_symbol_found = lnk_resolve_reloc_target_symbol(scratch.arena, task->symtab, target_ref, str8_lit("/OPT:ICF"), &target_ref, 0);
           if (is_symbol_found) {
             COFF_ParsedSymbol symbol = lnk_parsed_symbol_from_coff_symbol_idx_no_name(target_ref.obj, target_ref.symbol_idx);
@@ -3756,7 +3756,7 @@ THREAD_POOL_TASK_FUNC(lnk_opt_icf_task)
             target = push_array(scratch2.arena, RelocTarget, 1);
             *target = (RelocTarget){0};
 
-            LNK_ObjSymbolRef target_ref      = { .obj = obj, .symbol_idx = r->isymbol };
+            LNK_SymbolHandle target_ref      = { .obj = obj, .symbol_idx = r->isymbol };
             U32              target_value    = 0;
             B32              is_symbol_found = lnk_resolve_reloc_target_symbol(scratch2.arena, task->symtab, target_ref, str8_lit("/OPT:ICF"), &target_ref, &target_value);
             if (is_symbol_found) {
@@ -3796,7 +3796,7 @@ THREAD_POOL_TASK_FUNC(lnk_opt_icf_task)
 
                 // use the selected COMDAT leader so equivalent targets hash alike
                 if (target_obj->coff.sections.headers[target_sect].flags & COFF_SectionFlag_LnkCOMDAT) {
-                  LNK_ObjSymbolRef leader_ref = {0};
+                  LNK_SymbolHandle leader_ref = {0};
                   if (lnk_obj_get_comdat_symlink_from_section_number(target_obj, target_sect, &leader_ref)) {
                     COFF_ParsedSymbol leader_symbol = lnk_parsed_symbol_from_coff_symbol_idx_no_name(leader_ref.obj, leader_ref.symbol_idx);
                     if (leader_symbol.section_number != 0 && leader_symbol.section_number <= leader_ref.obj->coff.sections.count_no_null) {
@@ -4163,7 +4163,7 @@ THREAD_POOL_TASK_FUNC(lnk_opt_icf_task)
     contrib_obj->coff.sections.headers[contrib->section_number].flags |= COFF_SectionFlag_LnkRemove;
 
     // update folded section COMDAT symlink to point to the leader section
-    contrib_obj->symlinks[contrib->section_number] = (LNK_ObjSymbolRef){ leader_obj, leader_obj->coff.sections.comdats[leader->section_number] };
+    contrib_obj->symlinks[contrib->section_number] = (LNK_SymbolHandle){ leader_obj, leader_obj->coff.sections.comdats[leader->section_number] };
 
     #if LNK_PARANOID
     String8 section_name = lnk_obj_section_name_from_section_number(contrib_obj, contrib->section_number);
@@ -4177,7 +4177,7 @@ THREAD_POOL_TASK_FUNC(lnk_opt_icf_task)
   ProfBegin("Apply Associated Folds");
   for EachNode(fold, AssocFold, assoc_first) {
     fold->obj->coff.sections.headers[fold->section_number].flags |= COFF_SectionFlag_LnkRemove;
-    fold->obj->symlinks[fold->section_number] = (LNK_ObjSymbolRef){ fold->leader_obj, fold->leader_obj->coff.sections.comdats[fold->leader_section_number] };
+    fold->obj->symlinks[fold->section_number] = (LNK_SymbolHandle){ fold->leader_obj, fold->leader_obj->coff.sections.comdats[fold->leader_section_number] };
   }
   ProfEnd();
   barrier_wait(tp->barrier);
@@ -4238,7 +4238,7 @@ THREAD_POOL_TASK_FUNC(lnk_opt_icf_task)
     U64      obj_idx = task->obj_indices[task_id].v[i];
     LNK_Obj *obj     = objs[obj_idx];
     for LNK_EachCoffSection(it, obj) {
-      LNK_ObjSymbolRef symlink_ref = {0};
+      LNK_SymbolHandle symlink_ref = {0};
       if (!lnk_obj_get_comdat_symlink_from_section_number(obj, it.v.section_number, &symlink_ref)) { continue; }
 
       Temp temp = temp_begin(scratch.arena);
@@ -4247,7 +4247,7 @@ THREAD_POOL_TASK_FUNC(lnk_opt_icf_task)
       U64     hop_cap   = 1024;
       for(; hop_count < hop_cap; hop_count += 1) {
         COFF_ParsedSymbol symlink_parsed = lnk_parsed_symbol_from_coff_symbol_idx_no_name(symlink_ref.obj, symlink_ref.symbol_idx);
-        LNK_ObjSymbolRef next_symlink_ref = {0};
+        LNK_SymbolHandle next_symlink_ref = {0};
         if (!lnk_obj_get_comdat_symlink_from_section_number(symlink_ref.obj, symlink_parsed.section_number, &next_symlink_ref)) { break; }
         if (MemoryMatchStruct(&next_symlink_ref, &symlink_ref)) { break; }
         if (hash_map_search_string_u64(&seen_hm, str8_struct(&next_symlink_ref)) != 0) {
@@ -4320,7 +4320,7 @@ lnk_should_gather_section(LNK_Obj *obj, U64 section_number, COFF_SectionHeader *
       return 0;
     }
 
-    LNK_ObjSymbolRef symlink_ref = {0};
+    LNK_SymbolHandle symlink_ref = {0};
     if (!lnk_obj_get_comdat_symlink_from_section_number(obj, section_number, &symlink_ref)) {
       return 0;
     }
@@ -4530,7 +4530,7 @@ THREAD_POOL_TASK_FUNC(lnk_set_comdat_leaders_contribs_task)
 
     if (~*it.v.flags & COFF_SectionFlag_LnkCOMDAT) { continue; }
 
-    LNK_ObjSymbolRef symlink_ref = {0};
+    LNK_SymbolHandle symlink_ref = {0};
     if ( ! lnk_obj_get_comdat_symlink_from_section_number(obj, section_number, &symlink_ref)) { continue; }
 
     COFF_ParsedSymbol symlink_parsed = lnk_parsed_symbol_from_coff_symbol_idx_no_name(symlink_ref.obj, symlink_ref.symbol_idx);
@@ -4571,7 +4571,7 @@ THREAD_POOL_TASK_FUNC(lnk_patch_comdat_leaders_task)
     COFF_SymbolValueInterpType interp = coff_interp_from_parsed_symbol(symbol);
     if (interp != COFF_SymbolValueInterp_Regular) { continue; }
 
-    LNK_ObjSymbolRef symlink_ref = {0};
+    LNK_SymbolHandle symlink_ref = {0};
     if ( ! lnk_obj_get_comdat_symlink_from_section_number(obj, symbol.section_number, &symlink_ref)) { continue; }
 
     COFF_ParsedSymbol leader_symbol = lnk_parsed_symbol_from_coff_symbol_idx_no_name(symlink_ref.obj, symlink_ref.symbol_idx);
@@ -4764,7 +4764,7 @@ THREAD_POOL_TASK_FUNC(lnk_patch_common_block_leaders_task)
   for (U64 contrib_idx = contrib_range.min; contrib_idx < contrib_range.max; contrib_idx += 1) {
     LNK_CommonBlockContrib *contrib        = &task->u.patch_symtabs.common_block_contribs[contrib_idx];
     LNK_Symbol             *symbol         = contrib->symbol;
-    LNK_ObjSymbolRef        symbol_ref     = lnk_ref_from_symbol(symbol);
+    LNK_SymbolHandle        symbol_ref     = lnk_ref_from_symbol(symbol);
     U64                     section_number = task->u.patch_symtabs.common_block_sect->sect_idx + 1;
 
     U64 primary_idx = lnk_obj_primary_symbol_idx_from_coff_symbol_idx(symbol_ref.obj, symbol_ref.symbol_idx);
@@ -4853,8 +4853,8 @@ lnk_patch_obj_symtab(LNK_SymbolTable *symtab, LNK_Obj *obj, B8 *was_symbol_patch
     COFF_SymbolValueInterpType fixup_dst_type = coff_interp_symbol(fixup_dst.section_number, fixup_dst.value, fixup_dst.storage_class);
     if (fixup_type != fixup_dst_type) { continue; }
 
-    LNK_ObjSymbolRef symbol_to_resolve = { .obj = obj, .symbol_idx = symbol_idx };
-    LNK_ObjSymbolRef fixup_symbol      = {0};
+    LNK_SymbolHandle symbol_to_resolve = { .obj = obj, .symbol_idx = symbol_idx };
+    LNK_SymbolHandle fixup_symbol      = {0};
     B32               is_resolved       = lnk_resolve_symbol(symtab, symbol_to_resolve, &fixup_symbol);
     if (is_resolved) {
       COFF_ParsedSymbol          fixup_src          = lnk_parsed_symbol_from_coff_symbol_idx_no_name(fixup_symbol.obj, fixup_symbol.symbol_idx);
@@ -6724,7 +6724,7 @@ lnk_build_map(Arena *arena, String8 image_data, LNK_Config *config, LNK_SymbolTa
         LNK_Symbol *symbol = chunk->v[i].value;
         if (symbol == 0 || str8_match(symbol->name, str8_lit(LNK_NULL_SYMBOL), 0)) { continue; }
 
-        LNK_ObjSymbolRef  ref    = lnk_ref_from_symbol(symbol);
+        LNK_SymbolHandle  ref    = lnk_ref_from_symbol(symbol);
         COFF_ParsedSymbol parsed = lnk_parsed_from_symbol(symbol);
         COFF_SymbolValueInterpType interp = coff_interp_from_parsed_symbol(parsed);
         LNK_MapSymbol map_symbol = { .name = symbol->name, .is_func = COFF_SymbolType_IsFunc(parsed.type) };
