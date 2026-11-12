@@ -2647,10 +2647,18 @@ lnk_link_image(TP_Context *tp, TP_Arena *arena, LNK_Config *config, LNK_Inputer 
 
   if (lnk_do_debug_info(config)) {
     {
+      String8 linker_path = get_process_info()->binary_file_path;
+
+      // the command line in * Linker * doesn't have inputs because it can overflow the 64KiB symbol limit on S_ENVBLOCK
+      // so only switches are stored
+      String8List cmd_line_list = lnk_data_from_cmd_line(scratch.arena, config->cmd_line);
+      String8     pdb_cmd_line  = str8_list_join(scratch.arena, &cmd_line_list, 0);
+
       ProfBegin("Build * Linker * Obj");
-      String8 obj_name     = str8_lit("* Linker *");
-      String8 obj_data     = lnk_make_linker_coff_obj(arena->v[0], config->time_stamp, config->machine, g_io_work_dir, lnk_get_image_name(config), config->pdb_name, config->raw_cmd_line, obj_name);
-      lnk_inputer_push_obj_linkgen(inputer, 0, obj_name, obj_data);
+      String8    obj_name = str8_lit("* Linker *");
+      String8    obj_data = lnk_make_linker_coff_obj(arena->v[0], config->time_stamp, config->machine, g_io_work_dir, linker_path, config->pdb_name, pdb_cmd_line, obj_name);
+      LNK_Input *input    = lnk_inputer_push_obj_linkgen(inputer, 0, obj_name, obj_data);
+      input->exclude_from_debug_info = 0;
       ProfEnd();
     }
 

@@ -395,6 +395,7 @@ typedef struct LNK_Config
   String8                     image_alt_path;
   String8                     imp_lib_name;
   String8                     raw_cmd_line;
+  LNK_CmdLine                 cmd_line;
   String8                     pdb_name;
   String8                     pdb_alt_path;
   String8                     pdb_stripped_name;

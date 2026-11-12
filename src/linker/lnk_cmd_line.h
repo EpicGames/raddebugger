@@ -50,6 +50,7 @@ internal void lnk_cmd_line_concat_in_place(LNK_CmdLine *list, LNK_CmdLine *to_co
 
 internal String8List     lnk_arg_list_parse_windows_rules        (Arena *arena, String8 string);
 internal LNK_CmdLine     lnk_cmd_line_parse_windows_rules        (Arena *arena, String8List arg_list);
+internal String8List     lnk_unwrap_cmd_line                     (Arena *arena, String8List arg_list);
 internal LNK_CmdLine     lnk_cmd_line_from_string_windows_rules  (Arena *arena, String8 string);
 internal LNK_CmdLine     lnk_cmd_line_from_stringfv_windows_rules(Arena *arena, char *fmt, va_list args);
 internal LNK_CmdLine     lnk_cmd_line_from_stringf_windows_rules (Arena *arena, char *fmt, ...);

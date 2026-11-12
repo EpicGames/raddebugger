@@ -18,6 +18,22 @@ lnk_normalize_path(Arena *arena, String8 path)
   return result;
 }
 
+internal String8
+lnk_text_file_string_from_data(Arena *arena, String8 data)
+{
+  String8 result = data;
+
+  if (data.size >= 2 && data.str[0] == 0xff && data.str[1] == 0xfe) {
+    // decode UTF-16LE BOM
+    result = str8_from_16(arena, str16((U16 *)(data.str + 2), (data.size - 2) / sizeof(U16)));
+  } else if (data.size >= 3 && data.str[0] == 0xef && data.str[1] == 0xbb && data.str[2] == 0xbf) {
+    // strip UTF-8 BOM
+    result = str8_skip(data, 3);
+  }
+
+  return result;
+}
+
 internal File
 lnk_file_open(AccessFlags access, String8 path)
 {

@@ -742,22 +742,6 @@ lnk_parse_export_directive(Arena *arena, String8 directive, LNK_Obj *obj, PE_Exp
   return is_parsed;
 }
 
-internal String8
-lnk_text_file_string_from_data(Arena *arena, String8 data)
-{
-  String8 result = data;
-
-  if (data.size >= 2 && data.str[0] == 0xff && data.str[1] == 0xfe) {
-    // decode UTF-16LE BOM
-    result = str8_from_16(arena, str16((U16 *)(data.str + 2), (data.size - 2) / sizeof(U16)));
-  } else if (data.size >= 3 && data.str[0] == 0xef && data.str[1] == 0xbb && data.str[2] == 0xbf) {
-    // strip UTF-8 BOM
-    result = str8_skip(data, 3);
-  }
-
-  return result;
-}
-
 internal void
 lnk_push_export_to_config(LNK_Config *config, LNK_Obj *obj, PE_ExportParse export_parse)
 {
@@ -2811,90 +2795,6 @@ lnk_apply_def_file_to_config(LNK_Config *config, String8 path, LNK_Obj *obj)
   scratch_end(scratch);
 }
 
-internal String8List
-lnk_unwrap_cmd_line(Arena *arena, String8List arg_list)
-{
-  Temp scratch = scratch_begin(&arena, 1);
-
-  typedef struct LNK_RspFrame LNK_RspFrame;
-  struct LNK_RspFrame
-  {
-    LNK_RspFrame *next;
-    String8       path;
-    String8Node  *arg_cursor;
-  };
-
-  String8List   result   = {0};
-  LNK_RspFrame *frame    = &(LNK_RspFrame){ .arg_cursor = arg_list.first, .path = str8_lit("Command Line") };
-
-  while (frame) {
-    if (frame->arg_cursor == 0) {
-      frame = frame->next;
-      continue;
-    }
-
-    String8Node *curr = frame->arg_cursor;
-    frame->arg_cursor = curr->next;
-
-    if (str8_starts_with(curr->string, str8_lit("@"))) {
-      String8 file_name = str8_skip(curr->string, 1);
-
-      // error check empty rsp argument
-      if (file_name.size == 0) {
-        lnk_error(LNK_Error_Cmdl, "RSP file name must follow '@'");
-        continue;
-      }
-
-      String8 full_path = full_path_from_path(scratch.arena, file_name);
-
-      // error check for cyclic response files
-      {
-        B32 is_rsp_cyclic = 0;
-        for EachNode(parent, LNK_RspFrame, frame) {
-          if (path_match_normalized(parent->path, full_path)) {
-            is_rsp_cyclic = 1;
-            break;
-          }
-        }
-        if (is_rsp_cyclic) {
-          String8List cycle_list = {0};
-          for EachNode(parent, LNK_RspFrame, frame) {
-            str8_list_push_front(scratch.arena, &cycle_list, parent->path);
-          }
-          str8_list_push(scratch.arena, &cycle_list, full_path);
-          String8 cycle_string = str8_list_join(scratch.arena, &cycle_list, &(StringJoin){ .sep = str8_lit(" -> ") });
-          lnk_error(LNK_Error_Cmdl, "detected a cyclic RSP: %S", cycle_string);
-          continue;
-        }
-      }
-
-      // read rsp from disk
-      B8      was_rsp_read = 0;
-      String8 file_data    = lnk_read_data_from_file_path(scratch.arena, file_name, &was_rsp_read);
-      if ( ! was_rsp_read) {
-        lnk_error(LNK_Error_Cmdl, "unable to find RSP: %S", file_name);
-        continue;
-      }
-
-      // unapck rsp
-      String8     file_text = lnk_text_file_string_from_data(scratch.arena, file_data);
-      String8List file_args = lnk_arg_list_parse_windows_rules(scratch.arena, file_text);
-
-      // push new frame with unapcked rsp
-      LNK_RspFrame *new_frame = push_array(scratch.arena, LNK_RspFrame, 1);
-      new_frame->path       = full_path;
-      new_frame->arg_cursor = file_args.first;
-      SLLStackPush(frame, new_frame);
-    } else {
-      // append normal argument
-      str8_list_push(arena, &result, push_str8_copy(arena, curr->string));
-    }
-  }
-
-  scratch_end(scratch);
-  return result;
-}
-
 internal LNK_CmdLine
 lnk_make_default_cmd_line(Arena *arena, LNK_CmdLine user_cmd_line, LNK_Tool tool)
 {
@@ -3381,15 +3281,17 @@ lnk_config_init(String8 exe_name, U64 argc, char **argv)
   tmMessage(0, TMMF_ICON_NOTE, "Command Line: %.*s", str8_varg(cmd_line_string));
 #endif
 
+  Arena *arena  = arena_alloc();
+
   // unwrap and retain the user command line; each program supplies its defaults
   String8List cmd_unwrap = lnk_unwrap_cmd_line(scratch.arena, user_args);
+  LNK_CmdLine cmd_line   = lnk_cmd_line_parse_windows_rules(arena, cmd_unwrap);
 
-  Arena      *arena  = arena_alloc();
   LNK_Config *config = push_array(arena, LNK_Config, 1);
   config->arena        = arena;
   config->raw_cmd_line = str8_copy(arena, cmd_line_string);
+  config->cmd_line     = cmd_line;
 
-  LNK_CmdLine cmd_line = lnk_cmd_line_parse_windows_rules(arena, cmd_unwrap);
   lnk_config_apply_cmd_line(config, exe_name, cmd_line);
 
   scratch_end(scratch);
