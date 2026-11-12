@@ -223,7 +223,7 @@ if "%radcobj%"=="1" (
   set radcobj_crt=
   if "%msvc%"=="1" set radcobj_crt=/Zl
   %compile% !radcobj_crt! %only_compile% ..\src\linker\radcobj_main.c %obj_out%radcobj.obj || exit /b 1
-  %~dp0build\prelink.exe /nod /include:radcobj_match_magic /include:radcobj_validate /include:radcobj_encode /include:radcobj_decode_range /include:radcobj_decode /include:radcobj_raw_view %~dp0build\radcobj.obj /out:prelink.radcobj.obj || exit /b1
+  %~dp0build\prelink.exe /nod /include:radcobj_match_magic /include:radcobj_validate /include:radcobj_encode /include:radcobj_decode_range /include:radcobj_decode /include:radcobj_raw_view %~dp0build\blake3.lib %~dp0build\radcobj.obj /out:prelink.radcobj.obj || exit /b1
   %mklib% -out:radcobj.lib %~dp0build\prelink.radcobj.obj || exit /b 1
 )
 popd
