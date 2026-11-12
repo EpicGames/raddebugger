@@ -2541,6 +2541,154 @@ TEST(guard_cf_pulls_load_config)
   }
 }
 
+TEST(guard_stack_pulls_load_config_before_imports)
+{
+  // No entry point, exports, /GUARD, or /INCLUDE: only /GS may pull in the
+  // load-config member. Its import must be resolved before import generation.
+  // Synthetic objects/imports avoid depending on an installed compiler or CRT.
+
+  U8  load_config_data[0x40] = {0};
+  U32 load_config_size = sizeof(load_config_data);
+  U64 import_refs[2] = {0};
+  U64 anchor = 0;
+  MemoryCopy(load_config_data, &load_config_size, sizeof(load_config_size));
+
+  T_Ok(t_write_def_lib("loadcfg.lib", (T_COFF_DefLib){
+    .emit_second_member = 1,
+    .members = (T_COFF_DefLibMember[]){
+      {
+        .type = T_COFF_DefLibMember_Obj,
+        .obj = {
+          .path = str8_lit("loadcfg.obj"),
+          .sections = (T_COFF_DefSection[]){
+            { "loadcfg", ".rdata", str8_array_fixed(load_config_data), .flags = "r:data@8" },
+            {
+              "refs", ".gsref", str8_array_fixed(import_refs), .flags = "r:data@8",
+              .relocs = (T_COFF_DefReloc[]){
+                T_COFF_DefReloc(X64_Addr64, 0, "gs_dependency"),
+                T_COFF_DefReloc(X64_Addr64, 8, "__imp_gs_dependency"),
+                {0},
+              },
+            },
+            {0},
+          },
+          .symbols = (T_COFF_DefSymbol[]){
+            T_COFF_DefSymbol_Extern("_load_config_used", "loadcfg", 0),
+            T_COFF_DefSymbol_UndefFunc("gs_dependency"),
+            T_COFF_DefSymbol_Undef("__imp_gs_dependency"),
+            {0},
+          },
+        },
+      },
+      {
+        .type = T_COFF_DefLibMember_Import,
+        .import = { "gs_dependency.dll", "gs_dependency", COFF_ImportBy_Name, COFF_ImportHeader_Code },
+      },
+      {0},
+    },
+  }));
+
+  T_Ok(t_write_def_obj("root.obj", (T_COFF_DefObj){
+    .sections = (T_COFF_DefSection[]){
+      {
+        "root", ".data", str8_struct(&anchor), .flags = "rw:data@8",
+        .relocs = (T_COFF_DefReloc[]){
+          T_COFF_DefReloc(X64_Addr64, 0, "gs_anchor"),
+          {0},
+        },
+      },
+      {0},
+    },
+    .symbols = (T_COFF_DefSymbol[]){
+      T_COFF_DefSymbol_Undef("gs_anchor"),
+      {0},
+    },
+  }));
+
+  struct {
+    char *name;
+    B32 gs;
+    B32 archived;
+    B32 provider;
+  } cases[] = {
+    { "direct GS object, explicit load-config library", 1, 0, 1 },
+    { "archived GS object introducing /DEFAULTLIB",     1, 1, 1 },
+    { "direct object without GS",                       0, 0, 1 },
+    { "archived object without GS",                     0, 1, 1 },
+    { "GS without available load config",               1, 0, 0 },
+  };
+  for EachElement(case_idx, cases) {
+    t_infof("%s\n", cases[case_idx].name);
+   
+    T_COFF_DefObj gs_obj = {
+      .path = str8_lit("gs.obj"),
+      .sections = (T_COFF_DefSection[]){
+        { "anchor", ".data", str8_struct(&anchor), .flags = "rw:data@8" },
+        {0},
+      },
+      .symbols = (T_COFF_DefSymbol[]){
+        T_COFF_DefSymbol_AbsStatic("@feat.00", cases[case_idx].gs ? MSCRT_FeatFlag_GUARD_STACK : 0),
+        T_COFF_DefSymbol_Extern("gs_anchor", "anchor", 0),
+        {0},
+      },
+    };
+
+    if (cases[case_idx].archived) {
+      // Neither the feature bit nor the provider library is visible until this
+      // member is extracted. /NODEFAULTLIB would defeat this part of the test.
+      gs_obj.directives = (char *[]){ "/DEFAULTLIB:loadcfg.lib", 0 };
+      T_Ok(t_write_def_lib("gs.lib", (T_COFF_DefLib){
+        .emit_second_member = 1,
+        .members = (T_COFF_DefLibMember[]){
+          { .type = T_COFF_DefLibMember_Obj, .obj = gs_obj },
+          {0},
+        },
+      }));
+      t_invoke_linkerf("/dll /noentry /machine:x64 /opt:noref /opt:noicf /libpath:. /out:gs-image.dll root.obj gs.lib");
+    } else {
+      T_Ok(t_write_def_obj("gs.obj", gs_obj));
+      t_invoke_linkerf("/nodefaultlib /dll /noentry /machine:x64 /opt:noref /opt:noicf /out:gs-image.dll gs.obj %s",
+                      cases[case_idx].provider ? "loadcfg.lib" : "");
+    }
+    T_Ok(g_last_exit_code == 0);
+
+    String8 image = t_read_file(arena, str8_lit("gs-image.dll"));
+    PE_BinInfo bin = pe_bin_info_from_data(arena, image);
+    T_Ok(bin.entry_point == 0);
+    T_Ok(bin.data_dir_count > PE_DataDirectoryIndex_LOAD_CONFIG);
+    B32 expect_load_config = cases[case_idx].gs && cases[case_idx].provider;
+    T_Ok(dim_1u64(bin.data_dir_franges[PE_DataDirectoryIndex_LOAD_CONFIG]) == (expect_load_config ? load_config_size : 0));
+    if ( ! expect_load_config) {
+      T_Ok(dim_1u64(bin.data_dir_franges[PE_DataDirectoryIndex_IMPORT]) == 0);
+      continue;
+    }
+
+    COFF_SectionHeader *sections = (COFF_SectionHeader *)(image.str + bin.section_table_range.min);
+    PE_ParsedStaticImportTable imports = pe_static_imports_from_data(arena, bin.is_pe32, bin.section_count, sections, image, bin.data_dir_franges[PE_DataDirectoryIndex_IMPORT]);
+    T_Ok(imports.count == 1);
+    T_Ok(str8_match(imports.v[0].name, str8_lit("gs_dependency.dll"), 0));
+    T_Ok(imports.v[0].import_count == 1);
+    T_Ok(imports.v[0].imports[0].type == PE_ParsedImport_Name);
+    T_Ok(str8_match(imports.v[0].imports[0].u.name.string, str8_lit("gs_dependency"), 0));
+
+    // Finding the short-import member is insufficient: both the callable
+    // thunk and the IAT definition must have been generated and relocated.
+    COFF_SectionHeader *refs = coff_section_header_from_name(str8_zero(), sections, bin.section_count, str8_lit(".gsref"));
+    T_Ok(refs != 0);
+    U64 thunk_vaddr = 0, iat_vaddr = 0;
+    T_Ok(str8_deserial_read_struct(image, refs->foff, &thunk_vaddr) == sizeof(thunk_vaddr));
+    T_Ok(str8_deserial_read_struct(image, refs->foff + 8, &iat_vaddr) == sizeof(iat_vaddr));
+    T_Ok(iat_vaddr == bin.image_base + imports.v[0].import_address_table_voff);
+    T_Ok(thunk_vaddr >= bin.image_base);
+    U64 thunk_voff = thunk_vaddr - bin.image_base;
+    U64 thunk_off = pe_foff_from_voff(image, &bin, thunk_voff);
+    T_Ok(str8_match(str8_substr(image, rng_1u64(thunk_off, thunk_off + 2)), str8_lit("\xFF\x25"), 0));
+    S32 thunk_disp = 0;
+    T_Ok(str8_deserial_read_struct(image, thunk_off + 2, &thunk_disp) == sizeof(thunk_disp));
+    T_Ok((U64)((S64)thunk_voff + 6 + thunk_disp) == imports.v[0].import_address_table_voff);
+  }
+}
+
 TEST(section_sort)
 {
   COFF_SectionFlags data_flags = COFF_SectionFlag_CntInitializedData|COFF_SectionFlag_MemRead|COFF_SectionFlag_MemWrite|COFF_SectionFlag_Align1Bytes;

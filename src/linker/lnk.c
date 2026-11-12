@@ -1624,6 +1624,7 @@ lnk_load_inputs(TP_Context *tp, TP_Arena *arena, LNK_Config *config, LNK_Inputer
     case COFF_DataType_BigObj:
     case COFF_DataType_Obj: {
       LNK_ObjImportMetadata *info = input->obj->data.coff.import_metadata;
+
       if (info) {
         metadata[i] = info->definition;
       }
@@ -1631,6 +1632,9 @@ lnk_load_inputs(TP_Context *tp, TP_Arena *arena, LNK_Config *config, LNK_Inputer
       if (!forced[i] || !metadata[i].size) {
         lnk_require_import_metadata(link, &input->obj->data);
       }
+
+      // aggregate image feature flags
+      link->image_feat_flags |= lnk_obj_get_features(&input->obj->data);
     } break;
 
     default: InvalidPath;
@@ -1825,6 +1829,19 @@ lnk_load_inputs(TP_Context *tp, TP_Arena *arena, LNK_Config *config, LNK_Inputer
 
   // load new libs
   lnk_load_libs(tp, arena, config, inputer, &link->libs);
+
+  if ((link->image_feat_flags & MSCRT_FeatFlag_GUARD_STACK) && (link->was_load_config_queued == 0)) {
+    // /GS marks compiler capability even when no function needs the CRT.
+    String8 load_config_name = str8_lit(MSCRT_LOAD_CONFIG_SYMBOL_NAME);
+    B32     has_load_config  = lnk_symbol_table_search(symtab, load_config_name) != 0;
+    for (LNK_LibNode *node = link->libs.first; node && !has_load_config; node = node->next) {
+      has_load_config = lnk_search_lib(&node->data, load_config_name, 0);
+    }
+    if (has_load_config) {
+      lnk_include_symbol(config, load_config_name, 0);
+      link->was_load_config_queued = 1;
+    }
+  }
 
   // resolve entry point and subsystem
   if (link->try_to_resolve_entry_point) {
@@ -2430,26 +2447,9 @@ lnk_link_image(TP_Context *tp, TP_Arena *arena, LNK_Config *config, LNK_Inputer 
   // link inputer
   lnk_link_inputs(tp, arena, config, inputer, symtab, link);
 
-  MSCRT_FeatFlags image_feat_flags = 0;
-  for EachNode(obj_n, LNK_ObjNode, link->objs.first) {
-    image_feat_flags |= lnk_obj_get_features(&obj_n->data);
-  }
-  if (image_feat_flags & MSCRT_FeatFlag_GUARD_STACK) {
-    // /GS marks compiler capability even when no function needs the CRT.
-    // Retain an available load config without introducing a CRT dependency.
-    String8 load_config_name = str8_lit(MSCRT_LOAD_CONFIG_SYMBOL_NAME);
-    B32 has_load_config = lnk_symbol_table_search(symtab, load_config_name) != 0;
-    for (LNK_LibNode *node = link->libs.first; node && !has_load_config; node = node->next) {
-      has_load_config = lnk_search_lib(&node->data, load_config_name, 0);
-    }
-    if (has_load_config) {
-      lnk_include_symbol(config, load_config_name, 0);
-    }
-  }
-
   {
     ProfBegin("Push Linker Symbols");
-    String8 linker_symbols_obj = lnk_make_linker_obj(arena->v[0], config, image_feat_flags);
+    String8 linker_symbols_obj = lnk_make_linker_obj(arena->v[0], config, link->image_feat_flags);
     lnk_inputer_push_obj_linkgen(inputer, 0, str8_lit("* Linker Symbols *"), linker_symbols_obj);
     ProfEnd();
   }

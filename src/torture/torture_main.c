@@ -21,6 +21,7 @@
 
 #include "base/base_inc.h"
 #include "x64/x64_inc.h"
+#include "msvc_crt/msvc_crt.h"
 #include "win32/win32_inc.h"
 #include "linux/linux_inc.h"
 #include "linker/hash_table.h"

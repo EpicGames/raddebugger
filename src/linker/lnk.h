@@ -154,6 +154,8 @@ typedef struct LNK_Link
   HashMap                 suppressed_import_descriptors;
   B32                     try_to_resolve_entry_point;
   B32                     asan_libs_resolved;
+  B32                     was_load_config_queued;
+  MSCRT_FeatFlags         image_feat_flags;
 } LNK_Link;
 
 typedef struct LNK_LinkResult
