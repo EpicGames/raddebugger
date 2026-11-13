@@ -51,6 +51,7 @@ e2_space_map_push(Arena *arena, E2_SpaceMap *map, E2_SpaceID space_id, Rng1U64 a
   {
     node = push_array(arena, E2_SpaceMapNode, 1);
     SLLStackPush(map->slots[slot_idx], node);
+    node->space_id = space_id;
   }
   memory_map_push(arena, &node->memory_map, addr_range, data);
 }
@@ -3912,6 +3913,7 @@ e2_interp_from_bytecode(Arena *arena, E2_InterpState *state, E2_SpaceMap *space_
             good = 0;
             interp.status = E2_InterpStatus_MissedSpaceRead;
             interp.missed_read_space_addr_range = space_addr_range;
+            interp.space_id = state->selected_ctx.space_id;
           }
         }break;
         case RDI_EvalOp_RegRead:
@@ -3934,6 +3936,7 @@ e2_interp_from_bytecode(Arena *arena, E2_InterpState *state, E2_SpaceMap *space_
               good = 0;
               interp.status = E2_InterpStatus_MissedSpaceRead;
               interp.missed_read_space_addr_range = space_addr_range;
+              interp.space_id = state->selected_ctx.reg_space_id;
             }
           }
           else
@@ -4337,7 +4340,7 @@ BinOp(U, u64, u64, symbol);
           default:{}break;
           case E2_InterpStatus_MissedSpaceRead:
           {
-            e2_msgf(arena, &interp.msgs, r1u64(state->bytecode_off, state->bytecode_off+1), "Couldn't read address range [0x%I64x, 0x%I64x) in space 0x%x.",
+            e2_msgf(arena, &interp.msgs, r1u64(state->bytecode_off, state->bytecode_off+1), "Couldn't read address range [0x%I64x, 0x%I64x) in space 0x%I64x.",
                     interp.missed_read_space_addr_range.min,
                     interp.missed_read_space_addr_range.max,
                     interp.space_id);
@@ -4345,7 +4348,10 @@ BinOp(U, u64, u64, symbol);
         }
         interp.status = E2_InterpStatus_Error;
       }
-      state->caller_request_count += 1;
+      if(interp.status != E2_InterpStatus_NewSpaceID)
+      {
+        state->caller_request_count += 1;
+      }
       state->last_caller_request_bytecode_off = state->bytecode_off;
     }
     
@@ -4353,6 +4359,7 @@ BinOp(U, u64, u64, symbol);
     if(off == off_opl && good)
     {
       interp.status = E2_InterpStatus_Good;
+      interp.space_id = state->selected_ctx.space_id;
       if(state->top_val != 0)
       {
         interp.val = state->top_val->val;

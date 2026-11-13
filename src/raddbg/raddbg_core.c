@@ -4453,7 +4453,7 @@ rd_view_ui(Rng2F32 rect)
                           }
                           
                           // rjf: @eval2 show tooltip for eval2 evaluation
-#if 0
+#if 1
                           if(ui_hovering(sig) && row_depth == 0) UI_Tooltip RD_Font(RD_FontSlot_Code)
                           {
                             String8 expr = cell->eval.string;

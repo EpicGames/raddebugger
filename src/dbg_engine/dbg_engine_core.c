@@ -117,6 +117,90 @@ d_locals_map_from_dbgi_key_voff(Access *access, DI_Key dbgi_key, U64 voff, U64 e
   return result;
 }
 
+//- rjf: space reads/writes
+
+internal B32
+d_space_write(E2_SpaceID space_id, void *in, Rng1U64 range)
+{
+  B32 result = 0;
+  return result;
+}
+
+internal B32
+d_space_read(E2_SpaceID space_id, void *out, Rng1U64 range)
+{
+  B32 result = 0;
+  switch(d_space_kind_from_id(space_id))
+  {
+    default:{}break;
+    
+    ////////////////////////////
+    //- rjf: address space reads
+    //
+    case D_SpaceKind_Memory:
+    {
+      D_EntityID entity_id = d_entity_id_from_space_id(space_id);
+      D_Entity *entity = d_entity_from_id(entity_id);
+      D_Entity *process = d_process_from_entity(entity);
+    }break;
+    
+    ////////////////////////////
+    //- rjf: register block space reads
+    //
+    case D_SpaceKind_Registers:
+    {
+      Temp scratch = scratch_begin(0, 0);
+      Access *access = access_open();
+      
+      // rjf: get architecture / reg block
+      Arch arch = Arch_Null;
+      void *regs = 0;
+      {
+        D_EntityID thread_id = d_entity_id_from_space_id(space_id);
+        U64 unwind_idx = d_index_from_space_id(space_id);
+        D_Entity *thread = d_entity_from_id(thread_id);
+        arch = thread->arch;
+        if(arch != Arch_Null)
+        {
+          switch(unwind_idx)
+          {
+            case 0:
+            {
+              regs = d_cached_reg_block_from_thread(scratch.arena, thread->handle);
+            }break;
+            default:
+            {
+              D_CallStack call_stack = d_call_stack_from_thread(access, thread->handle, 1, d_eval_cache->async_endt_us);
+              U64 concrete_frame_idx = e_interpret_ctx->reg_unwind_count;
+              if(concrete_frame_idx < call_stack.concrete_frames_count)
+              {
+                D_CallStackFrame *f = call_stack.concrete_frames[concrete_frame_idx];
+                regs = f->regs;
+              }
+            }break;
+          }
+        }
+      }
+      
+      // rjf: do read
+      if(regs != 0)
+      {
+        ARCH_Info *arch_info = arch_info_from_arch(arch);
+        U64 regs_size = arch_info->reg_block_size;
+        Rng1U64 legal_range = r1u64(0, regs_size);
+        Rng1U64 read_range = intersect_1u64(legal_range, range);
+        U64 read_size = dim_1u64(read_range);
+        MemoryCopy(out, (U8 *)regs + read_range.min, read_size);
+        result = (read_size == dim_1u64(range));
+      }
+      
+      access_close(access);
+      scratch_end(scratch);
+    }break;
+  }
+  return result;
+}
+
 //- rjf: eval building helpers
 
 internal E2_Val
@@ -124,6 +208,7 @@ d_eval_val_from_bytecode(Arena *arena, String8 bytecode, E2_SpaceID *space_id_ou
 {
   E2_Val val = {0};
   {
+    Temp scratch = scratch_begin(&arena, 1);
     E2_InterpState state = {0};
     E2_SpaceMap space_map = {0};
     for(;;)
@@ -138,6 +223,13 @@ d_eval_val_from_bytecode(Arena *arena, String8 bytecode, E2_SpaceID *space_id_ou
         //- rjf: missed read from space -> do read & insert into space map
         case E2_InterpStatus_MissedSpaceRead:
         {
+          E2_SpaceID space_id = interp.space_id;
+          Rng1U64 range = interp.missed_read_space_addr_range;
+          void *data = push_array(scratch.arena, U8, dim_1u64(range));
+          if(d_space_read(space_id, data, range))
+          {
+            e2_space_map_push(scratch.arena, &space_map, space_id, range, data);
+          }
         }break;
         
         //- rjf: changing evaluation context -> unpack space ID, fill out state's ctx accordingly
@@ -187,6 +279,7 @@ d_eval_val_from_bytecode(Arena *arena, String8 bytecode, E2_SpaceID *space_id_ou
         break;
       }
     }
+    scratch_end(scratch);
   }
   return val;
 }

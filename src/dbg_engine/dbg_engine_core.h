@@ -523,6 +523,10 @@ internal AC_Artifact d_locals_map_artifact_create(String8 key, B32 *cancel_signa
 internal void d_locals_map_artifact_destroy(AC_Artifact artifact);
 internal D_String2NumTable *d_locals_map_from_dbgi_key_voff(Access *access, DI_Key dbgi_key, U64 voff, U64 endt_us);
 
+//- rjf: space reads/writes
+internal B32 d_space_write(E2_SpaceID space_id, void *in, Rng1U64 range);
+internal B32 d_space_read(E2_SpaceID space_id, void *out, Rng1U64 range);
+
 //- rjf: eval building helpers
 internal E2_Val d_eval_val_from_bytecode(Arena *arena, String8 bytecode, E2_SpaceID *space_id_out, E2_MsgList *msgs_out);
 internal E2_Val d_eval_val_from_irtree(Arena *arena, E2_IRNode *irtree, E2_SpaceID *space_id_out, E2_MsgList *msgs_out);
