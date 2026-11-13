@@ -284,7 +284,7 @@ rdi_string_from_eval_op(Arena *arena, RDI_EvalOp op)
   String8 result = {0};
   switch(op)
   {
-    default:{result = push_str8f(arena, "%#x", op);}break;
+    default:{result = str8f(arena, "%#x", op);}break;
 #define X(name) case RDI_EvalOp_##name:{result = str8_lit(#name);}break;
     RDI_EvalOp_XList
 #undef X
@@ -377,10 +377,10 @@ rdi_string_from_bytecode(Arena *arena, RDI_Arch arch, String8 bc)
       case RDI_EvalOp_Noop: break;
       case RDI_EvalOp_Cond: break;
       case RDI_EvalOp_Skip:  {
-        imm_fmt = push_str8f(scratch.arena, "%u", *(U16 *)imm.str);
+        imm_fmt = str8f(scratch.arena, "%u", *(U16 *)imm.str);
       } break;
       case RDI_EvalOp_MemRead: {
-        imm_fmt = push_str8f(scratch.arena, "%u", *(U8 *)imm.str);
+        imm_fmt = str8f(scratch.arena, "%u", *(U8 *)imm.str);
       } break;
       case RDI_EvalOp_RegRead: {
         U32         regread   = *(U32 *)imm.str;
@@ -388,38 +388,38 @@ rdi_string_from_bytecode(Arena *arena, RDI_Arch arch, String8 bc)
         U8          byte_size = Extract8(regread, 1);
         U8          byte_off  = Extract8(regread, 2);
         String8     reg_str   = rdi_string_from_reg_code(scratch.arena, arch, reg_code);
-        imm_fmt = push_str8f(scratch.arena, "%S+%I64u, Size: %u", reg_str, byte_off, byte_size);
+        imm_fmt = str8f(scratch.arena, "%S+%I64u, Size: %u", reg_str, byte_off, byte_size);
       } break;
       case RDI_EvalOp_FrameOff: {
-        imm_fmt = push_str8f(scratch.arena, "%+lld", *(S64 *)imm.str);
+        imm_fmt = str8f(scratch.arena, "%+lld", *(S64 *)imm.str);
       } break;
       case RDI_EvalOp_ModuleOff: {
-        imm_fmt = push_str8f(scratch.arena, "%u", *(U32 *)imm.str);
+        imm_fmt = str8f(scratch.arena, "%u", *(U32 *)imm.str);
       } break;
       case RDI_EvalOp_TLSOff: {
-        imm_fmt = push_str8f(scratch.arena, "%u", *(U32 *)imm.str);
+        imm_fmt = str8f(scratch.arena, "%u", *(U32 *)imm.str);
       } break;
       case RDI_EvalOp_ConstU8: {
-        imm_fmt = push_str8f(scratch.arena, "%u", *(U8 *)imm.str);
+        imm_fmt = str8f(scratch.arena, "%u", *(U8 *)imm.str);
       } break;
       case RDI_EvalOp_ConstU16: {
-        imm_fmt = push_str8f(scratch.arena, "%u", *(U16 *)imm.str);
+        imm_fmt = str8f(scratch.arena, "%u", *(U16 *)imm.str);
       } break;
       case RDI_EvalOp_ConstU32: {
-        imm_fmt = push_str8f(scratch.arena, "%u", *(U32 *)imm.str);
+        imm_fmt = str8f(scratch.arena, "%u", *(U32 *)imm.str);
       } break;
       case RDI_EvalOp_ConstU64: {
-        imm_fmt = push_str8f(scratch.arena, "%llu", *(U64 *)imm.str);
+        imm_fmt = str8f(scratch.arena, "%llu", *(U64 *)imm.str);
       } break;
       case RDI_EvalOp_ConstU128: {
-        imm_fmt = push_str8f(scratch.arena, "Lo: %llu, Hi: %llu", *(U64 *)imm.str, *((U64 *)imm.str + 1));
+        imm_fmt = str8f(scratch.arena, "Lo: %llu, Hi: %llu", *(U64 *)imm.str, *((U64 *)imm.str + 1));
       } break;
       case RDI_EvalOp_ConstString: {
         U8      size   = *(U8 *)imm.str;
         String8 string = {0};
         cursor += str8_deserial_read_block(bc, cursor, size, &string);
         
-        imm_fmt = push_str8f(scratch.arena, "(%u) \"%S\"", size, string);
+        imm_fmt = str8f(scratch.arena, "(%u) \"%S\"", size, string);
       } break;
       case RDI_EvalOp_Abs:
       case RDI_EvalOp_Neg: 
@@ -449,7 +449,7 @@ rdi_string_from_bytecode(Arena *arena, RDI_Arch arch, String8 bc)
       case RDI_EvalOp_Trunc:
       case RDI_EvalOp_TruncSigned: {
         U8 trunc = *(U8 *)imm.str;
-        imm_fmt = push_str8f(scratch.arena, "%u", trunc);
+        imm_fmt = str8f(scratch.arena, "%u", trunc);
       } break;
       case RDI_EvalOp_Convert: {
         U16 convert = *(U16 *)imm.str;
@@ -457,20 +457,20 @@ rdi_string_from_bytecode(Arena *arena, RDI_Arch arch, String8 bc)
         U8 out = Extract8(convert, 1);
         String8 in_str  = rdi_string_from_eval_type_group(scratch.arena, in);
         String8 out_str = rdi_string_from_eval_type_group(scratch.arena, out);
-        imm_fmt = push_str8f(scratch.arena, "in: %S out: %S", in_str, out_str);
+        imm_fmt = str8f(scratch.arena, "in: %S out: %S", in_str, out_str);
       } break;
       case RDI_EvalOp_Pick: {
         U8 pick = *(U8 *)imm.str;
-        imm_fmt = push_str8f(scratch.arena, "%u", pick);
+        imm_fmt = str8f(scratch.arena, "%u", pick);
       } break;
       case RDI_EvalOp_Pop: break;
       case RDI_EvalOp_ValueRead: {
         U8 bytes_to_read = *(U8 *)imm.str;
-        imm_fmt = push_str8f(scratch.arena, "%u", bytes_to_read);
+        imm_fmt = str8f(scratch.arena, "%u", bytes_to_read);
       } break;
       case RDI_EvalOp_ByteSwap: {
         U8 byte_size = *(U8 *)imm.str;
-        imm_fmt = push_str8f(scratch.arena, "%u", byte_size);
+        imm_fmt = str8f(scratch.arena, "%u", byte_size);
       } break;
       case RDI_EvalOp_CallSiteValue: {
         U32     call_site_bc_size = *(U32 *)imm.str;
@@ -478,17 +478,17 @@ rdi_string_from_bytecode(Arena *arena, RDI_Arch arch, String8 bc)
         cursor += str8_deserial_read_block(bc, cursor, call_site_bc_size, &call_site_bc);
         
         String8 call_site_str = rdi_string_from_bytecode(scratch.arena, arch, call_site_bc);
-        imm_fmt = push_str8f(scratch.arena, "%S", call_site_str);
+        imm_fmt = str8f(scratch.arena, "%S", call_site_str);
       } break;
       case RDI_EvalOp_PartialValue: {
         U32 partial_value_size = *(U32 *)imm.str;
-        imm_fmt = push_str8f(scratch.arena, "%u", partial_value_size);
+        imm_fmt = str8f(scratch.arena, "%u", partial_value_size);
       } break;
       case RDI_EvalOp_PartialValueBit: {
         U64 partial_value = *(U64 *)imm.str;
         U32 bit_size = Extract32(partial_value, 0);
         U32 bit_off  = Extract32(partial_value, 1);
-        imm_fmt = push_str8f(scratch.arena, "Off: %u, Size: %u", bit_size, bit_off);
+        imm_fmt = str8f(scratch.arena, "Off: %u, Size: %u", bit_size, bit_off);
       } break;
     }
     

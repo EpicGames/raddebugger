@@ -7,7 +7,7 @@
 internal U64
 d_hash_from_handle(D_Handle handle)
 {
-  U64 buf[] = {handle.server_id, handle.controller_kind, handle.entity_id};
+  U64 buf[] = {handle.server_id, handle.controller_kind, handle.control_id};
   U64 hash = u64_hash_from_str8(str8_struct(&handle));
   return hash;
 }
@@ -182,7 +182,7 @@ d_handle_array_from_list(Arena  *arena, D_HandleList *src)
 internal String8
 d_string_from_handle(Arena *arena, D_Handle handle)
 {
-  String8 result = str8f(arena, "$%x$%x$%I64x", handle.server_id, handle.controller_kind, handle.entity_id);
+  String8 result = str8f(arena, "$%x$%x$%I64x", handle.server_id, handle.controller_kind, handle.control_id);
   return result;
 }
 
@@ -198,10 +198,10 @@ d_handle_from_string(String8 string)
     {
       D_ServerID server_id = (U32)u64_from_str8(parts.first->string, 16);
       D_ControllerKind controller_kind = (U32)u64_from_str8(parts.first->next->string, 16);
-      U64 entity_id = u64_from_str8(parts.first->next->next->string, 16);
+      U64 control_id = u64_from_str8(parts.first->next->next->string, 16);
       handle.server_id = server_id;
       handle.controller_kind = controller_kind;
-      handle.entity_id = entity_id;
+      handle.control_id = control_id;
     }
     scratch_end(scratch);
   }
@@ -214,7 +214,7 @@ d_dmn_from_handle(D_Handle handle)
   DMN_Handle result = {0};
   if(handle.controller_kind == D_ControllerKind_Demon)
   {
-    result.u64[0] = handle.entity_id;
+    result.u64[0] = handle.control_id;
   }
   return result;
 }
@@ -226,7 +226,7 @@ d_handle_from_dmn(D_ServerID server_id, DMN_Handle handle)
   {
     result.server_id = server_id;
     result.controller_kind = D_ControllerKind_Demon;
-    result.entity_id = handle.u64[0];
+    result.control_id = handle.u64[0];
   }
   return result;
 }
@@ -238,7 +238,7 @@ d_dump_handle_make(D_ServerID server_id, U64 id)
   {
     result.server_id = server_id;
     result.controller_kind = D_ControllerKind_Dump;
-    result.entity_id = id;
+    result.control_id = id;
   }
   return result;
 }
@@ -251,6 +251,72 @@ d_handle_from_server_id(D_ServerID server_id)
     handle.server_id = server_id;
   }
   return handle;
+}
+
+internal U128
+d_eval_u128_from_handle(D_Handle handle)
+{
+  U128 result;
+  StaticAssert(sizeof(handle) == sizeof(result), handle_size_check);
+  MemoryCopy(&result, &handle, sizeof(handle));
+  return result;
+}
+
+internal D_Handle
+d_handle_from_eval_u128(U128 u128)
+{
+  D_Handle result;
+  StaticAssert(sizeof(u128) == sizeof(result), handle_size_check);
+  MemoryCopy(&result, &u128, sizeof(result));
+  return result;
+}
+
+internal U256
+d_eval_u256_from_handle_idx(D_Handle handle, U64 idx)
+{
+  U256 result = {0};
+  result.u128[0] = d_eval_u128_from_handle(handle);
+  result.u128[1].u64[0] = idx;
+  return result;
+}
+
+internal D_Handle
+d_handle_from_eval_u256(U256 u256)
+{
+  D_Handle handle = d_handle_from_eval_u128(u256.u128[0]);
+  return handle;
+}
+
+internal U64
+d_idx_from_eval_u256(U256 u256)
+{
+  U64 idx = u256.u128[1].u64[0];
+  return idx;
+}
+
+internal E2_CtxID
+d_eval_ctx_id_from_kind_handle_idx(D_EvalCtxIDKind kind, D_Handle handle, U64 idx)
+{
+  E2_CtxID result;
+  StaticAssert(sizeof(result) == sizeof(U256), ctx_id_size_check);
+  result.u128[0].u64[0] = kind;
+  result.u128[0].u64[1] = idx;
+  result.u128[1] = d_eval_u128_from_handle(handle);
+  return result;
+}
+
+internal D_Handle
+d_handle_from_eval_ctx_id(E2_CtxID id)
+{
+  D_Handle handle = d_handle_from_eval_u128(id.u128[1]);
+  return handle;
+}
+
+internal U64
+d_idx_from_eval_ctx_id(E2_CtxID id)
+{
+  U64 idx = id.u128[0].u64[1];
+  return idx;
 }
 
 ////////////////////////////////
@@ -385,7 +451,7 @@ d_serialized_string_from_msg_list(Arena *arena, D_MsgList *msgs)
       str8_serial_push_struct(scratch.arena, &msgs_srlzed, &msg->msg_id);
       str8_serial_push_struct(scratch.arena, &msgs_srlzed, &msg->entity);
       str8_serial_push_struct(scratch.arena, &msgs_srlzed, &msg->parent);
-      str8_serial_push_struct(scratch.arena, &msgs_srlzed, &msg->entity_id);
+      str8_serial_push_struct(scratch.arena, &msgs_srlzed, &msg->os_id);
       str8_serial_push_struct(scratch.arena, &msgs_srlzed, &msg->exit_code);
       str8_serial_push_struct(scratch.arena, &msgs_srlzed, &msg->env_inherit);
       str8_serial_push_struct(scratch.arena, &msgs_srlzed, &msg->debug_subprocesses);
@@ -491,7 +557,7 @@ d_msg_list_from_serialized_string(Arena *arena, String8 string)
       read_off += str8_deserial_read_struct(string, read_off, &msg->msg_id);
       read_off += str8_deserial_read_struct(string, read_off, &msg->entity);
       read_off += str8_deserial_read_struct(string, read_off, &msg->parent);
-      read_off += str8_deserial_read_struct(string, read_off, &msg->entity_id);
+      read_off += str8_deserial_read_struct(string, read_off, &msg->os_id);
       read_off += str8_deserial_read_struct(string, read_off, &msg->exit_code);
       read_off += str8_deserial_read_struct(string, read_off, &msg->env_inherit);
       read_off += str8_deserial_read_struct(string, read_off, &msg->debug_subprocesses);
@@ -645,7 +711,7 @@ d_serialized_string_from_event(Arena *arena, D_Event *event, U64 max)
     str8_serial_push_struct(scratch.arena, &srl, &event->parent);
     str8_serial_push_struct(scratch.arena, &srl, &event->arch);
     str8_serial_push_struct(scratch.arena, &srl, &event->u64_code);
-    str8_serial_push_struct(scratch.arena, &srl, &event->entity_id);
+    str8_serial_push_struct(scratch.arena, &srl, &event->os_id);
     str8_serial_push_struct(scratch.arena, &srl, &event->vaddr_rng);
     str8_serial_push_struct(scratch.arena, &srl, &event->rip_vaddr);
     str8_serial_push_struct(scratch.arena, &srl, &event->stack_base);
@@ -681,7 +747,7 @@ d_event_from_serialized_string(Arena *arena, String8 string)
     read_off += str8_deserial_read_struct(string, read_off, &event.parent);
     read_off += str8_deserial_read_struct(string, read_off, &event.arch);
     read_off += str8_deserial_read_struct(string, read_off, &event.u64_code);
-    read_off += str8_deserial_read_struct(string, read_off, &event.entity_id);
+    read_off += str8_deserial_read_struct(string, read_off, &event.os_id);
     read_off += str8_deserial_read_struct(string, read_off, &event.vaddr_rng);
     read_off += str8_deserial_read_struct(string, read_off, &event.rip_vaddr);
     read_off += str8_deserial_read_struct(string, read_off, &event.stack_base);
@@ -1052,7 +1118,7 @@ d_entity_string_release(D_EntityCtxRWStore *store, String8 string)
 //- rjf: entity construction/deletion
 
 internal D_Entity *
-d_entity_alloc(D_EntityCtxRWStore *store, D_Entity *parent, D_EntityKind kind, Arch arch, D_Handle handle, U64 id)
+d_entity_alloc(D_EntityCtxRWStore *store, D_Entity *parent, D_EntityKind kind, Arch arch, D_Handle handle, U64 os_id)
 {
   D_Entity *entity = &d_entity_nil;
   {
@@ -1072,10 +1138,12 @@ d_entity_alloc(D_EntityCtxRWStore *store, D_Entity *parent, D_EntityKind kind, A
     
     // rjf: fill
     {
+      store->entity_id_gen += 1;
       entity->kind        = kind;
+      entity->id          = store->entity_id_gen;
       entity->arch        = arch;
       entity->handle      = handle;
-      entity->id          = id;
+      entity->os_id       = os_id;
       entity->parent      = parent;
       entity->next = entity->prev = entity->first = entity->last = &d_entity_nil;
       if(parent != &d_entity_nil)
@@ -1093,6 +1161,36 @@ d_entity_alloc(D_EntityCtxRWStore *store, D_Entity *parent, D_EntityKind kind, A
       for(D_EntityHashNode *n = slot->first; n != 0; n = n->next)
       {
         if(d_handle_match(n->entity->handle, handle))
+        {
+          node = n;
+          break;
+        }
+      }
+      if(node == 0)
+      {
+        node = store->hash_node_free;
+        if(node != 0)
+        {
+          SLLStackPop(store->hash_node_free);
+        }
+        else
+        {
+          node = push_array_no_zero(store->arena, D_EntityHashNode, 1);
+        }
+        MemoryZeroStruct(node);
+        DLLPushBack(slot->first, slot->last, node);
+        node->entity = entity;
+      }
+    }
+    
+    // rjf: insert into ID map
+    {
+      U64 slot_idx = entity->id%store->ctx.id_slots_count;
+      D_EntityHashSlot *slot = &store->ctx.id_slots[slot_idx];
+      D_EntityHashNode *node = 0;
+      for(D_EntityHashNode *n = slot->first; n != 0; n = n->next)
+      {
+        if(n->entity->id == entity->id)
         {
           node = n;
           break;
@@ -1165,6 +1263,22 @@ d_entity_release(D_EntityCtxRWStore *store, D_Entity *entity)
         for(D_EntityHashNode *n = slot->first; n != 0; n = n->next)
         {
           if(d_handle_match(n->entity->handle, t->e->handle))
+          {
+            DLLRemove(slot->first, slot->last, n);
+            SLLStackPush(store->hash_node_free, n);
+            break;
+          }
+        }
+      }
+      
+      // rjf: remove from ID map
+      {
+        U64 slot_idx = t->e->id%store->ctx.id_slots_count;
+        D_EntityHashSlot *slot = &store->ctx.id_slots[slot_idx];
+        D_EntityHashNode *node = 0;
+        for(D_EntityHashNode *n = slot->first; n != 0; n = n->next)
+        {
+          if(n->entity->id == t->e->id)
           {
             DLLRemove(slot->first, slot->last, n);
             SLLStackPush(store->hash_node_free, n);
@@ -1254,14 +1368,14 @@ d_modules_from_dbgi_key(Arena *arena, DI_Key dbgi_key)
 }
 
 internal D_Entity *
-d_process_from_id(U64 id)
+d_process_from_os_id(U64 os_id)
 {
   // TODO(rjf): @multimachine need machine ID here?
   D_Entity *process = &d_entity_nil;
   D_EntityArray processes = d_entity_array_from_kind(D_EntityKind_Process);
   for EachIndex(idx, processes.count)
   {
-    if(processes.v[idx]->id == id)
+    if(processes.v[idx]->os_id == os_id)
     {
       process = processes.v[idx];
     }
@@ -1270,14 +1384,14 @@ d_process_from_id(U64 id)
 }
 
 internal D_Entity *
-d_thread_from_id(U64 id)
+d_thread_from_os_id(U64 os_id)
 {
   // TODO(rjf): @multimachine need machine ID here?
   D_Entity *thread = &d_entity_nil;
   D_EntityArray threads = d_entity_array_from_kind(D_EntityKind_Thread);
   for EachIndex(idx, threads.count)
   {
-    if(threads.v[idx]->id == id)
+    if(threads.v[idx]->os_id == os_id)
     {
       thread = threads.v[idx];
     }
@@ -1330,7 +1444,7 @@ d_entity_store_apply_events(D_EntityCtxRWStore *store, D_EventList *list)
         D_Entity *machine = d_entity_from_handle(d_handle_from_dmn(event->entity.server_id, dmn_handle_zero()));
         if(machine != &d_entity_nil)
         {
-          D_Entity *process = d_entity_alloc(store, machine, D_EntityKind_Process, event->arch, event->entity, (U64)event->entity_id);
+          D_Entity *process = d_entity_alloc(store, machine, D_EntityKind_Process, event->arch, event->entity, event->os_id);
           process->os = event->os;
           process->src_msg_id = event->msg_id;
           d_entity_equip_string(store, process, event->string);
@@ -1345,7 +1459,7 @@ d_entity_store_apply_events(D_EntityCtxRWStore *store, D_EventList *list)
             entry = next)
         {
           next = entry->next;
-          if(entry->id == process->id &&
+          if(entry->os_id == process->os_id &&
              (entry->kind == D_EntityKind_EntryPoint || entry->kind == D_EntityKind_LaunchMsgID))
           {
             d_entity_release(store, entry);
@@ -1359,7 +1473,7 @@ d_entity_store_apply_events(D_EntityCtxRWStore *store, D_EventList *list)
         D_Entity *process = d_entity_from_handle(event->parent);
         if(process != &d_entity_nil)
         {
-          D_Entity *thread = d_entity_alloc(store, process, D_EntityKind_Thread, event->arch, event->entity, (U64)event->entity_id);
+          D_Entity *thread = d_entity_alloc(store, process, D_EntityKind_Thread, event->arch, event->entity, event->os_id);
           thread->os = process->os;
           D_Entity *first_thread = d_entity_child_from_kind(process, D_EntityKind_Thread);
           if(first_thread == thread)
@@ -1370,7 +1484,7 @@ d_entity_store_apply_events(D_EntityCtxRWStore *store, D_EventList *list)
           for EachIndex(idx, pending_thread_names.count)
           {
             D_Entity *entity = pending_thread_names.v[idx];
-            if(entity->id == event->entity_id)
+            if(entity->os_id == event->os_id)
             {
               d_entity_equip_string(store, thread, entity->string);
               d_entity_release(store, entity);
@@ -1381,7 +1495,7 @@ d_entity_store_apply_events(D_EntityCtxRWStore *store, D_EventList *list)
           for EachIndex(idx, pending_thread_colors.count)
           {
             D_Entity *entity = pending_thread_colors.v[idx];
-            if(entity->id == event->entity_id)
+            if(entity->os_id == event->os_id)
             {
               thread->rgba = entity->rgba;
               d_entity_release(store, entity);
@@ -1401,13 +1515,13 @@ d_entity_store_apply_events(D_EntityCtxRWStore *store, D_EventList *list)
       {
         D_Entity *process = d_entity_from_handle(event->parent);
         D_Entity *thread = &d_entity_nil;
-        if(event->entity_id == 0)
+        if(event->os_id == 0)
         {
           thread = d_entity_from_handle(event->entity);
         }
         else
         {
-          thread = d_thread_from_id(event->entity_id);
+          thread = d_thread_from_os_id(event->os_id);
         }
         if(thread != &d_entity_nil)
         {
@@ -1415,7 +1529,7 @@ d_entity_store_apply_events(D_EntityCtxRWStore *store, D_EventList *list)
         }
         else if(process != &d_entity_nil)
         {
-          D_Entity *pending_name = d_entity_alloc(store, process, D_EntityKind_PendingThreadName, Arch_Null, d_handle_zero(), event->entity_id);
+          D_Entity *pending_name = d_entity_alloc(store, process, D_EntityKind_PendingThreadName, Arch_Null, d_handle_zero(), event->os_id);
           d_entity_equip_string(store, pending_name, event->string);
         }
       }break;
@@ -1423,13 +1537,13 @@ d_entity_store_apply_events(D_EntityCtxRWStore *store, D_EventList *list)
       {
         D_Entity *process = d_entity_from_handle(event->parent);
         D_Entity *thread = &d_entity_nil;
-        if(event->entity_id == 0)
+        if(event->os_id == 0)
         {
           thread = d_entity_from_handle(event->entity);
         }
         else
         {
-          thread = d_thread_from_id(event->entity_id);
+          thread = d_thread_from_os_id(event->os_id);
         }
         if(thread != &d_entity_nil)
         {
@@ -1437,7 +1551,7 @@ d_entity_store_apply_events(D_EntityCtxRWStore *store, D_EventList *list)
         }
         else if(process != &d_entity_nil)
         {
-          D_Entity *pending = d_entity_alloc(store, process, D_EntityKind_PendingThreadColor, Arch_Null, d_handle_zero(), event->entity_id);
+          D_Entity *pending = d_entity_alloc(store, process, D_EntityKind_PendingThreadColor, Arch_Null, d_handle_zero(), event->os_id);
           pending->rgba = event->rgba;
         }
       }break;
@@ -1531,7 +1645,7 @@ d_entity_store_apply_events(D_EntityCtxRWStore *store, D_EventList *list)
       case D_EventKind_ServerConnect:
       {
         D_Handle handle = {0};
-        handle.server_id = event->entity_id;
+        handle.server_id = event->u64_code;
         D_Entity *server = d_entity_alloc(store, d_entity_ctx->root, D_EntityKind_Server, Arch_Null, handle, 0);
         d_entity_equip_string(store, server, event->string);
       }break;
@@ -3114,7 +3228,7 @@ d_ctrl_thread__close_dump_process(D_MsgID msg_id, D_Handle process)
     evt->kind   = D_EventKind_EndThread;
     evt->msg_id    = msg_id;
     evt->entity    = node->threads[idx].thread_handle;
-    evt->entity_id = node->threads[idx].id;
+    evt->os_id     = node->threads[idx].id;
     d_c2u_push_events(&evts);
     scratch_end(scratch);
   }
@@ -3817,7 +3931,7 @@ d_ctrl_thread__next_dmn_event(Arena *arena, DMN_CtrlCtx *ctrl_ctx, D_Msg *msg, D
           entry != &d_entity_nil;
           entry = entry->next)
       {
-        if(entry->id == event->code && entry->kind == D_EntityKind_LaunchMsgID)
+        if(entry->os_id == event->code && entry->kind == D_EntityKind_LaunchMsgID)
         {
           msg_id = entry->src_msg_id;
           d_entity_release(d_ctrl_state->ctrl_thread_entity_store, entry);
@@ -3844,7 +3958,7 @@ d_ctrl_thread__next_dmn_event(Arena *arena, DMN_CtrlCtx *ctrl_ctx, D_Msg *msg, D
       out_evt->msg_id    = msg_id;
       out_evt->entity    = d_handle_from_dmn(server_id, event->process);
       out_evt->arch      = event->arch;
-      out_evt->entity_id = event->code;
+      out_evt->os_id     = event->code;
       out_evt->os        = OperatingSystem_CURRENT; // TODO(rjf): @multimachine operating system of the remote target machine
     }break;
     
@@ -3857,7 +3971,7 @@ d_ctrl_thread__next_dmn_event(Arena *arena, DMN_CtrlCtx *ctrl_ctx, D_Msg *msg, D
       out_evt->entity     = d_handle_from_dmn(server_id, event->thread);
       out_evt->parent     = d_handle_from_dmn(server_id, event->process);
       out_evt->arch       = event->arch;
-      out_evt->entity_id  = event->code;
+      out_evt->os_id      = event->code;
       out_evt->stack_base = event->stack_pointer;
       out_evt->tls_root   = event->tls_root_vaddr;
       out_evt->rip_vaddr  = event->instruction_pointer;
@@ -4006,7 +4120,7 @@ d_ctrl_thread__next_dmn_event(Arena *arena, DMN_CtrlCtx *ctrl_ctx, D_Msg *msg, D
       out_evt1->entity     = module_handle;
       out_evt1->parent     = process_handle;
       out_evt1->arch       = event->arch;
-      out_evt1->entity_id  = event->code;
+      out_evt1->os_id      = event->code;
       out_evt1->vaddr_rng  = r1u64(event->address, event->address+event->size);
       out_evt1->rip_vaddr  = event->address;
       out_evt1->timestamp  = exe_timestamp;
@@ -4052,7 +4166,7 @@ d_ctrl_thread__next_dmn_event(Arena *arena, DMN_CtrlCtx *ctrl_ctx, D_Msg *msg, D
       out_evt->kind       = D_EventKind_EndThread;
       out_evt->msg_id     = msg->msg_id;
       out_evt->entity     = d_handle_from_dmn(server_id, event->thread);
-      out_evt->entity_id  = event->code;
+      out_evt->os_id      = event->code;
     }break;
     
     //- rjf: unload module
@@ -4111,7 +4225,7 @@ d_ctrl_thread__next_dmn_event(Arena *arena, DMN_CtrlCtx *ctrl_ctx, D_Msg *msg, D
       out_evt->entity     = d_handle_from_dmn(server_id, event->thread);
       out_evt->parent     = d_handle_from_dmn(server_id, event->process);
       out_evt->string     = event->string;
-      out_evt->entity_id  = event->code;
+      out_evt->os_id      = event->code;
     }break;
     
     //- rjf: thread color
@@ -4122,7 +4236,7 @@ d_ctrl_thread__next_dmn_event(Arena *arena, DMN_CtrlCtx *ctrl_ctx, D_Msg *msg, D
       out_evt->msg_id     = msg->msg_id;
       out_evt->entity     = d_handle_from_dmn(server_id, event->thread);
       out_evt->parent     = d_handle_from_dmn(server_id, event->process);
-      out_evt->entity_id  = event->code;
+      out_evt->os_id      = event->code;
       out_evt->rgba       = event->user_data;
     }break;
     
@@ -4545,7 +4659,7 @@ d_ctrl_thread__handle_from_addr_or_connect(String8 addr)
       d_ctrl_state->server_id_gen += 1;
       server_id = D_ServerID_LocalHost + d_ctrl_state->server_id_gen;
       evt->kind = D_EventKind_ServerConnect;
-      evt->entity_id = server_id;
+      evt->u64_code = server_id;
       evt->string = addr;
       d_c2u_push_events(&evts);
       scratch_end(scratch);
@@ -4687,7 +4801,7 @@ d_ctrl_thread__close_remote_server(DMN_CtrlCtx *ctrl_ctx, D_Msg *msg)
   D_EventList evts = {0};
   D_Event *evt = d_event_list_push(scratch.arena, &evts);
   evt->kind = D_EventKind_ServerDisconnect;
-  evt->entity_id = machine->handle.server_id;
+  evt->entity = machine->handle;
   d_c2u_push_events(&evts);
   scratch_end(scratch);
 }
@@ -4816,7 +4930,7 @@ d_ctrl_thread__attach(DMN_CtrlCtx *ctrl_ctx, D_Msg *msg)
   B32 attach_good = 0;
   if(msg->address.size == 0)
   {
-    attach_good = ds_ctrl_attach(ctrl_ctx, msg->entity_id);
+    attach_good = ds_ctrl_attach(ctrl_ctx, msg->os_id);
   }
   
   //- rjf: remote? -> attach remotely, wait for response
@@ -4824,7 +4938,7 @@ d_ctrl_thread__attach(DMN_CtrlCtx *ctrl_ctx, D_Msg *msg)
   {
     String8 address = msg->address;
     SOCK_Endpoint endpoint = sock_endpoint_from_string(address);
-    DS_Msg attach_msg = {DS_MsgKind_Attach, .pid = msg->entity_id};
+    DS_Msg attach_msg = {DS_MsgKind_Attach, .pid = msg->os_id};
     DS_Response response = d_server_msg(scratch.arena, endpoint, &attach_msg);
     attach_good = response.good;
   }
@@ -4878,7 +4992,7 @@ d_ctrl_thread__attach(DMN_CtrlCtx *ctrl_ctx, D_Msg *msg)
     event->kind       = D_EventKind_Stopped;
     event->cause      = D_EventCause_Finished;
     event->msg_id     = msg->msg_id;
-    event->entity_id = !!attach_good * msg->entity_id;
+    event->os_id      = !!attach_good * msg->os_id;
     d_c2u_push_events(&evts);
   }
   
@@ -5272,7 +5386,7 @@ d_ctrl_thread__open_crash_dump(DMN_CtrlCtx *ctrl_ctx, D_Msg *msg)
     evt->entity     = thread_handle;
     evt->parent     = process;
     evt->arch       = process_arch;
-    evt->entity_id  = dump_threads[idx].id;
+    evt->os_id      = dump_threads[idx].id;
     // TODO(rjf): evt->stack_base = ; (use thread->stack)
     // TODO(rjf): evt->tls_root   = ; (use thread->thread_context)
     if(dump_threads[idx].name.size != 0)
@@ -5283,7 +5397,7 @@ d_ctrl_thread__open_crash_dump(DMN_CtrlCtx *ctrl_ctx, D_Msg *msg)
       evt2->entity     = thread_handle;
       evt2->parent     = process;
       evt2->string     = dump_threads[idx].name;
-      evt2->entity_id  = dump_threads[idx].id;
+      evt2->os_id      = dump_threads[idx].id;
     }
   }
   
@@ -6293,7 +6407,7 @@ d_ctrl_thread__run(DMN_CtrlCtx *ctrl_ctx, D_Msg *msg)
         {
           for(D_Entity *e = entity_ctx->root->first; e != &d_entity_nil; e = e->next)
           {
-            if(e->id == process->id)
+            if(e->os_id == process->os_id)
             {
               U32 procedure_id = 0;
               {
@@ -7646,7 +7760,7 @@ d_call_stack_artifact_create(String8 key, B32 *cancel_signal, AC_Status *status_
               dst_e->is_soloed        = src_e->is_soloed;
               dst_e->rgba             = src_e->rgba;
               dst_e->handle           = src_e->handle;
-              dst_e->id               = src_e->id;
+              dst_e->os_id            = src_e->os_id;
               dst_e->vaddr_range      = src_e->vaddr_range;
               dst_e->stack_base       = src_e->stack_base;
               dst_e->timestamp        = src_e->timestamp;

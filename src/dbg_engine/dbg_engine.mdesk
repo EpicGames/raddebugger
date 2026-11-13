@@ -185,3 +185,120 @@ D_EntityKindTable:
   @expand(W32_ExceptionCodeKindTable a) `$(a.default)`;
   @expand(LNX_SignalCodeTable a) `$(a.break_default)`;
 }
+
+////////////////////////////////
+//~ rjf: Evaluation Schemas
+//
+// Each schema defines partial type info for evaluation. It is "partial"
+// because sometimes the actual type info of an evaluation is decided
+// dynamically, because it is plugging the evaluation system into a
+// built-in concept. For example, if I write `some_process.id`, that
+// will result in a value-mode evaluation of the ID of `some_process`,
+// which comes directly from the debug entity state. On the other hand,
+// if I write `some_process.threads`, that will just result in a `threads`
+// set type, value-mode, evaluation, of `some_process`, and so that can
+// be completely specified here.
+//
+// Members which are decided procedurally by built-in mechanisms have
+// no types specified, e.g. the `name` fields of debug entities. Members
+// which have types specified, e.g. `processes:set`, are completely
+// automatically wired up from here - no additional code is needed
+// (but any non-set member accesses, or any indexing accesses of a set,
+// need to be wired up in the code).
+//
+// If you add a new member here, and you need to write some actual code
+// to plug it into the evaluation system, just do not specify a type,
+// and adjust the debug engine's driving of the eval compiler (i.e. in
+// d_eval_from_string).
+//
+// You may consider that, because a member access may need to just be
+// hardwired into the code (because it is plugging in eval to built-in
+// concepts), you do not need to specify the member here, and when it
+// comes purely to evaluation, that might be true. However, it's also
+// important to consider that the UI needs to build expansions of
+// evaluations, and it can only do that easily if it has this partial
+// type info. So you still need members in these schemas, even if they
+// are hardwired in.
+//
+// NOTE(rjf): search @schema_builtin for implementations of built-in
+// members
+//
+
+@table(name, schema) D_EntityEvalSchemaTable:
+{
+  // @schema server, process, module, thread
+  {server      `{name, @no_expand active, unattached_processes:set, processes:set}`}
+  {process     `{name, id, @no_expand active, modules:set, threads:set, @no_expand memory}`}
+  {module      `{exe, dbg, vaddr_range}`}
+  {thread      `{name, id, @no_expand active, call_stack:set}`}
+}
+
+@table(name, schema) D_CfgEvalSchemaTable:
+{
+  //- rjf: @schema breakpoint
+  {
+    breakpoint,
+    ```
+      @row_commands(enable_cfg, duplicate_cfg, remove_cfg)
+      @collection_commands(toggle_breakpoint, add_breakpoint, add_address_breakpoint, add_function_breakpoint, clear_breakpoints)
+    {
+      label:            @code string,
+      condition:        @expr string,
+      source_location:  path_pt,
+      address_location: @expr string,
+      hit_count:        u64,
+      address_range_size: @or(0, 1, 2, 4, 8) u64,
+      break_on_write:   bool,
+      break_on_read:    bool,
+      break_on_execute: bool,
+      @display_name("Break Selected Thread Only") break_selected_thread_only: bool,
+      @no_revert @no_expand @default(1) enabled: bool,
+    }
+    ```,
+  }
+  
+  //- rjf: @schema target
+  {
+    target,
+    ```
+      @row_commands(@cmd_line save_cfg_to_project, enable_cfg, launch_and_run, launch_and_step_into, duplicate_cfg, remove_cfg)
+      @collection_commands(add_target)
+    {
+      label:              @code string,
+      executable:         path,
+      arguments:          string,
+      working_directory:  @folder path,
+      entry_point:        @expr string,
+      @default("output") output_label: @code string,
+      stdout_path:        @can_not_exist @no_relativize path,
+      stderr_path:        @can_not_exist @no_relativize path,
+      stdin_path:         @can_not_exist @no_relativize path,
+      environment:        set,
+      debug_subprocesses: bool,
+      @display_name("Remote")
+        remote: bool,
+      @expand_if("$.remote") @display_name("Deploy")
+        deploy: bool,
+      @expand_if("$.remote") @display_name("Address")
+        address: string,
+      @no_revert @no_expand @default(0) enabled: bool,
+    }
+    ```
+  }
+}
+
+@struct D_SchemaInfo:
+{
+  `String8 name`;
+  `String8 schema`;
+}
+
+@data(D_SchemaInfo) d_entity_schema_info_table:
+{
+  @expand(D_EntityEvalSchemaTable a) `{str8_lit_comp("$(a.name)"), str8_lit_comp("$(a.schema)")}`,
+}
+
+@data(D_SchemaInfo) d_cfg_schema_info_table:
+{
+  @expand(D_CfgEvalSchemaTable a) `{str8_lit_comp("$(a.name)"), str8_lit_comp("$(a.schema)")}`,
+}

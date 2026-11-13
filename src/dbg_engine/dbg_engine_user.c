@@ -1388,14 +1388,7 @@ d_push_active_dbgi_key_list(Arena *arena)
 //- rjf: per-run caches
 
 internal U64
-d_cached_rip_from_thread(D_Entity *thread)
-{
-  U64 result = d_cached_rip_from_thread_unwind(thread, 0);
-  return result;
-}
-
-internal U64
-d_cached_rip_from_thread_unwind(D_Entity *thread, U64 unwind_count)
+d_cached_ip_from_thread_unwind(D_Entity *thread, U64 unwind_count)
 {
   U64 result = 0;
   if(unwind_count == 0)
@@ -1595,7 +1588,7 @@ d_tick(Arena *arena, D_TargetArray *targets, D_BreakpointArray *breakpoints, D_P
       D_Event *event = &event_n->v;
       log_infof("ctrl_event:\n{\n");
       log_infof("kind: \"%S\"\n", d_string_from_event_kind(event->kind));
-      log_infof("entity_id: %u\n", event->entity_id);
+      log_infof("os_id: %u\n", event->os_id);
       switch(event->kind)
       {
         default:{}break;
@@ -1696,7 +1689,9 @@ d_tick(Arena *arena, D_TargetArray *targets, D_BreakpointArray *breakpoints, D_P
         D_Entity *thread = threads.v[idx];
         if(thread->is_frozen)
         {
-          str8_list_push(scratch.arena, &strings, str8_struct(&thread->id));
+          str8_list_push(scratch.arena, &strings, str8_struct(&thread->handle.server_id));
+          str8_list_push(scratch.arena, &strings, str8_struct(&thread->handle.controller_kind));
+          str8_list_push(scratch.arena, &strings, str8_struct(&thread->os_id));
           str8_list_push(scratch.arena, &strings, str8_struct(&thread->is_frozen));
         }
       }
@@ -1713,8 +1708,7 @@ d_tick(Arena *arena, D_TargetArray *targets, D_BreakpointArray *breakpoints, D_P
     
     // rjf: join & hash to produce result
     String8 string = str8_list_join(scratch.arena, &strings, 0);
-    XXH128_hash_t hash = XXH3_128bits(string.str, string.size);
-    MemoryCopy(&ctrl_param_state_hash, &hash, sizeof(ctrl_param_state_hash));
+    ctrl_param_state_hash = u128_hash_from_str8(string);
   }
   
   //////////////////////////////
@@ -2187,8 +2181,8 @@ d_tick(Arena *arena, D_TargetArray *targets, D_BreakpointArray *breakpoints, D_P
           if(pid != 0)
           {
             D_Msg *msg = d_msg_list_push(scratch.arena, &ctrl_msgs);
-            msg->kind      = D_MsgKind_Attach;
-            msg->entity_id = pid;
+            msg->kind  = D_MsgKind_Attach;
+            msg->os_id = pid;
             MemoryCopyArray(msg->exception_code_filters, exception_code_filters);
             msg->auto_download_debug_info = auto_download_debug_info;
           }

@@ -532,7 +532,7 @@ rd_title_fstrs_from_ctrl_entity(Arena *arena, D_Entity *entity, B32 include_extr
       {
         dr_fstrs_push_new(arena, &result, &params, process_name, .font = rd_font_from_slot(RD_FontSlot_Main), .raster_flags = rd_raster_flags_from_slot(RD_FontSlot_Main), .color = process_color);
         dr_fstrs_push_new(arena, &result, &params, str8_lit(" "));
-        dr_fstrs_push_new(arena, &result, &params, push_str8f(arena, "(PID: %I64u)", process->id), .font = rd_font_from_slot(RD_FontSlot_Main), .raster_flags = rd_raster_flags_from_slot(RD_FontSlot_Main), .color = secondary_color, .size = ui_top_font_size()*0.9f);
+        dr_fstrs_push_new(arena, &result, &params, str8f(arena, "(PID: %I64u)", process->os_id), .font = rd_font_from_slot(RD_FontSlot_Main), .raster_flags = rd_raster_flags_from_slot(RD_FontSlot_Main), .color = secondary_color, .size = ui_top_font_size()*0.9f);
         dr_fstrs_push_new(arena, &result, &params, str8_lit(" / "), .color = secondary_color);
       }
     }
@@ -545,10 +545,10 @@ rd_title_fstrs_from_ctrl_entity(Arena *arena, D_Entity *entity, B32 include_extr
                     .color        = color);
   
   //- rjf: push PID
-  if(entity->kind == D_EntityKind_Process && entity->id != 0)
+  if(entity->kind == D_EntityKind_Process && entity->os_id != 0)
   {
-    dr_fstrs_push_new(arena, &result, &params, str8_lit(" "));
-    dr_fstrs_push_new(arena, &result, &params, push_str8f(arena, " (PID: %I64u)", entity->id), .font = rd_font_from_slot(RD_FontSlot_Main), .raster_flags = rd_raster_flags_from_slot(RD_FontSlot_Main), .color = secondary_color, .size = ui_top_font_size()*0.85f);
+    dr_fstrs_push_new(arena, &result, &params, s(" "));
+    dr_fstrs_push_new(arena, &result, &params, str8f(arena, " (PID: %I64u)", entity->os_id), .font = rd_font_from_slot(RD_FontSlot_Main), .raster_flags = rd_raster_flags_from_slot(RD_FontSlot_Main), .color = secondary_color, .size = ui_top_font_size()*0.85f);
   }
   
   //- rjf: threads get callstack extras
@@ -1346,7 +1346,7 @@ rd_code_slice(RD_CodeSliceParams *params, U64 *cursor, U64 *mark, S64 *preferred
   Temp scratch = scratch_begin(0, 0);
   D_Entity *selected_thread = d_entity_from_handle(rd_regs()->thread);
   D_Entity *selected_thread_process = d_entity_ancestor_from_kind(selected_thread, D_EntityKind_Process);
-  U64 selected_thread_rip_unwind_vaddr = d_cached_rip_from_thread_unwind(selected_thread, rd_regs()->unwind_count);
+  U64 selected_thread_rip_unwind_vaddr = d_cached_ip_from_thread_unwind(selected_thread, rd_regs()->unwind_count);
   D_Entity *selected_thread_module = d_module_from_process_vaddr(selected_thread_process, selected_thread_rip_unwind_vaddr);
   D_Event stop_event = d_ctrl_last_stop_event();
   D_Entity *stopper_thread = d_entity_from_handle(stop_event.entity);
@@ -1512,7 +1512,7 @@ rd_code_slice(RD_CodeSliceParams *params, U64 *cursor, U64 *mark, S64 *preferred
               continue;
             }
             U64 unwind_count = (thread == selected_thread) ? rd_regs()->unwind_count : 0;
-            U64 thread_rip_vaddr = d_cached_rip_from_thread_unwind(thread, unwind_count);
+            U64 thread_rip_vaddr = d_cached_ip_from_thread_unwind(thread, unwind_count);
             D_Entity *process = d_entity_ancestor_from_kind(thread, D_EntityKind_Process);
             D_Entity *module = d_module_from_process_vaddr(process, thread_rip_vaddr);
             DI_Key dbgi_key = d_dbgi_key_from_module(module);
@@ -1689,7 +1689,7 @@ rd_code_slice(RD_CodeSliceParams *params, U64 *cursor, U64 *mark, S64 *preferred
               continue;
             }
             U64 unwind_count = (thread == selected_thread) ? rd_regs()->unwind_count : 0;
-            U64 thread_rip_vaddr = d_cached_rip_from_thread_unwind(thread, unwind_count);
+            U64 thread_rip_vaddr = d_cached_ip_from_thread_unwind(thread, unwind_count);
             D_Entity *process = d_entity_ancestor_from_kind(thread, D_EntityKind_Process);
             D_Entity *module = d_module_from_process_vaddr(process, thread_rip_vaddr);
             DI_Key dbgi_key = d_dbgi_key_from_module(module);

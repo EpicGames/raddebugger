@@ -253,7 +253,7 @@ struct E2_Assets
 ////////////////////////////////
 //~ rjf: Evaluation Contexts
 
-typedef U64 E2_CtxID;
+typedef U256 E2_CtxID;
 
 typedef U32 E2_CtxFlags;
 enum
@@ -268,7 +268,6 @@ typedef struct E2_Ctx E2_Ctx;
 struct E2_Ctx
 {
   // rjf: base info
-  E2_CtxID id;
   E2_SpaceID space_id;
   E2_SpaceID reg_space_id;
   Arch arch;
@@ -537,6 +536,11 @@ read_only global E2_Expr e2_expr_nil = {0};
 read_only global E2_IRNode e2_irnode_nil = {0};
 
 ////////////////////////////////
+//~ rjf: Basics
+
+internal String8 e2_name_from_eval_op(RDI_EvalOp op);
+
+////////////////////////////////
 //~ rjf: Space -> Memory Map Helpers
 
 internal void e2_space_map_push(Arena *arena, E2_SpaceMap *map, E2_SpaceID space_id, Rng1U64 addr_range, void *data);
@@ -594,6 +598,10 @@ internal E2_TypeKey e2_type_key_zero(void);
 internal E2_TypeKey e2_type_key_basic(E2_TypeKind kind);
 internal E2_TypeKey e2_type_key_dbgi(E2_TypeKind kind, E2_DbgInfoID dbg_info_id, U32 type_idx);
 internal E2_TypeKey e2_type_key_reg(Arch arch, ARCH_RegCode reg_code);
+
+//- rjf: size -> int type key helper
+internal E2_TypeKey e2_uint_type_key_from_byte_size(U64 size);
+internal E2_TypeKey e2_sint_type_key_from_byte_size(U64 size);
 
 //- rjf: constructed type constructor
 internal E2_TypeKey e2_type_key_cons_(E2_ConsTypeParams *params);
@@ -663,6 +671,7 @@ internal void e2_expr_push_child_front(Arena *arena, E2_Expr *parent, E2_Expr *e
 
 internal E2_IRNode *e2_irnode(Arena *arena);
 internal E2_IRNode *e2_irnode_const_u64_or_smaller(Arena *arena, U64 u);
+internal E2_IRNode *e2_irnode_const_u64(Arena *arena, U64 u);
 internal E2_IRNode *e2_irnode_const_f32(Arena *arena, F32 f32);
 internal E2_IRNode *e2_irnode_const_f64(Arena *arena, F64 f64);
 internal E2_IRNode *e2_irnode_unary_op(Arena *arena, E2_TypeKey type_key, RDI_EvalOp op, E2_IRNode *operand);
@@ -671,6 +680,9 @@ internal E2_IRNode *e2_irnode_resolve_to_value(Arena *arena, E2_IRNode *expr);
 internal E2_IRNode *e2_irnode_truncate(Arena *arena, E2_IRNode *expr, E2_TypeKey dst_type_key);
 internal E2_IRNode *e2_irnode_convert_if_possible(Arena *arena, E2_IRNode *expr, E2_TypeKey dst_type_key);
 internal E2_IRNode *e2_irnode_type(Arena *arena, E2_TypeKey type_key);
+internal E2_IRNode *e2_irnode_set_u128(Arena *arena, String8 set_name, U128 value);
+internal E2_IRNode *e2_irnode_set_u256(Arena *arena, String8 set_name, U256 value);
+internal E2_IRNode *e2_irnode_set_ctx_id(Arena *arena, E2_CtxID id);
 internal void e2_irnode_push_child_node(E2_IRNode *parent, E2_IRNodePtrNode *node);
 internal void e2_irnode_push_child(Arena *arena, E2_IRNode *parent, E2_IRNode *expr);
 

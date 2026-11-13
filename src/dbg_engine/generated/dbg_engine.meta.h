@@ -142,6 +142,13 @@ D_ExceptionCodeKind_LinuxSIGSYS,
 D_ExceptionCodeKind_COUNT,
 } D_ExceptionCodeKind;
 
+typedef struct D_SchemaInfo D_SchemaInfo;
+struct D_SchemaInfo
+{
+String8 name;
+String8 schema;
+};
+
 global B32 DEV_always_refresh = 0;
 global B32 DEV_simulate_lag = 0;
 global B32 DEV_draw_ui_text_pos = 0;
@@ -171,6 +178,8 @@ extern OperatingSystem d_exception_code_kind_os_table[69];
 extern String8 d_exception_code_kind_display_string_table[69];
 extern String8 d_exception_code_kind_lowercase_code_string_table[69];
 extern B8 d_exception_code_kind_default_enable_table[69];
+extern D_SchemaInfo d_entity_schema_info_table[4];
+extern D_SchemaInfo d_cfg_schema_info_table[2];
 
 C_LINKAGE_END
 

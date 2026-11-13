@@ -68,6 +68,11 @@ cfg_node_ptr_array_from_list(Arena *arena, CFG_NodePtrList *list)
 internal void
 cfg_schema_table_insert(Arena *arena, CFG_SchemaTable *table, String8 name, MD_Node *schema)
 {
+  if(table->slots_count == 0)
+  {
+    table->slots_count = 4096;
+    table->slots = push_array(arena, CFG_SchemaNode *, table->slots_count);
+  }
   U64 hash = u64_hash_from_str8(name);
   U64 slot_idx = hash%table->slots_count;
   CFG_SchemaNode *node = 0;

@@ -7,6 +7,25 @@
 #include "eval2/generated/eval2.meta.c"
 
 ////////////////////////////////
+//~ rjf: Basics
+
+internal String8
+e2_name_from_eval_op(RDI_EvalOp op)
+{
+  String8 result = {0};
+  switch(op)
+  {
+    default:{}break;
+#define X(name) case RDI_EvalOp_##name:{result = s(#name);}break;
+    RDI_EvalOp_XList
+#undef X
+    case E2_EvalOp_SetCtxID:{result = s("SetCtxID");}break;
+    case E2_EvalOp_LeafBytecode:{result = s("LeafBytecode");}break;
+  }
+  return result;
+}
+
+////////////////////////////////
 //~ rjf: Space -> Memory Map Helpers
 
 internal void
@@ -40,6 +59,7 @@ internal U64
 e2_space_map_read(E2_SpaceMap *map, E2_SpaceID space_id, Rng1U64 addr_range, void *out)
 {
   U64 result = 0;
+  if(map->slots_count != 0)
   {
     U64 hash = u64_hash_from_str8(str8_struct(&space_id));
     U64 slot_idx = hash%map->slots_count;
@@ -321,6 +341,22 @@ e2_cons_type_node_from_params(E2_ConsTypeParams *params)
   // rjf: if node wasn't found -> push into the map
   if(node == 0)
   {
+    // rjf: pick architecture
+    Arch arch = params->arch;
+    if(arch == Arch_Null)
+    {
+      arch = Arch_CURRENT;
+      for(E2_TypeKey k = params->direct; !e2_type_key_match(k, e2_type_key_zero()); k = e2_type_key_direct(k))
+      {
+        Arch k_arch = e2_arch_from_type_key(k);
+        if(k_arch != Arch_Null)
+        {
+          arch = k_arch;
+          break;
+        }
+      }
+    }
+    
     // rjf: form node ID
     map->id_gen += 1;
     U64 id = map->id_gen;
@@ -330,6 +366,7 @@ e2_cons_type_node_from_params(E2_ConsTypeParams *params)
     SLLQueuePush_N(content_slot->first, content_slot->last, node, content_next);
     node->id = id;
     MemoryCopyStruct(&node->params, params);
+    node->params.arch = arch;
     node->params.name = str8_copy(map->arena, node->params.name);
     if(node->params.param_types != 0)
     {
@@ -606,6 +643,44 @@ e2_type_key_reg(Arch arch, ARCH_RegCode reg_code)
   return key;
 }
 
+//- rjf: size -> int type key helper
+
+internal E2_TypeKey
+e2_uint_type_key_from_byte_size(U64 size)
+{
+  E2_TypeKey type_key = {E2_TypeKeyKind_Null};
+  switch(size)
+  {
+    default:{}break;
+    case 1:{type_key = e2_type_key_basic(E2_TypeKind_U8);}break;
+    case 2:{type_key = e2_type_key_basic(E2_TypeKind_U16);}break;
+    case 4:{type_key = e2_type_key_basic(E2_TypeKind_U32);}break;
+    case 8:{type_key = e2_type_key_basic(E2_TypeKind_U64);}break;
+    case 16:{type_key = e2_type_key_basic(E2_TypeKind_U128);}break;
+    case 32:{type_key = e2_type_key_basic(E2_TypeKind_U256);}break;
+    case 64:{type_key = e2_type_key_basic(E2_TypeKind_U512);}break;
+  }
+  return type_key;
+}
+
+internal E2_TypeKey
+e2_sint_type_key_from_byte_size(U64 size)
+{
+  E2_TypeKey type_key = {E2_TypeKeyKind_Null};
+  switch(size)
+  {
+    default:{}break;
+    case 1:{type_key = e2_type_key_basic(E2_TypeKind_S8);}break;
+    case 2:{type_key = e2_type_key_basic(E2_TypeKind_S16);}break;
+    case 4:{type_key = e2_type_key_basic(E2_TypeKind_S32);}break;
+    case 8:{type_key = e2_type_key_basic(E2_TypeKind_S64);}break;
+    case 16:{type_key = e2_type_key_basic(E2_TypeKind_S128);}break;
+    case 32:{type_key = e2_type_key_basic(E2_TypeKind_S256);}break;
+    case 64:{type_key = e2_type_key_basic(E2_TypeKind_S512);}break;
+  }
+  return type_key;
+}
+
 //- rjf: constructed type constructor
 
 internal E2_TypeKey
@@ -851,10 +926,18 @@ e2_name_from_type_key(Arena *arena, E2_TypeKey k)
     }break;
     case E2_TypeKeyKind_DbgInfo:
     {
-      E2_DbgInfo *dbgi = e2_dbgi_from_type_key(k);
-      U32 type_idx = e2_dbgi_type_idx_from_key(k);
-      RDI_TypeNode *type_node = rdi_element_from_name_idx(dbgi->rdi, TypeNodes, type_idx);
-      result = fully_qualified_str8_from_rdi_type(arena, dbgi->rdi, type_node);
+      E2_TypeKind kind = e2_type_kind_from_key(k);
+      if(E2_TypeKind_FirstBasic <= kind && kind <= E2_TypeKind_LastBasic)
+      {
+        result = e2_type_kind_basic_string_table[kind];
+      }
+      else
+      {
+        E2_DbgInfo *dbgi = e2_dbgi_from_type_key(k);
+        U32 type_idx = e2_dbgi_type_idx_from_key(k);
+        RDI_TypeNode *type_node = rdi_element_from_name_idx(dbgi->rdi, TypeNodes, type_idx);
+        result = fully_qualified_str8_from_rdi_type(arena, dbgi->rdi, type_node);
+      }
     }break;
     case E2_TypeKeyKind_Cons:
     {
@@ -901,6 +984,7 @@ e2_string_from_type_key(Arena *arena, E2_TypeKey key)
       String8 name = e2_name_from_type_key(scratch.arena, key);
       U64 prec = top_task->prec;
       B32 did_direct = top_task->did_direct;
+      B32 need_direct = 1;
       
       //- rjf: push string for this task
       U32 next_prec = 0;
@@ -925,6 +1009,7 @@ e2_string_from_type_key(Arena *arena, E2_TypeKey key)
             str8_list_pushf(scratch.arena, &lhs, "%S ", keyword);
           }
           str8_list_push(scratch.arena, &lhs, name);
+          need_direct = 0;
         }break;
         case E2_TypeKind_Ptr:
         if(!did_direct)
@@ -967,7 +1052,6 @@ e2_string_from_type_key(Arena *arena, E2_TypeKey key)
         }
         else
         {
-          U64 count = e2_array_count_from_type_key(key);
           if(prec == 1)
           {
             str8_list_push(scratch.arena, &lhs, s("("));
@@ -989,7 +1073,7 @@ e2_string_from_type_key(Arena *arena, E2_TypeKey key)
       }
       
       //- rjf: did direct, or we don't have a direct key? -> we're done with this type, pop
-      if(did_direct || e2_type_key_match(direct, e2_type_key_zero()))
+      if(did_direct || !need_direct || e2_type_key_match(direct, e2_type_key_zero()))
       {
         Task *popped = top_task;
         SLLStackPop(top_task);
@@ -1163,7 +1247,11 @@ e2_type_key_direct(E2_TypeKey k)
       {
         direct_type_idx = type_node->bitfield.direct_type_idx;
       }
-      result = e2_type_key_dbgi(e2_type_kind_from_rdi(type_node->kind), dbgi_id, direct_type_idx);
+      RDI_TypeNode *direct_type_node = rdi_element_from_name_idx(dbgi->rdi, TypeNodes, direct_type_idx);
+      if(direct_type_idx != 0)
+      {
+        result = e2_type_key_dbgi(e2_type_kind_from_rdi(direct_type_node->kind), dbgi_id, direct_type_idx);
+      }
     }break;
     case E2_TypeKeyKind_Cons:
     {
@@ -1384,6 +1472,19 @@ e2_irnode_const_u64_or_smaller(Arena *arena, U64 u)
 }
 
 internal E2_IRNode *
+e2_irnode_const_u64(Arena *arena, U64 u)
+{
+  E2_IRNode *e = e2_irnode(arena);
+  {
+    e->mode = E2_Mode_Value;
+    e->val.u64 = u;
+    e->op = RDI_EvalOp_ConstU64;
+    e->type_key = e2_type_key_basic(E2_TypeKind_S64);
+  }
+  return e;
+}
+
+internal E2_IRNode *
 e2_irnode_const_f32(Arena *arena, F32 f32)
 {
   E2_IRNode *e = e2_irnode(arena);
@@ -1553,6 +1654,37 @@ e2_irnode_type(Arena *arena, E2_TypeKey type_key)
   expr->type_key = type_key;
   expr->mode = E2_Mode_Type;
   return expr;
+}
+
+internal E2_IRNode *
+e2_irnode_set_u128(Arena *arena, String8 set_name, U128 value)
+{
+  E2_IRNode *expr = e2_irnode(arena);
+  expr->type_key = e2_type_key_cons(E2_TypeKind_Set, .name = set_name);
+  expr->mode     = E2_Mode_Value;
+  expr->op       = RDI_EvalOp_ConstU128;
+  expr->val.u128 = value;
+  return expr;
+}
+
+internal E2_IRNode *
+e2_irnode_set_u256(Arena *arena, String8 set_name, U256 value)
+{
+  E2_IRNode *expr = e2_irnode(arena);
+  expr->type_key = e2_type_key_cons(E2_TypeKind_Set, .name = set_name);
+  expr->mode     = E2_Mode_Value;
+  expr->op       = RDI_EvalOp_ConstU256;
+  expr->val.u256 = value;
+  return expr;
+}
+
+internal E2_IRNode *
+e2_irnode_set_ctx_id(Arena *arena, E2_CtxID id)
+{
+  E2_IRNode *irtree = e2_irnode(arena);
+  irtree->op = E2_EvalOp_SetCtxID;
+  irtree->val.u256 = id;
+  return irtree;
 }
 
 internal void
@@ -2175,42 +2307,47 @@ e2_parse_from_string(Arena *arena, E2_ParseState *state, B32 identifier_is_type,
     //- rjf: parse left-hand-side type operators
     if(expr != &e2_expr_nil || state->top_task->do_type_ancestors)
     {
-      U64 trailing_symbol_off = off;
-      if(e2_try_token(lang, string, E2_TokenKind_Symbol, s(""), &trailing_symbol_off, &token))
+      for(B32 type_ops_done = 0; !type_ops_done;)
       {
-        B32 parent_looking_for_type = (state->top_task->expr_kind != E2_ExprKind_Null &&
-                                       state->top_task->child_count == 0 &&
-                                       e2_expr_kind_is_first_operand_type_maybe_table[state->top_task->expr_kind]);
-        B32 is_expr_type = (e2_expr_kind_is_type_expr_table[expr->kind] || parent_looking_for_type);
-        if(is_expr_type || state->top_task->do_type_ancestors)
+        type_ops_done = 1;
+        U64 trailing_symbol_off = off;
+        if(e2_try_token(lang, string, E2_TokenKind_Symbol, s(""), &trailing_symbol_off, &token))
         {
-          // rjf: token string -> operator kind
-          E2_ExprKind expr_kind = E2_ExprKind_Null;
+          B32 parent_looking_for_type = (state->top_task->expr_kind != E2_ExprKind_Null &&
+                                         state->top_task->child_count == 0 &&
+                                         e2_expr_kind_is_first_operand_type_maybe_table[state->top_task->expr_kind]);
+          B32 is_expr_type = (e2_expr_kind_is_type_expr_table[expr->kind] || parent_looking_for_type);
+          if(is_expr_type || state->top_task->do_type_ancestors)
           {
-            String8 token_string = str8_substr(string, token.range);
-            for EachIndex(idx, lang_info->expr_kind_parse_infos_count)
+            // rjf: token string -> operator kind
+            E2_ExprKind expr_kind = E2_ExprKind_Null;
             {
-              E2_ExprKindParseInfo *op_info = &lang_info->expr_kind_parse_infos[idx];
-              if(e2_expr_kind_is_type_expr_table[op_info->expr_kind] &&
-                 op_info->sep.size == 0 &&
-                 str8_match(op_info->post, token_string, 0))
+              String8 token_string = str8_substr(string, token.range);
+              for EachIndex(idx, lang_info->expr_kind_parse_infos_count)
               {
-                expr_kind = op_info->expr_kind;
-                break;
+                E2_ExprKindParseInfo *op_info = &lang_info->expr_kind_parse_infos[idx];
+                if(e2_expr_kind_is_type_expr_table[op_info->expr_kind] &&
+                   op_info->sep.size == 0 &&
+                   str8_match(op_info->post, token_string, 0))
+                {
+                  expr_kind = op_info->expr_kind;
+                  break;
+                }
               }
             }
-          }
-          
-          // rjf: got an expression kind -> build new operator node
-          if(expr_kind != E2_ExprKind_Null)
-          {
-            E2_Expr *op_expr = e2_expr(arena, expr_kind);
-            if(expr != &e2_expr_nil)
+            
+            // rjf: got an expression kind -> build new operator node
+            if(expr_kind != E2_ExprKind_Null)
             {
-              e2_expr_push_child(arena, op_expr, expr);
+              E2_Expr *op_expr = e2_expr(arena, expr_kind);
+              if(expr != &e2_expr_nil)
+              {
+                e2_expr_push_child(arena, op_expr, expr);
+              }
+              expr = op_expr;
+              off = trailing_symbol_off;
+              type_ops_done = 0;
             }
-            expr = op_expr;
-            off = trailing_symbol_off;
           }
         }
       }
@@ -2288,6 +2425,12 @@ e2_parse_from_string(Arena *arena, E2_ParseState *state, B32 identifier_is_type,
           }
         }
         
+        // rjf: explicit syntactic closer -> precedence is unlimited
+        if(closer.size != 0)
+        {
+          precedence = max_S64;
+        }
+        
         // rjf: get trailing identifier
         String8 trailing_identifier_string = {0};
         if(trailing_identifier)
@@ -2341,7 +2484,7 @@ e2_parse_from_string(Arena *arena, E2_ParseState *state, B32 identifier_is_type,
     }
     
     //- rjf: attach formed expressions to parent task; pop task if done.
-    if(expr != &e2_expr_nil && closer_found)
+    if(expr != &e2_expr_nil)
     {
       //- rjf: if this task has a type ancestor: our finished expression is
       // actually a descendant of that. we want to push our finished expression
@@ -2353,17 +2496,6 @@ e2_parse_from_string(Arena *arena, E2_ParseState *state, B32 identifier_is_type,
         expr = state->top_task->next_type_ancestor;
         state->top_task->next_type_ancestor = &e2_expr_nil;
         e2_expr_push_child_front(arena, expr, type_descendant);
-      }
-      
-      //- rjf: consume expected splitters
-      if(state->top_task->child_count >= state->top_task->splitter_min_child_count &&
-         state->top_task->expected_splitter.size != 0 &&
-         state->top_task->child_count < state->top_task->child_count_target)
-      {
-        if(!e2_try_token(lang, string, E2_TokenKind_Symbol, state->top_task->expected_splitter, &off, 0) && state->top_task->splitter_is_required)
-        {
-          e2_msgf(arena, &parse.msgs, r1u64(off, off), "Expected `%S`.", state->top_task->expected_splitter);
-        }
       }
       
       //- rjf: gather finished expression to current task; increase task child count
@@ -2381,6 +2513,17 @@ e2_parse_from_string(Arena *arena, E2_ParseState *state, B32 identifier_is_type,
         state->top_task->child_count += 1;
       }
       
+      //- rjf: consume expected splitters
+      if(state->top_task->child_count >= state->top_task->splitter_min_child_count &&
+         state->top_task->expected_splitter.size != 0 &&
+         state->top_task->child_count < state->top_task->child_count_target)
+      {
+        if(!e2_try_token(lang, string, E2_TokenKind_Symbol, state->top_task->expected_splitter, &off, 0) && state->top_task->splitter_is_required)
+        {
+          e2_msgf(arena, &parse.msgs, r1u64(off, off), "Expected `%S`.", state->top_task->expected_splitter);
+        }
+      }
+      
       //- rjf: determine if the task above a parenthesized sub-expression is expecting a type
       B32 parent_looking_for_type = 0;
       if(!state->top_task->do_type_ancestors &&
@@ -2395,27 +2538,11 @@ e2_parse_from_string(Arena *arena, E2_ParseState *state, B32 identifier_is_type,
       //- rjf: determine if first child of a parenthesized sub-expression is a type
       B32 parenthesized_child_is_type = 0;
       if(!state->top_task->do_type_ancestors && !parent_looking_for_type && state->top_task->child_count == 1 &&
-         str8_match(state->top_task->expected_closer, s(")"), 0))
+         str8_match(state->top_task->expected_closer, s(")"), 0) &&
+         closer_found)
       {
         E2_Expr *expr = state->top_task->first_child->v;
-        parenthesized_child_is_type = 1;
-        for(E2_Expr *e = expr, *next_e; e != &e2_expr_nil && parenthesized_child_is_type; e = next_e)
-        {
-          next_e = &e2_expr_nil;
-          if(e->kind != E2_ExprKind_TypeIdentifier &&
-             e->kind != E2_ExprKind_Ptr)
-          {
-            parenthesized_child_is_type = 0;
-          }
-          if(parenthesized_child_is_type && e->child_count == 1)
-          {
-            next_e = e->first_child->v;
-          }
-          else if(e->child_count > 1)
-          {
-            parenthesized_child_is_type = 0;
-          }
-        }
+        parenthesized_child_is_type = e2_expr_kind_is_type_expr_table[expr->kind];
       }
       
       //- rjf: maybe a cast? -> decide if subsequent tokens form a cast operand
@@ -2475,7 +2602,7 @@ e2_parse_from_string(Arena *arena, E2_ParseState *state, B32 identifier_is_type,
       //- rjf: closer found, completed child count == 1 & completed child is a
       // type evaluation, *and* if the next token cannot form a chaining expression,
       // then this is cast. push a task to fill the operand
-      B32 is_cast = (subsequent_tokens_form_cast_operand);
+      B32 is_cast = (subsequent_tokens_form_cast_operand && lang_info->type_prefix_casts);
       if(!parent_looking_for_type && is_cast)
       {
         // rjf: pop the sub-task for the type expression
@@ -2511,9 +2638,9 @@ e2_parse_from_string(Arena *arena, E2_ParseState *state, B32 identifier_is_type,
         }
       }
       
-      //- rjf: caller-provided info completes a task, *or* closer found,
+      //- rjf: caller-provided info completes a task, *or* explicit closer found,
       // *or* task child count hits limit -> complete this subtree
-      else if(state->top_task->child_count >= state->top_task->child_count_target)
+      else if(state->top_task->child_count >= state->top_task->child_count_target || (closer_found && state->top_task->expected_closer.size != 0))
       {
         E2_ParseTask *completed_task = state->top_task;
         
@@ -2574,7 +2701,7 @@ e2_parse_from_string(Arena *arena, E2_ParseState *state, B32 identifier_is_type,
     }
     
     //- rjf: we're done if we couldn't make any more progress.
-    if(start_task == state->top_task && (off >= string.size || (off == start_off && !e2_parse_status_is_caller_request(parse.status))))
+    if(state->top_task == 0 || (start_task == state->top_task && (off >= string.size || (off == start_off && !e2_parse_status_is_caller_request(parse.status) && expr != &e2_expr_nil))))
     {
       done = 1;
       if(expr != &e2_expr_nil)
@@ -3642,6 +3769,9 @@ e2_bytecode_from_irnode(Arena *arena, E2_IRNode *irnode)
           {
             default:{}break;
             case E2_EvalOp_SetCtxID:
+            {
+              ctrlbits = RDI_EVAL_CTRLBITS(32, 0, 0);
+            }break;
             case E2_EvalOp_LeafBytecode:
             {
               ctrlbits = RDI_EVAL_CTRLBITS(8, 0, 0);
@@ -3700,7 +3830,7 @@ e2_interp_from_bytecode(Arena *arena, E2_InterpState *state, E2_SpaceMap *space_
         {
           ctrlbits = rdi_eval_op_ctrlbits_table[op];
         }break;
-        case E2_EvalOp_SetCtxID:{ctrlbits = RDI_EVAL_CTRLBITS(8, 0, 0);}break;
+        case E2_EvalOp_SetCtxID:{ctrlbits = RDI_EVAL_CTRLBITS(32, 0, 0);}break;
       }
       
       //- rjf: ctrlbits -> push/pop/decode count
@@ -3741,7 +3871,8 @@ e2_interp_from_bytecode(Arena *arena, E2_InterpState *state, E2_SpaceMap *space_
         case E2_EvalOp_SetCtxID:
         {
           interp.status = E2_InterpStatus_NewCtxID;
-          interp.ctx_id = decode_val.u64;
+          interp.ctx_id = decode_val.u256;
+          done = 1;
         }break;
         
         case RDI_EvalOp_Stop:
@@ -4201,7 +4332,7 @@ BinOp(U, u64, u64, symbol);
           default:{}break;
           case E2_InterpStatus_MissedSpaceRead:
           {
-            e2_msgf(arena, &interp.msgs, r1u64(state->bytecode_off, state->bytecode_off+1), "Couldn't read address range [0x%I64x, 0x%I64x) in space 0x%I64x.",
+            e2_msgf(arena, &interp.msgs, r1u64(state->bytecode_off, state->bytecode_off+1), "Couldn't read address range [0x%I64x, 0x%I64x) in space 0x%x.",
                     interp.missed_read_space_addr_range.min,
                     interp.missed_read_space_addr_range.max,
                     interp.space_id);

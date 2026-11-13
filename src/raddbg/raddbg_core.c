@@ -717,9 +717,9 @@ rd_ctrl_entity_from_eval_space(E_Space space)
      space.kind == RD_EvalSpaceKind_MetaUnattachedProcess)
   {
     D_Handle handle;
-    handle.server_id      = (U32)((space.u64s[0] & 0xffffffff00000000ull) >> 32);
-    handle.controller_kind = (U32)((space.u64s[0] & 0x00000000ffffffffull) >> 0);
-    handle.entity_id       = space.u64s[1];
+    handle.server_id        = (U32)((space.u64s[0] & 0xffffffff00000000ull) >> 32);
+    handle.controller_kind  = (U32)((space.u64s[0] & 0x00000000ffffffffull) >> 0);
+    handle.control_id       = space.u64s[1];
     entity = d_entity_from_handle(handle);
   }
   return entity;
@@ -733,7 +733,7 @@ rd_eval_space_from_ctrl_entity(D_Entity *entity, E_SpaceKind kind)
   {
     space = e_space_make(kind);
     space.u64s[0] = (((U64)entity->handle.server_id) << 32) | (((U64)entity->handle.controller_kind) << 0);
-    space.u64s[1] = entity->handle.entity_id;
+    space.u64s[1] = entity->handle.control_id;
   }
   return space;
 }
@@ -1018,7 +1018,7 @@ rd_eval_space_read(E_Space space, void *out, E_SpaceRangeInfo *out_range_info, R
         }
         else if(str8_match(child_schema->string, str8_lit("id"), 0))
         {
-          read_data = str8_struct(&entity->id);
+          read_data = str8_struct(&entity->os_id);
         }
         else if(str8_match(child_schema->string, str8_lit("active"), 0))
         {
@@ -2103,13 +2103,13 @@ rd_view_ui(Rng2F32 rect)
             {
               CFG_Node *pid_cfg = cfg_node_child_from_string_or_alloc(rd_state->cfg, locked, s("pid"));
               U64 pid = u64_from_str8(pid_cfg->first->string, 10);
-              D_Entity *process = d_process_from_id(pid);
+              D_Entity *process = d_process_from_os_id(pid);
               if(process == &d_entity_nil)
               {
                 D_Entity *current_process = d_entity_from_handle(rd_regs()->process);
                 if(current_process != &d_entity_nil)
                 {
-                  cfg_node_new_replacef(rd_state->cfg, pid_cfg, "%I64u", current_process->id);
+                  cfg_node_new_replacef(rd_state->cfg, pid_cfg, "%I64u", current_process->os_id);
                 }
                 else
                 {
@@ -2836,7 +2836,7 @@ rd_view_ui(Rng2F32 rect)
                       CFG_Node *mid = cfg_node_new(rd_state->cfg, locked, s("mid"));
                       cfg_node_newf(rd_state->cfg, mid, "%I64u", entity->handle.server_id);
                       CFG_Node *pid = cfg_node_new(rd_state->cfg, locked, s("pid"));
-                      cfg_node_newf(rd_state->cfg, pid, "%I64u", entity->id);
+                      cfg_node_newf(rd_state->cfg, pid, "%I64u", entity->os_id);
                       CFG_Node *addr = cfg_node_new(rd_state->cfg, locked, s("addr"));
                       cfg_node_newf(rd_state->cfg, addr, "0x%I64x", row->eval.value.u64);
                       CFG_Node *type = cfg_node_new(rd_state->cfg, locked, s("type"));
@@ -4560,16 +4560,16 @@ rd_view_ui(Rng2F32 rect)
                                 if(top_task->last_child == 0)
                                 {
                                   String8 type_string = e2_string_from_type_key(scratch.arena, irnode->type_key);
-                                  String8 op_name = {0};
-                                  if(irnode->op < RDI_EvalOp_COUNT)
+                                  String8 op_name = e2_name_from_eval_op(irnode->op);
+                                  String8 mode_ext = {0};
+                                  if(top_task == &start_task)
                                   {
-                                    op_name = rdi_string_from_eval_op(scratch.arena, irnode->op);
+                                    mode_ext = (irnode->mode == E2_Mode_Type ? s(" *type*") :
+                                                irnode->mode == E2_Mode_Value ? s(" *value*") :
+                                                irnode->mode == E2_Mode_Address ? s(" *address*") :
+                                                s(""));
                                   }
-                                  else
-                                  {
-                                    op_name = str8f(scratch.arena, "#%x", irnode->op);
-                                  }
-                                  ui_labelf("%.*s%S (type: %S)", top_task->depth, indent.str, op_name, type_string);
+                                  ui_labelf("%.*s%S (type: %S)%S", top_task->depth, indent.str, op_name, e2_type_key_match(irnode->type_key, e2_type_key_zero()) ? s("none") : type_string, mode_ext);
                                 }
                                 
                                 // rjf: try to push a child
@@ -4611,14 +4611,61 @@ rd_view_ui(Rng2F32 rect)
                             {
                               ui_spacer(ui_em(1.f, 1.f));
                               UI_TagF("weak") ui_label(s("--- Bytecode ---"));
-                              String8 bytecode_string = rdi_string_from_bytecode(scratch.arena, rdi_arch_from_arch(Arch_CURRENT), eval.bytecode);
-                              ui_label(bytecode_string);
+                              String8 bytecode = eval.bytecode;
+                              for(U64 off = 0; off < bytecode.size;)
+                              {
+                                Temp scratch = scratch_begin(0, 0);
+                                U64 start_off = off;
+                                
+                                //- rjf: read next opcode
+                                RDI_EvalOp op = 0;
+                                off += str8_deserial_read_struct(bytecode, off, &op);
+                                
+                                //- rjf: opcode -> ctrl bits
+                                U16 ctrlbits = 0;
+                                switch(op)
+                                {
+                                  default:
+                                  if(op < RDI_EvalOp_COUNT)
+                                  {
+                                    ctrlbits = rdi_eval_op_ctrlbits_table[op];
+                                  }break;
+                                  case E2_EvalOp_SetCtxID:
+                                  {
+                                    ctrlbits = RDI_EVAL_CTRLBITS(32, 0, 0);
+                                  }break;
+                                }
+                                
+                                //- rjf: ctrlbits -> push/pop/decode count
+                                U64 decode_size = RDI_DECODEN_FROM_CTRLBITS(ctrlbits);
+                                U64 push_count = RDI_PUSHN_FROM_CTRLBITS(ctrlbits);
+                                U64 pop_count = RDI_POPN_FROM_CTRLBITS(ctrlbits);
+                                
+                                //- rjf: do extra decode
+                                String8 decode_data = str8_substr(bytecode, r1u64(off, off+decode_size));
+                                E2_Val decode_val = {0};
+                                MemoryCopy(&decode_val, decode_data.str, Min(sizeof(decode_val), decode_data.size));
+                                RDI_EvalTypeGroup type_group = (RDI_EvalTypeGroup)decode_val.u512.u8[0];
+                                U64 op_arithmetic_size = (U64)decode_val.u512.u8[1];
+                                off += decode_size;
+                                
+                                //- rjf: label
+                                String8 op_name = e2_name_from_eval_op(op);
+                                ui_labelf("%S%s0x%I64x%s", op_name, (decode_size != 0 ? " (" : ""), decode_val.u64, (decode_size != 0 ? ")" : ""));
+                                
+                                scratch_end(scratch);
+                                if(off == start_off)
+                                {
+                                  break;
+                                }
+                              }
                             }
                             
                             // rjf: log value
                             {
                               ui_spacer(ui_em(1.f, 1.f));
                               UI_TagF("weak") ui_label(s("--- Value ---"));
+                              ui_labelf("U128: %I64u %I64u (0x%I64x 0x%I64x)", eval.val.u128.u64[0], eval.val.u128.u64[1], eval.val.u128.u64[0], eval.val.u128.u64[1]);
                               ui_labelf("U64: %I64u (0x%I64x)", eval.val.u64, eval.val.u64);
                               ui_labelf("F32: %f", eval.val.f32);
                               ui_labelf("F64: %f", eval.val.f64);
@@ -4651,7 +4698,7 @@ rd_view_ui(Rng2F32 rect)
                                 CFG_Node *mid = cfg_node_new(rd_state->cfg, locked, s("mid"));
                                 cfg_node_newf(rd_state->cfg, mid, "%I64u", entity->handle.server_id);
                                 CFG_Node *pid = cfg_node_new(rd_state->cfg, locked, s("pid"));
-                                cfg_node_newf(rd_state->cfg, pid, "%I64u", entity->id);
+                                cfg_node_newf(rd_state->cfg, pid, "%I64u", entity->os_id);
                                 CFG_Node *addr = cfg_node_new(rd_state->cfg, locked, s("addr"));
                                 cfg_node_newf(rd_state->cfg, addr, "0x%I64x", row->eval.value.u64);
                                 CFG_Node *type = cfg_node_new(rd_state->cfg, locked, s("type"));
@@ -6161,7 +6208,7 @@ rd_window_frame(void)
               if(ctrl_entity->kind == D_EntityKind_Thread ||
                  ctrl_entity->kind == D_EntityKind_Process)
               {
-                UI_TagF("weak") UI_FlagsAdd(UI_BoxFlag_DrawBorder) ui_labelf("ID: %i", (U32)ctrl_entity->id);
+                UI_TagF("weak") UI_FlagsAdd(UI_BoxFlag_DrawBorder) ui_labelf("ID: %i", (U32)ctrl_entity->os_id);
               }
             }
           }
@@ -6360,7 +6407,7 @@ rd_window_frame(void)
           ID(panel);
           ID(view);
 #undef ID
-#define Handle(name) ui_labelf("%s: [0x%x, 0x%x, 0x%I64x]", #name, (regs->name).server_id, (regs->name).controller_kind, (regs->name).entity_id)
+#define Handle(name) ui_labelf("%s: [0x%x, 0x%x, 0x%I64x]", #name, (regs->name).server_id, (regs->name).controller_kind, (regs->name).control_id)
           Handle(server);
           Handle(process);
           Handle(module);
@@ -12549,10 +12596,9 @@ rd_frame(void)
     Arch arch = thread->arch;
     E_Space primary_space = rd_eval_space_from_ctrl_entity(process, D_EvalSpaceKind_Entity);
     U64 unwind_count = rd_regs()->unwind_count;
-    U64 rip_vaddr = d_cached_rip_from_thread_unwind(thread, unwind_count);
+    U64 rip_vaddr = d_cached_ip_from_thread_unwind(thread, unwind_count);
     D_Entity *module = d_module_from_process_vaddr(process, rip_vaddr);
     U64 rip_voff = d_voff_from_vaddr(module, rip_vaddr);
-    U64 tls_root_vaddr = thread->tls_root_vaddr;
     ProfEnd();
     
     ////////////////////////////
@@ -13030,7 +13076,7 @@ rd_frame(void)
           }
           if(kind == D_EntityKind_Process)
           {
-            String8 pid_string = str8f(scratch.arena, "process_%I64u", entity->id);
+            String8 pid_string = str8f(scratch.arena, "process_%I64u", entity->os_id);
             e_string2expr_map_insert(scratch.arena, macro_map, pid_string, expr);
           }
         }
@@ -13539,7 +13585,7 @@ rd_frame(void)
     ////////////////////////////
     //- rjf: begin evaluation @eval2
     //
-    d_eval_cache_select(rd_state->eval2_cache, 0);
+    d_eval_cache_select(rd_state->eval2_cache, rd_base_regs()->thread, rd_base_regs()->unwind_count, 0);
     {
       E2_Assets *assets = push_array(scratch.arena, E2_Assets, 1);
       {
@@ -14066,8 +14112,8 @@ rd_frame(void)
                 D_Entity *thread = threads.v[idx];
                 str8_list_pushf(scratch.arena, &state_parts, "  {\n");
                 str8_list_pushf(scratch.arena, &state_parts, "   name: \"%S\"\n", escaped_from_raw_str8(scratch.arena, thread->string));
-                str8_list_pushf(scratch.arena, &state_parts, "   id:   %I64u\n", thread->id);
-                str8_list_pushf(scratch.arena, &state_parts, "   ip:   0x%I64x\n", d_cached_rip_from_thread(thread));
+                str8_list_pushf(scratch.arena, &state_parts, "   id:   %I64u\n", thread->os_id);
+                str8_list_pushf(scratch.arena, &state_parts, "   ip:   0x%I64x\n", d_cached_ip_from_thread(thread->handle));
                 str8_list_pushf(scratch.arena, &state_parts, "  }\n");
               }
               str8_list_pushf(scratch.arena, &state_parts, " }\n");
@@ -15586,7 +15632,7 @@ rd_frame(void)
             }
             if(vaddr == 0)
             {
-              vaddr = d_cached_rip_from_thread_unwind(thread, rd_regs()->unwind_count);
+              vaddr = d_cached_ip_from_thread_unwind(thread, rd_regs()->unwind_count);
             }
             rd_cmd(RD_CmdKind_FindCodeLocation, .process = d_entity_ancestor_from_kind(thread, D_EntityKind_Process)->handle, .vaddr = vaddr, .prefer_disasm = 1);
           }break;
@@ -15752,7 +15798,7 @@ rd_frame(void)
             D_Entity *process = d_entity_ancestor_from_kind(thread, D_EntityKind_Process);
             U64 unwind_index = rd_regs()->unwind_count;
             U64 inline_depth = rd_regs()->inline_depth;
-            U64 rip_vaddr = d_cached_rip_from_thread_unwind(thread, unwind_index);
+            U64 rip_vaddr = d_cached_ip_from_thread_unwind(thread, unwind_index);
             
             //- rjf: determine if any disassembly is open
             B32 any_disasm_is_open = 0;
