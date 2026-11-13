@@ -567,14 +567,6 @@ internal DMN_Handle d_dmn_from_handle(D_Handle handle);
 internal D_Handle d_handle_from_dmn(D_ServerID server_id, DMN_Handle handle);
 internal D_Handle d_dump_handle_make(D_ServerID server_id, U64 id);
 internal D_Handle d_handle_from_server_id(D_ServerID server_id);
-internal U128 d_eval_u128_from_handle(D_Handle handle);
-internal D_Handle d_handle_from_eval_u128(U128 u128);
-internal U256 d_eval_u256_from_handle_idx(D_Handle handle, U64 idx);
-internal D_Handle d_handle_from_eval_u256(U256 u256);
-internal U64 d_idx_from_eval_u256(U256 u256);
-internal E2_CtxID d_eval_ctx_id_from_kind_handle_idx(D_EvalCtxIDKind kind, D_Handle handle, U64 idx);
-internal D_Handle d_handle_from_eval_ctx_id(E2_CtxID id);
-internal U64 d_idx_from_eval_ctx_id(E2_CtxID id);
 
 ////////////////////////////////
 //~ rjf: Trap Type Functions
@@ -631,6 +623,7 @@ internal D_EntityArray d_entity_array_from_list(Arena *arena, D_EntityList *list
 
 //- rjf: entity context (entity group read-only) functions
 internal D_Entity *d_entity_from_handle(D_Handle handle);
+internal D_Entity *d_entity_from_id(D_EntityID id);
 internal D_Entity *d_entity_child_from_kind(D_Entity *parent, D_EntityKind kind);
 internal D_Entity *d_entity_ancestor_from_kind(D_Entity *entity, D_EntityKind kind);
 internal D_Entity *d_process_from_entity(D_Entity *entity);

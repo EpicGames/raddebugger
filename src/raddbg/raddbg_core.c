@@ -4630,10 +4630,7 @@ rd_view_ui(Rng2F32 rect)
                                   {
                                     ctrlbits = rdi_eval_op_ctrlbits_table[op];
                                   }break;
-                                  case E2_EvalOp_SetCtxID:
-                                  {
-                                    ctrlbits = RDI_EVAL_CTRLBITS(32, 0, 0);
-                                  }break;
+                                  case E2_EvalOp_SetSpaceID:{ctrlbits = RDI_EVAL_CTRLBITS(8, 0, 0);}break;
                                 }
                                 
                                 //- rjf: ctrlbits -> push/pop/decode count
@@ -13585,7 +13582,7 @@ rd_frame(void)
     ////////////////////////////
     //- rjf: begin evaluation @eval2
     //
-    d_eval_cache_select(rd_state->eval2_cache, rd_base_regs()->thread, rd_base_regs()->unwind_count, 0);
+    d_eval_cache_select(rd_state->eval2_cache, d_entity_from_handle(rd_base_regs()->thread)->id, rd_base_regs()->unwind_count, 0);
     {
       E2_Assets *assets = push_array(scratch.arena, E2_Assets, 1);
       {

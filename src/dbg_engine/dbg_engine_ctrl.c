@@ -253,72 +253,6 @@ d_handle_from_server_id(D_ServerID server_id)
   return handle;
 }
 
-internal U128
-d_eval_u128_from_handle(D_Handle handle)
-{
-  U128 result;
-  StaticAssert(sizeof(handle) == sizeof(result), handle_size_check);
-  MemoryCopy(&result, &handle, sizeof(handle));
-  return result;
-}
-
-internal D_Handle
-d_handle_from_eval_u128(U128 u128)
-{
-  D_Handle result;
-  StaticAssert(sizeof(u128) == sizeof(result), handle_size_check);
-  MemoryCopy(&result, &u128, sizeof(result));
-  return result;
-}
-
-internal U256
-d_eval_u256_from_handle_idx(D_Handle handle, U64 idx)
-{
-  U256 result = {0};
-  result.u128[0] = d_eval_u128_from_handle(handle);
-  result.u128[1].u64[0] = idx;
-  return result;
-}
-
-internal D_Handle
-d_handle_from_eval_u256(U256 u256)
-{
-  D_Handle handle = d_handle_from_eval_u128(u256.u128[0]);
-  return handle;
-}
-
-internal U64
-d_idx_from_eval_u256(U256 u256)
-{
-  U64 idx = u256.u128[1].u64[0];
-  return idx;
-}
-
-internal E2_CtxID
-d_eval_ctx_id_from_kind_handle_idx(D_EvalCtxIDKind kind, D_Handle handle, U64 idx)
-{
-  E2_CtxID result;
-  StaticAssert(sizeof(result) == sizeof(U256), ctx_id_size_check);
-  result.u128[0].u64[0] = kind;
-  result.u128[0].u64[1] = idx;
-  result.u128[1] = d_eval_u128_from_handle(handle);
-  return result;
-}
-
-internal D_Handle
-d_handle_from_eval_ctx_id(E2_CtxID id)
-{
-  D_Handle handle = d_handle_from_eval_u128(id.u128[1]);
-  return handle;
-}
-
-internal U64
-d_idx_from_eval_ctx_id(E2_CtxID id)
-{
-  U64 idx = id.u128[0].u64[1];
-  return idx;
-}
-
 ////////////////////////////////
 //~ rjf: Trap Type Functions
 
@@ -829,10 +763,28 @@ d_entity_from_handle(D_Handle handle)
     U64 hash = d_hash_from_handle(handle);
     U64 slot_idx = hash%d_entity_ctx->hash_slots_count;
     D_EntityHashSlot *slot = &d_entity_ctx->hash_slots[slot_idx];
-    D_EntityHashNode *node = 0;
     for(D_EntityHashNode *n = slot->first; n != 0; n = n->next)
     {
       if(d_handle_match(n->entity->handle, handle))
+      {
+        entity = n->entity;
+        break;
+      }
+    }
+  }
+  return entity;
+}
+
+internal D_Entity *
+d_entity_from_id(D_EntityID id)
+{
+  D_Entity *entity = &d_entity_nil;
+  {
+    U64 slot_idx = id%d_entity_ctx->id_slots_count;
+    D_EntityHashSlot *slot = &d_entity_ctx->id_slots[slot_idx];
+    for(D_EntityHashNode *n = slot->first; n != 0; n = n->next)
+    {
+      if(id == n->entity->id)
       {
         entity = n->entity;
         break;
@@ -1001,6 +953,8 @@ d_entity_ctx_rw_store_alloc(void)
   store->arena = arena;
   store->ctx.hash_slots_count = 1024;
   store->ctx.hash_slots = push_array(arena, D_EntityHashSlot, store->ctx.hash_slots_count);
+  store->ctx.id_slots_count = 1024;
+  store->ctx.id_slots = push_array(arena, D_EntityHashSlot, store->ctx.id_slots_count);
   D_Entity *root = store->ctx.root = d_entity_alloc(store, &d_entity_nil, D_EntityKind_Root, Arch_Null, d_handle_zero(), 0);
   D_Entity *local_server = d_entity_alloc(store, root, D_EntityKind_Server, Arch_CURRENT, d_handle_from_server_id(D_ServerID_LocalHost), 0);
   Temp scratch = scratch_begin(0, 0);

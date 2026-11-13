@@ -19,7 +19,7 @@ e2_name_from_eval_op(RDI_EvalOp op)
 #define X(name) case RDI_EvalOp_##name:{result = s(#name);}break;
     RDI_EvalOp_XList
 #undef X
-    case E2_EvalOp_SetCtxID:{result = s("SetCtxID");}break;
+    case E2_EvalOp_SetSpaceID:{result = s("SetSpaceID");}break;
     case E2_EvalOp_LeafBytecode:{result = s("LeafBytecode");}break;
   }
   return result;
@@ -1657,6 +1657,17 @@ e2_irnode_type(Arena *arena, E2_TypeKey type_key)
 }
 
 internal E2_IRNode *
+e2_irnode_set_u64(Arena *arena, String8 set_name, U64 value)
+{
+  E2_IRNode *expr = e2_irnode(arena);
+  expr->type_key = e2_type_key_cons(E2_TypeKind_Set, .name = set_name);
+  expr->mode     = E2_Mode_Value;
+  expr->op       = RDI_EvalOp_ConstU64;
+  expr->val.u64  = value;
+  return expr;
+}
+
+internal E2_IRNode *
 e2_irnode_set_u128(Arena *arena, String8 set_name, U128 value)
 {
   E2_IRNode *expr = e2_irnode(arena);
@@ -1679,11 +1690,11 @@ e2_irnode_set_u256(Arena *arena, String8 set_name, U256 value)
 }
 
 internal E2_IRNode *
-e2_irnode_set_ctx_id(Arena *arena, E2_CtxID id)
+e2_irnode_set_space_id(Arena *arena, E2_SpaceID id)
 {
   E2_IRNode *irtree = e2_irnode(arena);
-  irtree->op = E2_EvalOp_SetCtxID;
-  irtree->val.u256 = id;
+  irtree->op = E2_EvalOp_SetSpaceID;
+  irtree->val.u64 = id;
   return irtree;
 }
 
@@ -3768,14 +3779,8 @@ e2_bytecode_from_irnode(Arena *arena, E2_IRNode *irnode)
           else switch(ir->op)
           {
             default:{}break;
-            case E2_EvalOp_SetCtxID:
-            {
-              ctrlbits = RDI_EVAL_CTRLBITS(32, 0, 0);
-            }break;
-            case E2_EvalOp_LeafBytecode:
-            {
-              ctrlbits = RDI_EVAL_CTRLBITS(8, 0, 0);
-            }break;
+            case E2_EvalOp_SetSpaceID:   {ctrlbits = RDI_EVAL_CTRLBITS(8, 0, 0);}break;
+            case E2_EvalOp_LeafBytecode: {ctrlbits = RDI_EVAL_CTRLBITS(8, 0, 0);}break;
           }
           U64 decode_byte_count = RDI_DECODEN_FROM_CTRLBITS(ctrlbits);
           U64 op_size = 1 + decode_byte_count;
@@ -3830,7 +3835,7 @@ e2_interp_from_bytecode(Arena *arena, E2_InterpState *state, E2_SpaceMap *space_
         {
           ctrlbits = rdi_eval_op_ctrlbits_table[op];
         }break;
-        case E2_EvalOp_SetCtxID:{ctrlbits = RDI_EVAL_CTRLBITS(32, 0, 0);}break;
+        case E2_EvalOp_SetSpaceID:{ctrlbits = RDI_EVAL_CTRLBITS(8, 0, 0);}break;
       }
       
       //- rjf: ctrlbits -> push/pop/decode count
@@ -3868,10 +3873,10 @@ e2_interp_from_bytecode(Arena *arena, E2_InterpState *state, E2_SpaceMap *space_
           interp.status = E2_InterpStatus_UnsupportedOp;
         }break;
         
-        case E2_EvalOp_SetCtxID:
+        case E2_EvalOp_SetSpaceID:
         {
-          interp.status = E2_InterpStatus_NewCtxID;
-          interp.ctx_id = decode_val.u256;
+          interp.status = E2_InterpStatus_NewSpaceID;
+          interp.space_id = decode_val.u64;
           done = 1;
         }break;
         

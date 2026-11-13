@@ -42,6 +42,8 @@
 //~ rjf: ID Types
 
 typedef U64 D_MsgID;
+typedef U32 D_EntityID;
+typedef U64 D_FrameID;
 typedef U32 D_ServerID;
 typedef U32 D_ControllerKind;
 typedef enum D_ControllerKindEnum
@@ -69,6 +71,10 @@ D_ControllerIDEnum;
 
 #define d_packet_msg_id(ring_id, lower32) (((U64)(ring_id)<<32)|(lower32&0xffffffff))
 #define d_packet_ring_id_from_msg_id(msg_id) (((msg_id)&0xffffffff00000000ull)>>32)
+
+#define d_frame_id(entity_id, unwind_idx) ((((U64)entity_id)<<32)|((unwind_idx)&0xffffffff))
+#define d_entity_id_from_frame_id(frame_id) (((frame_id)&0xffffffff00000000ull)>>32)
+#define d_unwind_idx_from_frame_id(frame_id) (((frame_id)&0xffffffffull)>>0)
 
 ////////////////////////////////
 //~ rjf: Entity Handle Types
@@ -110,6 +116,7 @@ typedef U8 D_SpaceKind;
 typedef enum D_SpaceKindEnum
 {
   D_SpaceKind_Null,
+  D_SpaceKind_EntityMetadata,
   D_SpaceKind_Memory,
   D_SpaceKind_Registers,
   D_SpaceKind_ContentKey,
@@ -119,9 +126,10 @@ D_SpaceKindEnum;
 
 #define d_space_kind_from_id(id)             (((id)&0xff00000000000000ull)>>56)
 #define d_index_from_space_id(id)            (d_space_kind_from_id(id) == D_SpaceKind_Registers ? (((id)&0x00ffffff00000000ull)>>32) : 0)
-#define d_entity_id_from_space_id(id)        ((d_space_kind_from_id(id) == D_SpaceKind_Registers || d_space_kind_from_id(id) == D_SpaceKind_Memory) ? ((id)&0xffffffffull) : 0)
+#define d_entity_id_from_space_id(id)        ((d_space_kind_from_id(id) == D_SpaceKind_Registers || d_space_kind_from_id(id) == D_SpaceKind_Memory || d_space_kind_from_id(id) == D_SpaceKind_EntityMetadata) ? ((id)&0xffffffffull) : 0)
 #define d_content_key_id_from_space_id(id)   (d_space_kind_from_id(id) == D_SpaceKind_ContentKey ? ((id)&0x00ffffffffffffffull) : 0)
 
+#define d_entity_metadata_space_id(entity_id) ((((U64)D_SpaceKind_EntityMetadata)<<56)|((entity_id)&0xffffffffull))
 #define d_memory_space_id(entity_id) ((((U64)D_SpaceKind_Memory)<<56)|(entity_id&0xffffffffull))
 #define d_registers_space_id(entity_id, unwind_index) ((((U64)D_SpaceKind_Registers)<<56)|(((unwind_index)&0xffffffull)<<32)|((entity_id)&0xffffffffull))
 #define d_content_key_space_id(content_key_id) ((((U64)D_SpaceKind_ContentKey)<<56)|((content_key_id)&0x00ffffffffffffffull))
@@ -152,7 +160,7 @@ struct D_Eval
   E2_Expr *expr;
   E2_IRNode *irtree;
   String8 bytecode;
-  E2_CtxID ctx_id;
+  E2_SpaceID space_id;
   E2_Val val;
   E2_MsgList msgs;
 };
@@ -179,8 +187,8 @@ struct D_EvalCache
   
   // rjf: per evaluation phase context
   U64 async_endt_us;
-  D_Handle selected_thread;
-  U64 selected_unwind_idx;
+  D_EntityID selected_thread;
+  U32 selected_unwind_idx;
   
   // rjf: evaluation phase reset marker
   U64 arena_eval_start_pos;
@@ -250,8 +258,6 @@ struct D_BreakpointList
 
 ////////////////////////////////
 //~ rjf: Entity Types
-
-typedef U32 D_EntityID;
 
 typedef struct D_Entity D_Entity;
 struct D_Entity
@@ -518,17 +524,17 @@ internal void d_locals_map_artifact_destroy(AC_Artifact artifact);
 internal D_String2NumTable *d_locals_map_from_dbgi_key_voff(Access *access, DI_Key dbgi_key, U64 voff, U64 endt_us);
 
 //- rjf: eval building helpers
-internal E2_Val d_eval_val_from_bytecode(Arena *arena, String8 bytecode, E2_CtxID *ctx_id_out, E2_MsgList *msgs_out);
-internal E2_Val d_eval_val_from_irtree(Arena *arena, E2_IRNode *irtree, E2_CtxID *ctx_id_out, E2_MsgList *msgs_out);
-internal D_Handle d_handle_from_irtree(Arena *arena, E2_IRNode *irtree, E2_MsgList *msgs_out);
+internal E2_Val d_eval_val_from_bytecode(Arena *arena, String8 bytecode, E2_SpaceID *space_id_out, E2_MsgList *msgs_out);
+internal E2_Val d_eval_val_from_irtree(Arena *arena, E2_IRNode *irtree, E2_SpaceID *space_id_out, E2_MsgList *msgs_out);
+internal D_Entity *d_entity_from_irtree(Arena *arena, E2_IRNode *irtree, E2_MsgList *msgs_out);
 internal ARCH_RegCode d_eval_reg_code_from_arch_string(Arch arch, String8 string);
-internal E2_IRNode *d_eval_irtree_from_arch_regcode(Arena *arena, D_Handle thread, U64 frame_idx, Arch arch, ARCH_RegCode reg_code);
+internal E2_IRNode *d_eval_irtree_from_arch_regcode(Arena *arena, D_EntityID thread_id, U64 frame_idx, Arch arch, ARCH_RegCode reg_code);
 internal E2_IRNode *d_eval_irtree_from_location(Arena *arena, RDI_Parsed *rdi, RDI_Location location, U64 ctx_voff);
-internal E2_IRNode *d_eval_irtree_from_thread_unwind_idx_local_string(Arena *arena, D_Handle thread, U64 unwind_idx, String8 name);
+internal E2_IRNode *d_eval_irtree_from_thread_unwind_idx_local_string(Arena *arena, D_Entity *thread, U64 unwind_idx, String8 name);
 
 //- rjf: eval cache operations
 internal D_EvalCache *d_eval_cache_alloc(void);
-internal void d_eval_cache_select(D_EvalCache *cache, D_Handle selected_thread, U64 selected_unwind_idx, U64 async_endt_us);
+internal void d_eval_cache_select(D_EvalCache *cache, D_EntityID selected_thread, U32 selected_unwind_idx, U64 async_endt_us);
 internal D_EvalID d_eval_push_parent(D_EvalID id);
 internal D_EvalID d_eval_pop_parent(void);
 internal D_Eval d_eval_from_leaf_identifier(String8 identifier, String8List qualifiers);
