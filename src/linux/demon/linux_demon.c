@@ -2250,13 +2250,35 @@ dmn_ctrl_run(Arena *arena, DMN_CtrlCtx *ctx, DMN_RunCtrls *ctrls)
                   U64 ip = lnx_dmn_ip_from_thread(thread);
                   DMN_Handle process_handle = lnx_dmn_handle_from_process(process);
                   
+                  //- rjf: only rewind traps installed by the debugger. The previous byte
+                  // may be 0xcc in an immediate, displacement, or alignment padding.
+                  B32 is_debugger_trap = 0;
+                  for EachNode(n, DMN_TrapChunkNode, ctrls->traps.first)
+                  {
+                    for EachIndex(n_idx, n->count)
+                    {
+                      DMN_Trap *trap = n->v+n_idx;
+                      if(trap->flags == 0 && dmn_handle_match(trap->process, process_handle) && trap->vaddr == ip - bytes_per_trap)
+                      {
+                        is_debugger_trap = 1;
+                      }
+                    }
+                  }
+                  for EachNode(active_trap, LNX_DMN_ActiveTrap, process->ctx->first_probe_trap)
+                  {
+                    if(active_trap->good && active_trap->trap->vaddr == ip - bytes_per_trap)
+                    {
+                      is_debugger_trap = 1;
+                    }
+                  }
+
                   //- rjf: check previous bytes against trap instruction. if this thread
                   // executed a trap, we need to roll back before continuing this thread.
                   // we CANNOT RELY on there being a subsequently-queued SIGTRAP.
                   U8 *hit_trap_bytes_maybe = push_array(scratch.arena, U8, arch_info->trap_instruction.size);
                   dmn_process_read(process_handle, r1u64(ip - arch_info->trap_instruction.size, ip), hit_trap_bytes_maybe);
                   String8 hit_trap_data_maybe = str8(hit_trap_bytes_maybe, arch_info->trap_instruction.size);
-                  if(str8_match(hit_trap_data_maybe, arch_info->trap_instruction, 0))
+                  if(is_debugger_trap && str8_match(hit_trap_data_maybe, arch_info->trap_instruction, 0))
                   {
                     lnx_dmn_thread_write_ip(thread, ip - arch_info->trap_instruction.size);
                   }
