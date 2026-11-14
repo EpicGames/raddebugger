@@ -1847,6 +1847,9 @@ dmn_ctrl_run(Arena *arena, DMN_CtrlCtx *ctx, DMN_RunCtrls *ctrls)
                   {
                     //- rjf: regular traps or breakpoints
                     case SI_KERNEL:
+                    case SI_USER:
+                    case SI_TKILL:
+                    case SI_QUEUE:
                     case TRAP_BRKPT:
                     {
                       //- rjf: unpack thread IP / process
