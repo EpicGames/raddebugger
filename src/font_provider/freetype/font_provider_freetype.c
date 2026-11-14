@@ -123,9 +123,9 @@ fp_raster(Arena *arena, FP_Handle handle, F32 size, FP_RasterFlags flags, String
         for(S32 col = 0; col < (S32)bmp->width; col += 1)
         {
           S32 x = atlas_write_x + left + col;
-          U64 off = (y*dim.x + x)*4;
-          if(off+4 <= atlas_size)
+          if(0 <= x && x < dim.x && 0 <= y && y < dim.y)
           {
+            U64 off = ((U64)y*dim.x + x)*4;
             atlas[off+0] = 255;
             atlas[off+1] = 255;
             atlas[off+2] = 255;
