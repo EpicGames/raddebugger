@@ -125,12 +125,12 @@ typedef enum D_SpaceKindEnum
 D_SpaceKindEnum;
 
 #define d_space_kind_from_id(id)             (((id)&0xff00000000000000ull)>>56)
-#define d_index_from_space_id(id)            (d_space_kind_from_id(id) == D_SpaceKind_Registers ? (((id)&0x00ffffff00000000ull)>>32) : 0)
+#define d_index_from_space_id(id)            ((d_space_kind_from_id(id) == D_SpaceKind_Registers || d_space_kind_from_id(id) == D_SpaceKind_Memory) ? (((id)&0x00ffffff00000000ull)>>32) : 0)
 #define d_entity_id_from_space_id(id)        ((d_space_kind_from_id(id) == D_SpaceKind_Registers || d_space_kind_from_id(id) == D_SpaceKind_Memory || d_space_kind_from_id(id) == D_SpaceKind_EntityMetadata) ? ((id)&0xffffffffull) : 0)
 #define d_content_key_id_from_space_id(id)   (d_space_kind_from_id(id) == D_SpaceKind_ContentKey ? ((id)&0x00ffffffffffffffull) : 0)
 
 #define d_entity_metadata_space_id(entity_id) ((((U64)D_SpaceKind_EntityMetadata)<<56)|((entity_id)&0xffffffffull))
-#define d_memory_space_id(entity_id) ((((U64)D_SpaceKind_Memory)<<56)|(entity_id&0xffffffffull))
+#define d_memory_space_id(entity_id, unwind_index) ((((U64)D_SpaceKind_Memory)<<56)|(((unwind_index)&0xffffffull)<<32)|(entity_id&0xffffffffull))
 #define d_registers_space_id(entity_id, unwind_index) ((((U64)D_SpaceKind_Registers)<<56)|(((unwind_index)&0xffffffull)<<32)|((entity_id)&0xffffffffull))
 #define d_content_key_space_id(content_key_id) ((((U64)D_SpaceKind_ContentKey)<<56)|((content_key_id)&0x00ffffffffffffffull))
 
@@ -489,10 +489,17 @@ struct D_String2NumNode
   U64 num;
 };
 
+typedef struct D_String2NumSlot D_String2NumSlot;
+struct D_String2NumSlot
+{
+  D_String2NumNode *first;
+  D_String2NumNode *last;
+};
+
 typedef struct D_String2NumTable D_String2NumTable;
 struct D_String2NumTable
 {
-  D_String2NumNode **slots;
+  D_String2NumSlot *slots;
   U64 slots_count;
 };
 
@@ -516,6 +523,7 @@ thread_static D_EvalCache *d_eval_cache = 0;
 //~ rjf: @eval2 Bundled Evaluation Path
 
 //- rjf: helpers
+internal void d_string2num_table_insert(Arena *arena, D_String2NumTable *map, String8 string, U64 num, B32 allow_duplicates);
 internal U64 d_num_from_string(D_String2NumTable *map, String8 string);
 
 //- rjf: async locals map building

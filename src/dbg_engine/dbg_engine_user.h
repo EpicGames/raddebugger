@@ -101,33 +101,6 @@ struct D_CmdList
 ////////////////////////////////
 //~ rjf: Main State Caches
 
-//- rjf: per-run tls-base-vaddr cache
-
-typedef struct D_RunTLSBaseCacheNode D_RunTLSBaseCacheNode;
-struct D_RunTLSBaseCacheNode
-{
-  D_RunTLSBaseCacheNode *hash_next;
-  D_Handle process;
-  U64 root_vaddr;
-  U64 rip_vaddr;
-  U64 tls_base_vaddr;
-};
-
-typedef struct D_RunTLSBaseCacheSlot D_RunTLSBaseCacheSlot;
-struct D_RunTLSBaseCacheSlot
-{
-  D_RunTLSBaseCacheNode *first;
-  D_RunTLSBaseCacheNode *last;
-};
-
-typedef struct D_RunTLSBaseCache D_RunTLSBaseCache;
-struct D_RunTLSBaseCache
-{
-  Arena *arena;
-  U64 slots_count;
-  D_RunTLSBaseCacheSlot *slots;
-};
-
 //- rjf: per-run locals cache
 
 typedef struct D_RunLocalsCacheNode D_RunLocalsCacheNode;
@@ -364,10 +337,6 @@ struct D_UserState
   C_Root output_log_root;
   
   // rjf: per-run caches
-  U64 tls_base_cache_reggen_idx;
-  U64 tls_base_cache_memgen_idx;
-  D_RunTLSBaseCache tls_base_caches[2];
-  U64 tls_base_cache_gen;
   U64 locals_cache_reggen_idx;
   D_RunLocalsCache locals_caches[2];
   U64 locals_cache_gen;

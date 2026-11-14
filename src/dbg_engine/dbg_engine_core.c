@@ -11,6 +11,35 @@
 
 //- rjf: helpers
 
+internal void
+d_string2num_table_insert(Arena *arena, D_String2NumTable *map, String8 string, U64 num, B32 allow_duplicates)
+{
+  if(map->slots_count != 0)
+  {
+    U64 hash = u64_hash_from_str8(string);
+    U64 slot_idx = hash%map->slots_count;
+    B32 can_insert = 1;
+    if(!allow_duplicates)
+    {
+      for EachNode(n, D_String2NumNode, map->slots[slot_idx].first)
+      {
+        if(str8_match(n->string, string, 0))
+        {
+          can_insert = 0;
+          break;
+        }
+      }
+    }
+    if(can_insert)
+    {
+      D_String2NumNode *n = push_array(arena, D_String2NumNode, 1);
+      SLLQueuePush(map->slots[slot_idx].first, map->slots[slot_idx].last, n);
+      n->string = string;
+      n->num = num;
+    }
+  }
+}
+
 internal U64
 d_num_from_string(D_String2NumTable *map, String8 string)
 {
@@ -19,7 +48,7 @@ d_num_from_string(D_String2NumTable *map, String8 string)
   {
     U64 hash = u64_hash_from_str8(string);
     U64 slot_idx = hash%map->slots_count;
-    for EachNode(n, D_String2NumNode, map->slots[slot_idx])
+    for EachNode(n, D_String2NumNode, map->slots[slot_idx].first)
     {
       if(str8_match(n->string, string, 0))
       {
@@ -54,27 +83,60 @@ d_locals_map_artifact_create(String8 key, B32 *cancel_signal, AC_Status *status_
     Arena *arena = 0;
     if(rdi != &rdi_parsed_nil)
     {
-      RDI_Scope *scope = rdi_scope_from_voff(rdi, voff);
-      if(scope->local_count != 0)
+      Temp scratch = scratch_begin(0, 0);
+      
+      //- rjf: gather all scopes to gather locals from
+      typedef struct Task Task;
+      struct Task
       {
-        // TODO(rjf): @eval2 parent scopes!
-        arena = arena_alloc();
-        table = push_array(arena, D_String2NumTable, 1);
-        table->slots_count = scope->local_count + scope->local_count/2;
-        table->slots = push_array(arena, D_String2NumNode *, table->slots_count);
-        for EachIndex(scope_local_idx, scope->local_count)
+        Task *next;
+        RDI_Scope *scope;
+      };
+      Task *first_task = 0;
+      Task *last_task = 0;
+      U64 total_local_count = 0;
+      {
+        RDI_Scope *seed_scopes[] = 
         {
-          U32 local_idx = scope->local_first + scope_local_idx;
-          RDI_Symbol *local = rdi_element_from_name_idx(rdi, LocalVariables, local_idx);
-          String8 name = str8_from_rdi_string_idx(rdi, local->name_string_idx);
-          U64 hash = u64_hash_from_str8(name);
-          U64 slot_idx = hash%table->slots_count;
-          D_String2NumNode *n = push_array(arena, D_String2NumNode, 1);
-          n->string = str8_copy(arena, name);
-          n->num = local_idx;
-          SLLStackPush(table->slots[slot_idx], n);
+          rdi_scope_from_voff(rdi, voff),
+          rdi_scope_from_voff(rdi, voff-1),
+        };
+        for EachElement(seed_scope_idx, seed_scopes)
+        {
+          RDI_Scope *nil_scope = rdi_element_from_name_idx(rdi, Scopes, 0);
+          for(RDI_Scope *s = seed_scopes[seed_scope_idx];
+              s != 0 && s != nil_scope;
+              s = rdi_element_from_name_idx(rdi, Scopes, s->parent_scope_idx))
+          {
+            total_local_count += s->local_count;
+            Task *task = push_array(scratch.arena, Task, 1);
+            task->scope = s;
+            SLLQueuePush(first_task, last_task, task);
+          }
         }
       }
+      
+      //- rjf: gather locals from all scopes
+      if(total_local_count != 0)
+      {
+        arena = arena_alloc();
+        table = push_array(arena, D_String2NumTable, 1);
+        table->slots_count = total_local_count + total_local_count/2;
+        table->slots = push_array(arena, D_String2NumSlot, table->slots_count);
+        for(Task *t = first_task; t != 0; t = t->next)
+        {
+          RDI_Scope *scope = t->scope;
+          for EachIndex(scope_local_idx, scope->local_count)
+          {
+            U32 local_idx = scope->local_first + scope_local_idx;
+            RDI_Symbol *local = rdi_element_from_name_idx(rdi, LocalVariables, local_idx);
+            String8 name = str8_from_rdi_string_idx(rdi, local->name_string_idx);
+            d_string2num_table_insert(arena, table, name, local_idx, 1);
+          }
+        }
+      }
+      
+      scratch_end(scratch);
     }
     
     // rjf: locals map -> artifact
@@ -171,7 +233,7 @@ d_space_read(E2_SpaceID space_id, void *out, Rng1U64 range)
             default:
             {
               D_CallStack call_stack = d_call_stack_from_thread(access, thread->handle, 1, d_eval_cache->async_endt_us);
-              U64 concrete_frame_idx = e_interpret_ctx->reg_unwind_count;
+              U64 concrete_frame_idx = unwind_idx;
               if(concrete_frame_idx < call_stack.concrete_frames_count)
               {
                 D_CallStackFrame *f = call_stack.concrete_frames[concrete_frame_idx];
@@ -267,7 +329,7 @@ d_eval_val_from_bytecode(Arena *arena, String8 bytecode, E2_SpaceID *space_id_ou
                 }
                 else
                 {
-                  state.selected_ctx.reg_space_id = d_memory_space_id(entity->id);
+                  state.selected_ctx.reg_space_id = d_memory_space_id(entity->id, unwind_idx);
                 }
               }
             }break;
@@ -471,7 +533,7 @@ d_eval_irtree_from_thread_unwind_idx_local_string(Arena *arena, D_Entity *thread
       E2_IRNode *compute_loc = d_eval_irtree_from_location(arena, rdi, lvar->location, ip_voff);
       if(compute_loc != &e2_irnode_nil)
       {
-        E2_SpaceID new_space_id = d_memory_space_id(thread->id);
+        E2_SpaceID new_space_id = d_memory_space_id(thread->id, unwind_idx);
         E2_IRNode *set_space_id = e2_irnode_set_space_id(arena, new_space_id);
         result = e2_irnode(arena);
         e2_irnode_push_child(arena, result, set_space_id);
@@ -582,6 +644,31 @@ d_eval_from_leaf_identifier(String8 identifier, String8List qualifiers)
       B32 resolved = 0;
       E2_TypeKey type_key = {E2_TypeKeyKind_Null};
       E2_IRNode *irtree = &e2_irnode_nil;
+      String8 bytecode = {0};
+      E2_MsgList msgs = {0};
+      E2_SpaceID space_id = 0;
+      E2_Val val = {0};
+      B32 need_bytecode = 1;
+      B32 need_val = 1;
+      
+      //- rjf: resolve as parent expression marker ($)
+      if(!resolved && str8_match(identifier, s("$"), 0) && d_eval_cache->top_parent->v != 0)
+      {
+        U64 parent_slot_idx = d_eval_cache->top_parent->v%d_eval_cache->slots_count;
+        for(D_EvalNode *n = d_eval_cache->string_slots[string_slot_idx].first; n != 0; n = n->string_next)
+        {
+          if(n->eval.id == d_eval_cache->top_parent->v)
+          {
+            need_bytecode = 0;
+            need_val = 0;
+            irtree   = n->eval.irtree;
+            bytecode = n->eval.bytecode;
+            msgs     = n->eval.msgs;
+            space_id = n->eval.space_id;
+            val      = n->eval.val;
+          }
+        }
+      }
       
       //- rjf: resolve as a local variable name (within the implicitly selected context)
       if(!resolved)
@@ -761,9 +848,23 @@ BasicCase("float64", F64)
 #undef Case
         if(entity_id != 0)
         {
+          resolved = 1;
           D_Entity *entity = d_entity_from_id(entity_id);
           irtree = e2_irnode_set_u64(d_eval_cache->arena, d_entity_kind_code_name_table[entity->kind], entity_id);
-          resolved = 1;
+        }
+      }
+      
+      //- rjf: resolve as current-thread accesses
+      if(!resolved)
+      {
+        if(str8_match(identifier, s("call_stack"), 0))
+        {
+          D_EntityID id = d_eval_cache->selected_thread;
+          if(id != 0)
+          {
+            resolved = 1;
+            irtree = e2_irnode_set_u64(d_eval_cache->arena, identifier, id);
+          }
         }
       }
       
@@ -776,8 +877,24 @@ BasicCase("float64", F64)
           U32 unwind_idx = d_eval_cache->selected_unwind_idx;
           if(id != 0)
           {
-            irtree = e2_irnode_set_u64(d_eval_cache->arena, s("call_stack_frame"), d_frame_id(id, unwind_idx));
             resolved = 1;
+            irtree = e2_irnode_set_u64(d_eval_cache->arena, s("call_stack_frame"), d_frame_id(id, unwind_idx));
+          }
+        }
+      }
+      
+      //- rjf: resolve as current-call-stack-frame collections
+      if(!resolved)
+      {
+        if(str8_match(identifier, s("locals"), 0) ||
+           str8_match(identifier, s("registers"), 0))
+        {
+          D_EntityID id = d_eval_cache->selected_thread;
+          U32 unwind_idx = d_eval_cache->selected_unwind_idx;
+          if(id != 0)
+          {
+            resolved = 1;
+            irtree = e2_irnode_set_u64(d_eval_cache->arena, identifier, d_frame_id(id, unwind_idx));
           }
         }
       }
@@ -797,12 +914,16 @@ BasicCase("float64", F64)
         }
         
         // rjf: irtree -> bytecode
-        String8 bytecode = e2_bytecode_from_irnode(d_eval_cache->arena, irtree);
+        if(need_bytecode)
+        {
+          bytecode = e2_bytecode_from_irnode(d_eval_cache->arena, irtree);
+        }
         
         // rjf: bytecode -> value
-        E2_MsgList msgs = {0};
-        E2_SpaceID space_id = 0;
-        E2_Val val = d_eval_val_from_bytecode(d_eval_cache->arena, bytecode, &space_id, &msgs);
+        if(need_val)
+        {
+          val = d_eval_val_from_bytecode(d_eval_cache->arena, bytecode, &space_id, &msgs);
+        }
         
         // rjf: generate an ID for this string
         d_eval_cache->id_gen += 1;
@@ -1061,8 +1182,8 @@ d_eval_from_string(String8 string)
                 else if(str8_match(type_name, s("registers"), 0))
                 {
                   E2_Val lhs_val = d_eval_val_from_irtree(d_eval_cache->arena, compile.irtree, 0, &msgs);
-                  D_EntityID lhs_entity_id = (lhs_val.u64&0xffffffff00000000ull)>>32;
-                  U32 lhs_idx = (lhs_val.u64&0xffffffff);
+                  D_EntityID lhs_entity_id = d_entity_id_from_frame_id(lhs_val.u64);
+                  U32 lhs_idx = d_unwind_idx_from_frame_id(lhs_val.u64);
                   D_Entity *lhs_entity = d_entity_from_id(lhs_entity_id);
                   if(lhs_entity->kind == D_EntityKind_Thread)
                   {
@@ -1078,11 +1199,11 @@ d_eval_from_string(String8 string)
                 else if(str8_match(type_name, s("locals"), 0))
                 {
                   E2_Val lhs_val = d_eval_val_from_irtree(d_eval_cache->arena, compile.irtree, 0, &msgs);
-                  D_EntityID lhs_entity_id = (lhs_val.u64&0xffffffff00000000ull)>>32;
+                  D_EntityID lhs_entity_id = d_entity_id_from_frame_id(lhs_val.u64);
                   D_Entity *lhs_entity = d_entity_from_id(lhs_entity_id);
                   if(lhs_entity->kind == D_EntityKind_Thread)
                   {
-                    U32 lhs_idx = (lhs_val.u64&0xffffffff);
+                    U32 lhs_idx = d_unwind_idx_from_frame_id(lhs_val.u64);
                     resolve_result = d_eval_irtree_from_thread_unwind_idx_local_string(d_eval_cache->arena, lhs_entity, lhs_idx, compile.member_name);
                   }
                 }
@@ -1206,16 +1327,11 @@ d_init(void)
       ARCH_Info *arch_info = arch_info_from_arch(arch);
       D_String2NumTable *table = &d_shared->arch_string2regcode_tables[arch];
       table->slots_count = arch_info->reg_code_count;
-      table->slots = push_array(arena, D_String2NumNode *, table->slots_count);
+      table->slots = push_array(arena, D_String2NumSlot, table->slots_count);
       for EachIndex(code, arch_info->reg_code_count)
       {
         String8 name = arch_info->reg_code_name_table[code];
-        U64 hash = u64_hash_from_str8(name);
-        U64 slot_idx = hash%table->slots_count;
-        D_String2NumNode *n = push_array(arena, D_String2NumNode, 1);
-        n->string = name;
-        n->num = code;
-        SLLStackPush(table->slots[slot_idx], n);
+        d_string2num_table_insert(arena, table, name, code, 0);
       }
     }
     
@@ -1338,10 +1454,6 @@ d_init(void)
     d_user_state->last_ctrl_status_arena = arena_alloc();
     
     // rjf: set up caches
-    for(U64 idx = 0; idx < ArrayCount(d_user_state->tls_base_caches); idx += 1)
-    {
-      d_user_state->tls_base_caches[idx].arena = arena_alloc();
-    }
     for(U64 idx = 0; idx < ArrayCount(d_user_state->locals_caches); idx += 1)
     {
       d_user_state->locals_caches[idx].arena = arena_alloc();

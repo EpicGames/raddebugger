@@ -1635,20 +1635,6 @@ d_tick(Arena *arena, D_TargetArray *targets, D_BreakpointArray *breakpoints, D_P
       log_infof("}\n\n");
     }
     
-    //- rjf: clear tls base cache
-    if((d_user_state->tls_base_cache_reggen_idx != new_reg_gen ||
-        d_user_state->tls_base_cache_memgen_idx != new_mem_gen) &&
-       !d_ctrl_targets_running())
-    {
-      d_user_state->tls_base_cache_gen += 1;
-      D_RunTLSBaseCache *cache = &d_user_state->tls_base_caches[d_user_state->tls_base_cache_gen%ArrayCount(d_user_state->tls_base_caches)];
-      arena_clear(cache->arena);
-      cache->slots_count = 0;
-      cache->slots = 0;
-      d_user_state->tls_base_cache_reggen_idx = new_reg_gen;
-      d_user_state->tls_base_cache_memgen_idx = new_mem_gen;
-    }
-    
     //- rjf: clear locals cache
     if(d_user_state->locals_cache_reggen_idx != new_reg_gen &&
        !d_ctrl_targets_running())

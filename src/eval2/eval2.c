@@ -1971,7 +1971,6 @@ e2_parse_from_string(Arena *arena, E2_ParseState *state, B32 identifier_is_type,
   for(B32 done = 0; !done;)
   {
     U64 start_off = off;
-    E2_ParseTask *start_task = state->top_task;
     S64 max_precedence = state->top_task->max_precedence;
     B32 type_ancestors = state->top_task->do_type_ancestors;
     B32 need_new_expr = (expr == &e2_expr_nil && !type_ancestors);
@@ -2496,6 +2495,7 @@ e2_parse_from_string(Arena *arena, E2_ParseState *state, B32 identifier_is_type,
     }
     
     //- rjf: attach formed expressions to parent task; pop task if done.
+    E2_ParseTask *start_task = state->top_task;
     if(expr != &e2_expr_nil)
     {
       //- rjf: if this task has a type ancestor: our finished expression is
@@ -2713,7 +2713,7 @@ e2_parse_from_string(Arena *arena, E2_ParseState *state, B32 identifier_is_type,
     }
     
     //- rjf: we're done if we couldn't make any more progress.
-    if(state->top_task == 0 || (start_task == state->top_task && (off >= string.size || (off == start_off && !e2_parse_status_is_caller_request(parse.status) && expr != &e2_expr_nil))))
+    if(state->top_task == 0 || (start_task == state->top_task && (off >= string.size || (off == start_off && !e2_parse_status_is_caller_request(parse.status)))))
     {
       done = 1;
       if(expr != &e2_expr_nil)
