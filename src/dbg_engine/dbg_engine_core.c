@@ -666,6 +666,7 @@ d_eval_from_leaf_identifier(String8 identifier, String8List qualifiers)
             msgs     = n->eval.msgs;
             space_id = n->eval.space_id;
             val      = n->eval.val;
+            break;
           }
         }
       }
@@ -687,6 +688,22 @@ d_eval_from_leaf_identifier(String8 identifier, String8List qualifiers)
         ARCH_RegCode reg_code = d_eval_reg_code_from_arch_string(arch, identifier);
         irtree = d_eval_irtree_from_arch_regcode(d_eval_cache->arena, thread->id, d_eval_cache->selected_unwind_idx, arch, reg_code);
         resolved = (irtree != &e2_irnode_nil);
+      }
+      
+      //- rjf: resolve as an implicit parent expression member name
+      if(!resolved && d_eval_cache->top_parent->v != 0)
+      {
+        U64 parent_slot_idx = d_eval_cache->top_parent->v%d_eval_cache->slots_count;
+        for(D_EvalNode *n = d_eval_cache->string_slots[string_slot_idx].first; n != 0; n = n->string_next)
+        {
+          if(n->eval.id == d_eval_cache->top_parent->v)
+          {
+            // TODO(rjf): we need to compile the equivalent of $.<identifier> here, *without*
+            // recursing into another sub-compilation. probably we want to extract member access
+            // compilation logic, and use that to build our ir tree?
+            break;
+          }
+        }
       }
       
       //- rjf: resolve as a debug info match

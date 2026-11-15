@@ -1213,6 +1213,9 @@ e2_type_deep_match(E2_TypeKey l, E2_TypeKey r)
           SLLStackPush(free_task, popped);
         }
       }
+      
+      // rjf: result <- hashes match
+      result = (l_hash == r_hash);
     }
     scratch_end(scratch);
   }
@@ -2009,6 +2012,7 @@ e2_parse_from_string(Arena *arena, E2_ParseState *state, B32 identifier_is_type,
       task->expected_closer = s(")");
       task->child_count_target = 1;
       task->max_precedence = max_S64;
+      task->macro_arg_names = state->top_task->macro_arg_names;
       SLLStackPush(state->top_task, task);
     }
     
@@ -2058,6 +2062,7 @@ e2_parse_from_string(Arena *arena, E2_ParseState *state, B32 identifier_is_type,
         task->expr_kind          = expr_kind;
         task->max_precedence     = precedence;
         task->expected_closer    = closer;
+        task->macro_arg_names = state->top_task->macro_arg_names;
         SLLStackPush(state->top_task, task);
       }
       
@@ -2128,6 +2133,7 @@ e2_parse_from_string(Arena *arena, E2_ParseState *state, B32 identifier_is_type,
         task->expr_kind = E2_ExprKind_Define;
         task->max_precedence = max_S64;
         task->identifier = identifier;
+        task->macro_arg_names = state->top_task->macro_arg_names;
         SLLStackPush(state->top_task, task);
       }
       
@@ -2173,6 +2179,7 @@ e2_parse_from_string(Arena *arena, E2_ParseState *state, B32 identifier_is_type,
             task->expr_kind = E2_ExprKind_Macro;
             task->max_precedence = max_S64;
             task->identifier = identifier;
+            task->macro_arg_names = state->top_task->macro_arg_names;
             SLLStackPush(state->top_task, task);
             
             // rjf: gather argument names
@@ -2238,12 +2245,13 @@ e2_parse_from_string(Arena *arena, E2_ParseState *state, B32 identifier_is_type,
           task->child_count_target = e2_expr_kind_target_operand_count_table[expr_kind];
           task->expr_kind = expr_kind;
           task->max_precedence = precedence;
+          task->macro_arg_names = state->top_task->macro_arg_names;
           SLLStackPush(state->top_task, task);
         }
       }
       
       // rjf: try to resolve it as a macro argument
-      if(qualifiers.node_count == 0 && !identifier_mapped && state->top_task->expr_kind == E2_ExprKind_Macro)
+      if(qualifiers.node_count == 0 && !identifier_mapped && state->top_task->macro_arg_names.node_count != 0)
       {
         U64 macro_arg_num = 0;
         {
@@ -2391,6 +2399,7 @@ e2_parse_from_string(Arena *arena, E2_ParseState *state, B32 identifier_is_type,
         task->max_precedence = max_S64;
         task->do_type_ancestors = 1;
         task->type_lhs = expr;
+        task->macro_arg_names = state->top_task->macro_arg_names;
         SLLStackPush(state->top_task, task);
         expr = &e2_expr_nil;
       }
@@ -2475,6 +2484,7 @@ e2_parse_from_string(Arena *arena, E2_ParseState *state, B32 identifier_is_type,
           task->expected_closer = closer;
           task->splitter_is_required = splitter_is_required;
           task->identifier = trailing_identifier_string;
+          task->macro_arg_names = state->top_task->macro_arg_names;
           SLLStackPush(state->top_task, task);
           off = trailing_symbol_off;
         }
@@ -2642,6 +2652,7 @@ e2_parse_from_string(Arena *arena, E2_ParseState *state, B32 identifier_is_type,
           task->child_count_target = e2_expr_kind_target_operand_count_table[E2_ExprKind_Cast];
           task->expr_kind = E2_ExprKind_Cast;
           task->max_precedence = 2;
+          task->macro_arg_names = state->top_task->macro_arg_names;
           SLLStackPush(state->top_task, task);
           expr = &e2_expr_nil;
           E2_ExprNode *child_n = push_array(arena, E2_ExprNode, 1);
@@ -2829,6 +2840,7 @@ e2_compile_from_expr(Arena *arena, E2_CompileState *state, E2_IRNode *resolve_re
       
       //- rjf: try to push a task for the next child, if we have one
       B32 new_child_task = 0;
+      if(e->kind != E2_ExprKind_Macro)
       {
         E2_ExprNode *next_child_node = 0;
         if(task->last_compiled_child_node != 0)
@@ -3546,6 +3558,12 @@ e2_compile_from_expr(Arena *arena, E2_CompileState *state, E2_IRNode *resolve_re
                 compile.irtree = lhs;
                 compile.identifier = e->string;
               }
+            }break;
+            
+            //- rjf: macros
+            case E2_ExprKind_Macro:
+            {
+              finished_root = &e2_irnode_nil;
             }break;
             
             //- rjf: conditionals

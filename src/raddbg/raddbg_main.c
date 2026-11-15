@@ -5,57 +5,60 @@
 //~ rjf: milestone TODO notes
 //
 // [ ] remote / multi-server debugging
+//  [ ] server abstraction
+//  [ ] gdb server support
+//  [ ] dll servers
+//  [ ] ui -> ui?
+//  [ ] ui (w/ debug info) -> ui (w/out debug info)?
+//  [ ] get all slow paths off UI thread - UI should ONLY ever access cached register blocks,
+//      cache lookup should NOT fill with slow path, etc.
+//
 // [ ] new evaluation system
+//  [ ] cfg -> dbg_engine; cfg evaluation
+//  [ ] type views
+//  [ ] macros (simple)
+//  [ ] call macros (e.g. f(a, b, c) = a + b * c, then later, f(1, 2, 3))
+//  [ ] eval trees (eval viz)
+//  [ ] implicit parent expr member identifier resolution (??? how to do this without introducing a new recursive step?)
+//  [ ] "tag" types, for viz metadata
+//  [ ] calls (views)
+//  [ ] calls (native)
+//  [ ] multiple-return-values (many collections, one expr)
+//  [ ] function type string generation
+//  [ ] alt. lang frontends
+//
 // [ ] natvis
-// [ ] plugins (backend abstraction, static builtins + dynamic)
-//   [ ] server / controller backend
-//   [ ] visualizer
 //
-// [ ] "someday" plugins (not immediately necessary)
-//   [ ] architecture
-//   [ ] disassembly
-//   [ ] unwinder
-//   [ ] converter
-
-////////////////////////////////
-//~ rjf: remote TODO notes
+// [ ] visualizer plugins / in-program hooks
 //
-// [ ] ui -> ui?
-// [ ] ui (w/ debug info) -> ui (w/out debug info)?
-// [ ] ctrl -> slim server?
+// [ ] type views pass
+//  [ ] 'filter' view - filter by names or values (maybe separate view for each?) in an expansion
+//   for this kind of thing, we need to be able to do full evaluation & expansion asynchronously,
+//   and the UI code needs to just ask for the filtered expansion async result. this means that
+//   cfg, debug entitites, etc. all must be accessible from background threads (can be stale obv.)
+//  [ ] 'sort' view
+//   same as above - we need to do the full expansion, sort, and use that for a new expansion.
+//  [ ] 'sum'/'min'/'max' views
+//   same as above - do the full expansion async, add each thing, then use that to produce a result.
+//  [ ] ptr graph
+//  [ ] list
+//  [ ] bitmap
+//  [ ] geo
+//  [ ] memory_size(...) view for quickly evaluating memory sizes
+// [ ] value coloring view in watch window, so you can quickly scroll & see values outside of a threshold
 //
-// [ ] get all slow paths off UI thread - UI should ONLY ever access cached register blocks,
-//     cache lookup should NOT fill with slow path, etc.
-
-////////////////////////////////
-//~ rjf: linux TODO notes
+// [ ] linux fixes
+//  [ ] 0x1b (SIGPROF) - need to ignore by default
+//  [ ] line stepping over function epilogue seems to end up just resuming in some cases
+//  [ ] function breakpoint resolution racing
+//  [ ] conditional breakpoint evaluation bug
+//  [ ] windowing
+//   [ ] wayland
+//  [ ] support
+//   [ ] .eh_frame unwinding without .eh_frame_hdr
+//  [ ] geometry rendering
 //
-// post initial alpha:
-// [ ] 0x1b (SIGPROF) - need to ignore by default
-// [ ] line stepping over function epilogue seems to end up just resuming in some cases
-// [ ] function breakpoint resolution racing
-// [ ] conditional breakpoint evaluation bug
-//
-// [ ] windowing
-//  [ ] wayland
-// [ ] support
-//  [ ] .eh_frame unwinding without .eh_frame_hdr
-// [ ] geometry rendering
-//
-// [x] recycling semaphore files - or alt strat?
-// [x] clipboard
-// [x] jai exes - busted call stacks / unwind info / paths?
-// [x] statically linked EXEs - busted unwinding
-// [x] statically linked EXEs, not parsing maps file correctly
-// [x] asan
-// [x] multithreaded stepping - trap hits reported on other threads.
-// [x] .so loading/debugging - missing debug info
-// [x] missing disasm
-// [x] control
-// [x] stale memory - things evaluating to stale values that are definitely not zero
-// [x] thread names
-// [x] rendering
-//  [x] bitmaps
+// [ ] editing
 
 ////////////////////////////////
 //~ rjf: evaluation system pass TODO notes
@@ -140,27 +143,13 @@
 //
 // [ ] core dump saving/loading
 //
-// [ ] memory_size(...) view for quickly evaluating memory sizes
-// [ ] value coloring view in watch window, so you can quickly scroll & see values outside of a threshold
-//
-// [x] more things should move to user data, but project-tagged - like
-//     recent files, watches?, etc.
-//
 // [ ] linux/dwarf fixes
 //  [ ] type views for `MyByte *` example do not match correctly
-//  [x] excessive CPU usage on async threads - barrier impl?
 //
 // [ ] many threads hitting conditional breakpoints -> causes 0x8000003 exception!
 // [ ] string conditional breakpoints -> size != 0 check seems to fail, can test w/ "rd_init" subprogram type gen in d2r2
 //
 // [ ] PDB -> RDI conversion memory usage
-//
-//- evaluation space coverage pass
-// [ ] need concrete ways of referring into a space at any offset - e.g. `process.memory + 0x1234`, `file:"foo".data + 0x1234`, `thread.regs + 0x80`, etc.
-// [ ] memory view needs to take advantage of above when peeking; ensure peeking works on files etc.
-// [ ] need to eliminate accelerators from evaluation context, and build them on the fly instead -
-//     this is necessary because, for instance, the correct locals_map varies by expression, if we
-//     want to (we do) support features like "look up call stack to find local"
 //
 //- memory view pass
 // [ ] toggleable ascii column
@@ -188,7 +177,6 @@
 // [ ] u64 + (ptr - ptr) seems to produce unexpected results - double check with C rules?
 //
 //- flow notes
-// [ ] "skip breakpoint, run to source", when stopped at a non-source location
 // [ ] adjust menu bar rendering when not focused
 // [ ] treat int 0x29 similarly to int3
 //
@@ -196,9 +184,6 @@
 // [ ] have smaller visible range than entire memory space, within some bounds (e.g. 64KB)
 // [ ] dynamically expand memory space, based on scrolling
 // [ ] disambiguate . character in ASCII columns
-//
-//- watch improvements
-// [ ] *ALL* expressions in watch windows need to be editable.
 //
 //- cfg improvements
 // [ ] config hot-reloading, using cfg wins
@@ -233,10 +218,6 @@
 //      that's because there was a function breakpoint there.
 // [ ] (reported by forrest) 'set-next-statement' -> prioritize current
 //     module/symbol, in cases where one line maps to many voffs
-// [ ] "Browse..." buttons should adopt a more relevant starting search path,
-//     if possible
-//  [ ] (since browse buttons are currently gone i should just add them backin
-//       while respecting this old todo)
 // [ ] For the Scheduler window, it would be nice if you could dim or
 //     folderize threads that are not your threads - eg., if a thread doesn't
 //     have any resolved stack pointers in your executable code, then you can
@@ -410,6 +391,36 @@
 // [x] unit / module name qualification
 // [x] step-out-of-loop
 // [x] symbol server
+// [x] "skip breakpoint, run to source", when stopped at a non-source location
+//
+// [x] recycling semaphore files - or alt strat?
+// [x] clipboard
+// [x] jai exes - busted call stacks / unwind info / paths?
+// [x] statically linked EXEs - busted unwinding
+// [x] statically linked EXEs, not parsing maps file correctly
+// [x] asan
+// [x] multithreaded stepping - trap hits reported on other threads.
+// [x] .so loading/debugging - missing debug info
+// [x] missing disasm
+// [x] control
+// [x] stale memory - things evaluating to stale values that are definitely not zero
+// [x] thread names
+// [x] rendering
+//  [x] bitmaps
+//
+// [x] more things should move to user data, but project-tagged - like
+//     recent files, watches?, etc.
+//  [x] excessive CPU usage on async threads - barrier impl?
+//
+// [x] need concrete ways of referring into a space at any offset - e.g. `process.memory + 0x1234`, `file:"foo".data + 0x1234`, `thread.regs + 0x80`, etc.
+// [x] memory view needs to take advantage of above when peeking; ensure peeking works on files etc.
+// [x] need to eliminate accelerators from evaluation context, and build them on the fly instead -
+//     this is necessary because, for instance, the correct locals_map varies by expression, if we
+//     want to (we do) support features like "look up call stack to find local"
+// [x] "Browse..." buttons should adopt a more relevant starting search path,
+//     if possible
+//  [x] (since browse buttons are currently gone i should just add them backin
+//       while respecting this old todo)
 
 ////////////////////////////////
 //~ rjf: Build Options
