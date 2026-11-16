@@ -6949,7 +6949,7 @@ lnk_run_linker(LNK_Config *config)
   // Write image in the background
   LNK_BackgroundFileWriter background_file_writer = {0};
   lnk_background_file_writer_begin(&background_file_writer);
-  LNK_BackgroundFile *image_file = lnk_background_file_writer_begin_file(&background_file_writer, config->out_path, config->temp_out_path);
+  LNK_BackgroundFile *image_file = lnk_background_file_writer_begin_file(&background_file_writer, config->out_path, config->temp_out_path, AccessFlag_Execute);
   if (image_file != 0) {
     lnk_background_file_writer_enqueue(&background_file_writer, image_file, 0, image_ctx.image_data);
     lnk_background_file_writer_end_file(&background_file_writer, image_file, image_ctx.image_data.size);

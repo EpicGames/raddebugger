@@ -35,7 +35,7 @@ shared_function uint64_t lnk_write_file(void *raw_handle, uint64_t offset, void 
 
 // --- IO Functions ------------------------------------------------------------
 
-internal File      lnk_file_open_with_rename_permissions(String8 path);
+internal File      lnk_file_open_with_rename_permissions(String8 path, AccessFlags flags);
 internal B32       lnk_file_set_delete_on_close(File handle, B32 delete_file);
 internal B32       lnk_file_rename(File handle, String8 new_name);
 
@@ -49,7 +49,7 @@ internal String8 lnk_data_from_file_artifact(Arena *arena, LNK_FileArtifact *art
 // --- Background Writer -------------------------------------------------------
 
 internal void lnk_background_file_writer_begin      (LNK_BackgroundFileWriter *writer);
-internal LNK_BackgroundFile *lnk_background_file_writer_begin_file(LNK_BackgroundFileWriter *writer, String8 path, String8 temp_path);
+internal LNK_BackgroundFile *lnk_background_file_writer_begin_file(LNK_BackgroundFileWriter *writer, String8 path, String8 temp_path, AccessFlags flags);
 internal void lnk_background_file_writer_enqueue    (LNK_BackgroundFileWriter *writer, LNK_BackgroundFile *file, U64 file_off, String8 data);
 internal void lnk_background_file_writer_end_file   (LNK_BackgroundFileWriter *writer, LNK_BackgroundFile *file, U64 expected_byte_count);
 internal void lnk_background_file_writer_end        (LNK_BackgroundFileWriter *writer);

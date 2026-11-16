@@ -84,7 +84,7 @@ lnk_find_first_file(Arena *arena, String8List dir_list, String8 path)
 }
 
 internal File
-lnk_file_open_with_rename_permissions(String8 path)
+lnk_file_open_with_rename_permissions(String8 path, AccessFlags flags)
 {
   ProfBeginFunction();
   File file_handle = file_zero();
@@ -94,8 +94,10 @@ lnk_file_open_with_rename_permissions(String8 path)
   // open file with permissions to rename
   String16            path16              = str16_from_8(scratch.arena, path);
   SECURITY_ATTRIBUTES security_attributes = { sizeof(security_attributes) };
+  DWORD access = GENERIC_WRITE|DELETE;
+  if(flags & AccessFlag_Execute) { access |= GENERIC_EXECUTE; }
   HANDLE native_handle = CreateFileW((WCHAR*)path16.str,
-                                     GENERIC_WRITE|DELETE,
+                                     access,
                                      FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE,
                                      &security_attributes,
                                      CREATE_ALWAYS,
@@ -107,7 +109,7 @@ lnk_file_open_with_rename_permissions(String8 path)
 
   scratch_end(scratch);
 #else
-  file_handle = file_open(AccessFlag_Read|AccessFlag_Write, path);
+  file_handle = file_open(AccessFlag_Read|AccessFlag_Write|flags, path);
 #endif
   ProfEnd();
   return file_handle;
@@ -263,7 +265,7 @@ lnk_write_data_list_to_file_path(String8 path, String8 temp_path, String8List da
   File    file_handle      = {0};
   String8 open_file_path   = {0};
   if (open_with_rename) {
-    file_handle    = lnk_file_open_with_rename_permissions(temp_path);
+    file_handle    = lnk_file_open_with_rename_permissions(temp_path, 0);
     open_file_path = temp_path;
 
     // mark file to be deleted on exit, so we don't leave corrupted files on disk
@@ -439,7 +441,7 @@ lnk_background_file_writer_begin(LNK_BackgroundFileWriter *writer)
 }
 
 internal LNK_BackgroundFile *
-lnk_background_file_writer_begin_file(LNK_BackgroundFileWriter *writer, String8 path, String8 temp_path)
+lnk_background_file_writer_begin_file(LNK_BackgroundFileWriter *writer, String8 path, String8 temp_path, AccessFlags flags)
 {
   ProfBegin("Background File Writer Begin File");
 
@@ -460,10 +462,10 @@ lnk_background_file_writer_begin_file(LNK_BackgroundFileWriter *writer, String8 
   file->open_with_rename = (temp_path.size > 0);
 
   if (file->open_with_rename) {
-    file->file      = lnk_file_open_with_rename_permissions(temp_path);
+    file->file      = lnk_file_open_with_rename_permissions(temp_path, flags);
     file->open_path = temp_path;
   } else {
-    lnk_open_file_write((char *)path.str, path.size, &file->file, sizeof(file->file));
+    file->file      = file_open(AccessFlag_Write|flags, path);
     file->open_path = path;
   }
 

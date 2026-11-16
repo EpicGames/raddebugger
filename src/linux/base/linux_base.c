@@ -842,8 +842,14 @@ file_open(AccessFlags flags, String8 path)
  
   if(flags & AccessFlag_CreateNew) { lnx_flags |= O_CREAT|O_EXCL; }
 
+  mode_t mode = 0666;
+  if(flags & AccessFlag_Execute)
+  {
+    mode = 0755;
+  }
+
   String8 path_copy = push_str8_copy(scratch.arena, path);
-  int fd = open((char *)path_copy.str, lnx_flags, 0755);
+  int fd = open((char *)path_copy.str, lnx_flags, mode);
   File handle = {0};
   if(fd != -1)
   {
@@ -1290,31 +1296,43 @@ copy_file_path(String8 dst, String8 src)
 {
   B32 result = 0;
   File src_h = file_open(AccessFlag_Read, src);
-  File dst_h = file_open(AccessFlag_Write, dst);
-  if(!file_match(src_h, file_zero()) &&
-     !file_match(dst_h, file_zero()))
+  if(!file_match(src_h, file_zero()))
   {
     int src_fd = (int)src_h.u64[0];
-    int dst_fd = (int)dst_h.u64[0];
-    FileProperties src_props = properties_from_file(src_h);
-    U64 size = src_props.size;
-    U64 total_bytes_copied = 0;
-    U64 bytes_left_to_copy = size;
-    for(;bytes_left_to_copy > 0;)
+    struct stat src_st = {0};
+    AccessFlags dst_flags = AccessFlag_Write;
+    if(fstat(src_fd, &src_st) == 0 && (src_st.st_mode & (S_IXUSR|S_IXGRP|S_IXOTH)))
     {
-      off_t sendfile_off = total_bytes_copied;
-      int send_result = sendfile(dst_fd, src_fd, &sendfile_off, bytes_left_to_copy);
-      if(send_result <= 0)
-      {
-        break;
-      }
-      U64 bytes_copied = (U64)send_result;
-      bytes_left_to_copy -= bytes_copied;
-      total_bytes_copied += bytes_copied;
+      dst_flags |= AccessFlag_Execute;
     }
+    File dst_h = file_open(dst_flags, dst);
+    if(!file_match(dst_h, file_zero()))
+    {
+      int dst_fd = (int)dst_h.u64[0];
+      FileProperties src_props = properties_from_file(src_h);
+      U64 size = src_props.size;
+      U64 total_bytes_copied = 0;
+      U64 bytes_left_to_copy = size;
+      for(;bytes_left_to_copy > 0;)
+      {
+        off_t sendfile_off = total_bytes_copied;
+        int send_result = sendfile(dst_fd, src_fd, &sendfile_off, bytes_left_to_copy);
+        if(send_result <= 0)
+        {
+          break;
+        }
+        U64 bytes_copied = (U64)send_result;
+        bytes_left_to_copy -= bytes_copied;
+        total_bytes_copied += bytes_copied;
+      }
+      if(total_bytes_copied == size)
+      {
+        result = 1;
+      }
+      file_close(dst_h);
+    }
+    file_close(src_h);
   }
-  file_close(src_h);
-  file_close(dst_h);
   return result;
 }
 
