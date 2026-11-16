@@ -349,3 +349,38 @@ TEST(hash_map)
     T_Ok(hash_map_search_string_raw(&hm, str8_lit("/MNT/devel")) == &bar);
   }
 }
+
+TEST(file_creation_permissions)
+{
+#if OS_LINUX
+  mode_t og_umask = umask(022);
+
+  // 1. Regular file creation should not have execute permissions
+  String8 norm_path = str8_lit("test_base_norm.txt");
+  delete_file_at_path(norm_path);
+  write_data_to_file_path(norm_path, str8_lit("test"));
+  {
+    struct stat st;
+    T_Ok(stat((char*)norm_path.str, &st) == 0);
+    T_Ok((st.st_mode & 0777) == 0644);
+    T_Ok((st.st_mode & (S_IXUSR|S_IXGRP|S_IXOTH)) == 0);
+  }
+  delete_file_at_path(norm_path);
+
+  // 2. Executable file creation with AccessFlag_Execute should have execute permissions
+  String8 exec_path = str8_lit("test_base_exec.bin");
+  delete_file_at_path(exec_path);
+  {
+    File f = file_open(AccessFlag_Write|AccessFlag_Execute, exec_path);
+    T_Ok(!file_match(f, file_zero()));
+    file_close(f);
+    struct stat st;
+    T_Ok(stat((char*)exec_path.str, &st) == 0);
+    T_Ok((st.st_mode & 0777) == 0755);
+    T_Ok((st.st_mode & S_IXUSR) != 0);
+  }
+  delete_file_at_path(exec_path);
+
+  umask(og_umask);
+#endif
+}

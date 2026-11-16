@@ -3592,7 +3592,7 @@ lnk_build_pdb(TP_Context *tp, Arena *arena, String8 image_data, LNK_Config *conf
   LNK_PdbOutput *output_ptr = 0;
   if (writer.output_path.size > 0) {
     output.writer            = writer.file_writer;
-    output.file              = lnk_background_file_writer_begin_file(output.writer, writer.output_path, writer.temp_output_path);
+    output.file              = lnk_background_file_writer_begin_file(output.writer, writer.output_path, writer.temp_output_path, 0);
     if (output.file != 0) {
       output.sealed_stream_cap = cv->obj_count + 128;
       output.sealed_streams    = push_array_no_zero(scratch.arena, MSF_StreamNumber, output.sealed_stream_cap);
