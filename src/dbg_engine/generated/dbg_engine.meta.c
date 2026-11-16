@@ -403,6 +403,14 @@ B8 d_exception_code_kind_default_enable_table[69] =
 1,
 };
 
+D_VocabInfo d_vocab_info_table[4] =
+{
+{str8_lit_comp("server"), str8_lit_comp("servers")},
+{str8_lit_comp("process"), str8_lit_comp("processes")},
+{str8_lit_comp("module"), str8_lit_comp("modules")},
+{str8_lit_comp("thread"), str8_lit_comp("threads")},
+};
+
 D_SchemaInfo d_entity_schema_info_table[4] =
 {
 {str8_lit_comp("server"), str8_lit_comp("{name, @no_expand active, unattached_processes:set, processes:set}")},

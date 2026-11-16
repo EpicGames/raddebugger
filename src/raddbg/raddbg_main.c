@@ -4,6 +4,22 @@
 ////////////////////////////////
 //~ rjf: milestone TODO notes
 //
+// [ ] new evaluation system
+//
+//  [ ] cfg -> dbg_engine; cfg evaluation
+//  [ ] type views
+//  [~] eval trees (eval viz)
+//  [ ] "tag" types, for viz metadata
+//  [ ] calls (views)
+//  [ ] calls (native)
+//
+//  [ ] alt. lang frontends
+//  [ ] macros (simple)
+//  [ ] call macros (e.g. f(a, b, c) = a + b * c, then later, f(1, 2, 3))
+//  [ ] function type string generation
+//  [x] multiple-return-values (many collections, one expr)
+//  [x] implicit parent expr member identifier resolution (??? how to do this without introducing a new recursive step?)
+//
 // [ ] remote / multi-server debugging
 //  [ ] server abstraction
 //  [ ] gdb server support
@@ -12,20 +28,6 @@
 //  [ ] ui (w/ debug info) -> ui (w/out debug info)?
 //  [ ] get all slow paths off UI thread - UI should ONLY ever access cached register blocks,
 //      cache lookup should NOT fill with slow path, etc.
-//
-// [ ] new evaluation system
-//  [ ] cfg -> dbg_engine; cfg evaluation
-//  [ ] type views
-//  [ ] macros (simple)
-//  [ ] call macros (e.g. f(a, b, c) = a + b * c, then later, f(1, 2, 3))
-//  [ ] eval trees (eval viz)
-//  [ ] implicit parent expr member identifier resolution (??? how to do this without introducing a new recursive step?)
-//  [ ] "tag" types, for viz metadata
-//  [ ] calls (views)
-//  [ ] calls (native)
-//  [ ] multiple-return-values (many collections, one expr)
-//  [ ] function type string generation
-//  [ ] alt. lang frontends
 //
 // [ ] natvis
 //

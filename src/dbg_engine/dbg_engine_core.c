@@ -219,12 +219,12 @@ d_space_read(E2_SpaceID space_id, void *out, Rng1U64 range)
       void *regs = 0;
       {
         D_EntityID thread_id = d_entity_id_from_space_id(space_id);
-        U64 unwind_idx = d_index_from_space_id(space_id);
+        U64 frame_idx = d_index_from_space_id(space_id);
         D_Entity *thread = d_entity_from_id(thread_id);
         arch = thread->arch;
         if(arch != Arch_Null)
         {
-          switch(unwind_idx)
+          switch(frame_idx)
           {
             case 0:
             {
@@ -233,10 +233,9 @@ d_space_read(E2_SpaceID space_id, void *out, Rng1U64 range)
             default:
             {
               D_CallStack call_stack = d_call_stack_from_thread(access, thread->handle, 1, d_eval_cache->async_endt_us);
-              U64 concrete_frame_idx = unwind_idx;
-              if(concrete_frame_idx < call_stack.concrete_frames_count)
+              if(frame_idx < call_stack.frames_count)
               {
-                D_CallStackFrame *f = call_stack.concrete_frames[concrete_frame_idx];
+                D_CallStackFrame *f = &call_stack.frames[frame_idx];
                 regs = f->regs;
               }
             }break;
@@ -265,10 +264,10 @@ d_space_read(E2_SpaceID space_id, void *out, Rng1U64 range)
 
 //- rjf: eval building helpers
 
-internal E2_Val
-d_eval_val_from_bytecode(Arena *arena, String8 bytecode, E2_SpaceID *space_id_out, E2_MsgList *msgs_out)
+internal E2_SpaceValArray
+d_eval_space_vals_from_bytecode(Arena *arena, String8 bytecode, E2_MsgList *msgs_out)
 {
-  E2_Val val = {0};
+  E2_SpaceValArray vals = {0};
   {
     Temp scratch = scratch_begin(&arena, 1);
     E2_InterpState state = {0};
@@ -277,7 +276,7 @@ d_eval_val_from_bytecode(Arena *arena, String8 bytecode, E2_SpaceID *space_id_ou
     {
       E2_Interp interp = e2_interp_from_bytecode(arena, &state, &space_map, bytecode);
       e2_msg_list_concat_in_place(msgs_out, &interp.msgs);
-      val = interp.val;
+      vals = interp.result;
       switch(interp.status)
       {
         default:{}break;
@@ -297,10 +296,6 @@ d_eval_val_from_bytecode(Arena *arena, String8 bytecode, E2_SpaceID *space_id_ou
         //- rjf: changing evaluation context -> unpack space ID, fill out state's ctx accordingly
         case E2_InterpStatus_NewSpaceID:
         {
-          if(space_id_out)
-          {
-            space_id_out[0] = interp.space_id;
-          }
           MemoryZeroStruct(&state.selected_ctx);
           switch(d_space_kind_from_id(interp.space_id))
           {
@@ -313,15 +308,15 @@ d_eval_val_from_bytecode(Arena *arena, String8 bytecode, E2_SpaceID *space_id_ou
               state.selected_ctx.arch = entity->arch;
               if(entity->kind == D_EntityKind_Thread)
               {
-                U64 unwind_idx = d_index_from_space_id(interp.space_id);
-                U64 ip_vaddr = d_cached_ip_from_thread_unwind(entity, unwind_idx);
+                U64 frame_idx = d_index_from_space_id(interp.space_id);
+                U64 ip_vaddr = d_cached_ip_from_thread_frame_idx(entity, frame_idx);
                 D_Entity *process = d_process_from_entity(entity);
                 D_Entity *module = d_module_from_process_vaddr(process, ip_vaddr);
-                state.selected_ctx.reg_space_id     = d_registers_space_id(entity->id, unwind_idx);
+                state.selected_ctx.reg_space_id     = d_registers_space_id(entity->id, frame_idx);
                 state.selected_ctx.addr             = ip_vaddr;
                 state.selected_ctx.module_base_addr = module->vaddr_range.min;
                 state.selected_ctx.tls_base_addr    = d_cached_tls_vaddr_from_thread_module(entity->handle, module->handle, d_eval_cache->async_endt_us, 0);
-                state.selected_ctx.cfa_addr         = d_cached_cfa_from_thread_unwind(entity, unwind_idx);
+                state.selected_ctx.cfa_addr         = d_cached_cfa_from_thread_frame_idx(entity, frame_idx);
                 state.selected_ctx.flags            = (E2_CtxFlag_HasModuleBase|E2_CtxFlag_HasCFA|E2_CtxFlag_HasTLSBase);
                 if(d_space_kind_from_id(interp.space_id) == D_EvalCtxIDKind_Registers)
                 {
@@ -329,7 +324,7 @@ d_eval_val_from_bytecode(Arena *arena, String8 bytecode, E2_SpaceID *space_id_ou
                 }
                 else
                 {
-                  state.selected_ctx.reg_space_id = d_memory_space_id(entity->id, unwind_idx);
+                  state.selected_ctx.reg_space_id = d_memory_space_id(entity->id, frame_idx);
                 }
               }
             }break;
@@ -343,15 +338,26 @@ d_eval_val_from_bytecode(Arena *arena, String8 bytecode, E2_SpaceID *space_id_ou
     }
     scratch_end(scratch);
   }
+  return vals;
+}
+
+internal E2_SpaceValArray
+d_eval_space_vals_from_irtree(Arena *arena, E2_IRNode *irtree, E2_MsgList *msgs_out)
+{
+  Temp scratch = scratch_begin(&arena, 1);
+  String8 bytecode = e2_bytecode_from_irnode(scratch.arena, irtree);
+  E2_SpaceValArray val = d_eval_space_vals_from_bytecode(arena, bytecode, msgs_out);
+  scratch_end(scratch);
   return val;
 }
 
 internal E2_Val
-d_eval_val_from_irtree(Arena *arena, E2_IRNode *irtree, E2_SpaceID *space_id_out, E2_MsgList *msgs_out)
+d_eval_val_from_irtree(Arena *arena, E2_IRNode *irtree, E2_MsgList *msgs_out)
 {
   Temp scratch = scratch_begin(&arena, 1);
   String8 bytecode = e2_bytecode_from_irnode(scratch.arena, irtree);
-  E2_Val val = d_eval_val_from_bytecode(arena, bytecode, space_id_out, msgs_out);
+  E2_SpaceValArray space_vals = d_eval_space_vals_from_bytecode(arena, bytecode, msgs_out);
+  E2_Val val = space_vals.v[0].val;
   scratch_end(scratch);
   return val;
 }
@@ -359,8 +365,7 @@ d_eval_val_from_irtree(Arena *arena, E2_IRNode *irtree, E2_SpaceID *space_id_out
 internal D_Entity *
 d_entity_from_irtree(Arena *arena, E2_IRNode *irtree, E2_MsgList *msgs_out)
 {
-  E2_SpaceID space_id = 0;
-  E2_Val val = d_eval_val_from_irtree(arena, irtree, &space_id, msgs_out);
+  E2_Val val = d_eval_val_from_irtree(arena, irtree, msgs_out);
   D_Entity *entity = d_entity_from_id(val.u64);
   return entity;
 }
@@ -429,6 +434,7 @@ d_eval_irtree_from_location(Arena *arena, RDI_Parsed *rdi, RDI_Location location
       case RDI_LocationKind_AddrBytecodeStream:
       case RDI_LocationKind_ValBytecodeStream:
       {
+        // TODO(rjf): @eval2
         // TODO(rjf)
       }break;
       
@@ -470,6 +476,7 @@ d_eval_irtree_from_location(Arena *arena, RDI_Parsed *rdi, RDI_Location location
         ARCH_RegCode reg_code = arch_reg_code_from_rdi(arch, rdi_regcode);
         Rng1U16 reg_rng = arch_info->reg_code_rng_table[reg_code];
         U64 byte_size = (U64)dim_1u16(reg_rng);
+        // TODO(rjf): @eval2
         // e_oplist_push_op(arena, &result, RDI_EvalOp_RegRead, e_value_u64(RDI_EncodeRegReadParam(rdi_regcode, byte_size, 0)));
       }break;
       
@@ -482,11 +489,13 @@ d_eval_irtree_from_location(Arena *arena, RDI_Parsed *rdi, RDI_Location location
       }break;
       case RDI_LocationKind_TLSOff:
       {
+        // TODO(rjf): @eval2
         // U64 toff = rdi_toff_from_location(loc);
         // e_oplist_push_op(arena, &result, RDI_EvalOp_TLSOff, e_value_u64(toff));
       }break;
       case RDI_LocationKind_ConstantDataOff:
       {
+        // TODO(rjf): @eval2
         // U64 constant_data_off = rdi_constant_data_off_from_location(loc);
         // e_oplist_push_uconst(arena, &result, constant_data_off);
       }break;
@@ -497,13 +506,13 @@ d_eval_irtree_from_location(Arena *arena, RDI_Parsed *rdi, RDI_Location location
 }
 
 internal E2_IRNode *
-d_eval_irtree_from_thread_unwind_idx_local_string(Arena *arena, D_Entity *thread, U64 unwind_idx, String8 name)
+d_eval_irtree_from_thread_frame_idx_local_string(Arena *arena, D_Entity *thread, U64 frame_idx, String8 name)
 {
   E2_IRNode *result = &e2_irnode_nil;
   if(thread->kind == D_EntityKind_Thread)
   {
     Access *access = access_open();
-    U64 ip_vaddr = d_cached_ip_from_thread_unwind(thread, unwind_idx);
+    U64 ip_vaddr = d_cached_ip_from_thread_frame_idx(thread, frame_idx);
     D_Entity *process = d_process_from_entity(thread);
     D_Entity *module = d_module_from_process_vaddr(process, ip_vaddr);
     DI_Key dbgi_key = d_dbgi_key_from_module(module);
@@ -533,7 +542,7 @@ d_eval_irtree_from_thread_unwind_idx_local_string(Arena *arena, D_Entity *thread
       E2_IRNode *compute_loc = d_eval_irtree_from_location(arena, rdi, lvar->location, ip_voff);
       if(compute_loc != &e2_irnode_nil)
       {
-        E2_SpaceID new_space_id = d_memory_space_id(thread->id, unwind_idx);
+        E2_SpaceID new_space_id = d_memory_space_id(thread->id, frame_idx);
         E2_IRNode *set_space_id = e2_irnode_set_space_id(arena, new_space_id);
         result = e2_irnode(arena);
         e2_irnode_push_child(arena, result, set_space_id);
@@ -545,6 +554,132 @@ d_eval_irtree_from_thread_unwind_idx_local_string(Arena *arena, D_Entity *thread
     access_close(access);
   }
   return result;
+}
+
+internal E2_IRNode *
+d_eval_irtree_from_member_access(Arena *arena, E2_IRNode *lhs_irtree, String8 member_name, E2_MsgList *msgs)
+{
+  E2_IRNode *irtree = &e2_irnode_nil;
+  E2_TypeKey type_key = lhs_irtree->type_key;
+  E2_TypeKind type_kind = e2_type_kind_from_key(type_key);
+  switch(type_kind)
+  {
+    default:{}break;
+    
+    //////////////////
+    //- rjf: set . accesses
+    //
+    case E2_TypeKind_Set:
+    {
+      Temp scratch = scratch_begin(0, 0);
+      String8 type_name = e2_name_from_type_key(scratch.arena, type_key);
+      MD_Node *entity_schema = cfg_schema_from_name(&d_shared->entity_schema_table, type_name);
+      MD_Node *cfg_schema = cfg_schema_from_name(&d_shared->cfg_schema_table, type_name);
+      
+      ////////////////
+      //- rjf: debug entity . accesses
+      //
+      if(entity_schema != &md_nil_node)
+      {
+        D_Entity *lhs_entity = d_entity_from_irtree(d_eval_cache->arena, lhs_irtree, msgs);
+        if(lhs_entity != &d_entity_nil)
+        {
+          // NOTE(rjf): @schema_builtin entity .id access
+          if(str8_match(member_name, s("id"), 0))
+          {
+            irtree = e2_irnode_const_u64(d_eval_cache->arena, lhs_entity->os_id);
+          }
+          
+          // NOTE(rjf): @schema_builtin entity .name access
+          else if(str8_match(member_name, s("name"), 0))
+          {
+            String8 name = lhs_entity->string;
+            irtree = e2_irnode_set_space_id(d_eval_cache->arena, d_entity_metadata_space_id(lhs_entity->id));
+            irtree->type_key = e2_type_key_cons_array(e2_type_key_basic(E2_TypeKind_U8), name.size);
+            irtree->mode     = E2_Mode_Address;
+            E2_IRNode *member_addr = e2_irnode_const_u64_or_smaller(d_eval_cache->arena, u64_hash_from_str8(member_name));
+            e2_irnode_push_child(d_eval_cache->arena, irtree, member_addr);
+          }
+          
+          // NOTE(rjf): @schema_builtin entity .active access
+          else if(str8_match(member_name, s("active"), 0))
+          {
+            irtree = e2_irnode_set_space_id(d_eval_cache->arena, d_entity_metadata_space_id(lhs_entity->id));
+            irtree->type_key = e2_type_key_basic(E2_TypeKind_Bool);
+            irtree->mode     = E2_Mode_Address;
+            E2_IRNode *member_addr = e2_irnode_const_u64_or_smaller(d_eval_cache->arena, u64_hash_from_str8(member_name));
+            e2_irnode_push_child(d_eval_cache->arena, irtree, member_addr);
+          }
+          
+          // NOTE(rjf): schema set members
+          else
+          {
+            MD_Node *member_schema = md_child_from_string(entity_schema, member_name, 0);
+            if(str8_match(member_schema->first->string, s("set"), 0))
+            {
+              irtree = e2_irnode_set_u64(d_eval_cache->arena, member_name, lhs_entity->id);
+            }
+          }
+        }
+      }
+      
+      ////////////////
+      //- rjf: cfg . accesses
+      //
+      else if(cfg_schema != &md_nil_node)
+      {
+        // TODO(rjf)
+      }
+      
+      ////////////////
+      //- rjf: call stack frame . accesses
+      //
+      else if(str8_match(type_name, s("call_stack_frame"), 0))
+      {
+        if(str8_match(member_name, s("registers"), 0) ||
+           str8_match(member_name, s("locals"), 0))
+        {
+          E2_Val lhs_val = d_eval_val_from_irtree(d_eval_cache->arena, lhs_irtree, msgs);
+          irtree = e2_irnode_set_u64(d_eval_cache->arena, member_name, lhs_val.u64);
+        }
+      }
+      
+      ////////////////
+      //- rjf: registers . accesses
+      //
+      else if(str8_match(type_name, s("registers"), 0))
+      {
+        E2_Val lhs_val = d_eval_val_from_irtree(d_eval_cache->arena, lhs_irtree, msgs);
+        D_EntityID lhs_entity_id = d_entity_id_from_frame_id(lhs_val.u64);
+        U32 lhs_idx = d_frame_idx_from_frame_id(lhs_val.u64);
+        D_Entity *lhs_entity = d_entity_from_id(lhs_entity_id);
+        if(lhs_entity->kind == D_EntityKind_Thread)
+        {
+          Arch arch = lhs_entity->arch;
+          ARCH_RegCode reg_code = d_eval_reg_code_from_arch_string(arch, member_name);
+          irtree = d_eval_irtree_from_arch_regcode(d_eval_cache->arena, lhs_entity_id, lhs_idx, arch, reg_code);
+        }
+      }
+      
+      ////////////////
+      //- rjf: locals . accesses
+      //
+      else if(str8_match(type_name, s("locals"), 0))
+      {
+        E2_Val lhs_val = d_eval_val_from_irtree(d_eval_cache->arena, lhs_irtree, msgs);
+        D_EntityID lhs_entity_id = d_entity_id_from_frame_id(lhs_val.u64);
+        D_Entity *lhs_entity = d_entity_from_id(lhs_entity_id);
+        if(lhs_entity->kind == D_EntityKind_Thread)
+        {
+          U32 lhs_idx = d_frame_idx_from_frame_id(lhs_val.u64);
+          irtree = d_eval_irtree_from_thread_frame_idx_local_string(d_eval_cache->arena, lhs_entity, lhs_idx, member_name);
+        }
+      }
+      
+      scratch_end(scratch);
+    }break;
+  }
+  return irtree;
 }
 
 //- rjf: eval cache operations
@@ -562,17 +697,18 @@ d_eval_cache_alloc(void)
 }
 
 internal void
-d_eval_cache_select(D_EvalCache *cache, D_EntityID selected_thread, U32 selected_unwind_idx, U64 async_endt_us)
+d_eval_cache_select(D_EvalCache *cache, D_EntityID selected_thread, U32 selected_frame_idx, U64 async_endt_us)
 {
   d_eval_cache = cache;
   cache->async_endt_us = async_endt_us;
   cache->selected_thread = selected_thread;
-  cache->selected_unwind_idx = selected_unwind_idx;
+  cache->selected_frame_idx = selected_frame_idx;
   arena_pop_to(cache->arena, cache->arena_eval_start_pos);
   e2_select_cons_type_map(cache->cons_type_map);
   cache->slots_count = 4096;
   cache->string_slots = push_array(cache->arena, D_EvalSlot, cache->slots_count);
   cache->id_slots = push_array(cache->arena, D_EvalSlot, cache->slots_count);
+  cache->free_parent = 0;
 }
 
 internal D_EvalID
@@ -610,7 +746,7 @@ d_eval_pop_parent(void)
 internal D_Eval
 d_eval_from_leaf_identifier(String8 identifier, String8List qualifiers)
 {
-  D_Eval eval = {.expr = &e2_expr_nil, .irtree = &e2_irnode_nil};
+  D_Eval eval = d_eval_nil;
   {
     Temp scratch = scratch_begin(0, 0);
     
@@ -625,7 +761,7 @@ d_eval_from_leaf_identifier(String8 identifier, String8List qualifiers)
     }
     
     //- rjf: expr string -> evaluation
-    U64 hash = u64_hash_from_str8(expr_string);
+    U64 hash = u64_hash_from_seed_str8(d_eval_cache->top_parent->v, expr_string);
     U64 string_slot_idx = hash%d_eval_cache->slots_count;
     B32 found = 0;
     for(D_EvalNode *n = d_eval_cache->string_slots[string_slot_idx].first; n != 0; n = n->string_next)
@@ -647,7 +783,7 @@ d_eval_from_leaf_identifier(String8 identifier, String8List qualifiers)
       String8 bytecode = {0};
       E2_MsgList msgs = {0};
       E2_SpaceID space_id = 0;
-      E2_Val val = {0};
+      E2_SpaceValArray space_vals = {0};
       B32 need_bytecode = 1;
       B32 need_val = 1;
       
@@ -655,17 +791,17 @@ d_eval_from_leaf_identifier(String8 identifier, String8List qualifiers)
       if(!resolved && str8_match(identifier, s("$"), 0) && d_eval_cache->top_parent->v != 0)
       {
         U64 parent_slot_idx = d_eval_cache->top_parent->v%d_eval_cache->slots_count;
-        for(D_EvalNode *n = d_eval_cache->string_slots[string_slot_idx].first; n != 0; n = n->string_next)
+        for(D_EvalNode *n = d_eval_cache->id_slots[parent_slot_idx].first; n != 0; n = n->id_next)
         {
           if(n->eval.id == d_eval_cache->top_parent->v)
           {
+            resolved = 1;
             need_bytecode = 0;
             need_val = 0;
-            irtree   = n->eval.irtree;
-            bytecode = n->eval.bytecode;
-            msgs     = n->eval.msgs;
-            space_id = n->eval.space_id;
-            val      = n->eval.val;
+            irtree     = n->eval.irtree;
+            bytecode   = n->eval.bytecode;
+            msgs       = n->eval.msgs;
+            space_vals = n->eval.space_vals;
             break;
           }
         }
@@ -675,8 +811,8 @@ d_eval_from_leaf_identifier(String8 identifier, String8List qualifiers)
       if(!resolved)
       {
         D_Entity *thread = d_entity_from_id(d_eval_cache->selected_thread);
-        U64 unwind_idx = d_eval_cache->selected_unwind_idx;
-        irtree = d_eval_irtree_from_thread_unwind_idx_local_string(d_eval_cache->arena, thread, unwind_idx, identifier);
+        U64 frame_idx = d_eval_cache->selected_frame_idx;
+        irtree = d_eval_irtree_from_thread_frame_idx_local_string(d_eval_cache->arena, thread, frame_idx, identifier);
         resolved = (irtree != &e2_irnode_nil);
       }
       
@@ -686,7 +822,7 @@ d_eval_from_leaf_identifier(String8 identifier, String8List qualifiers)
         D_Entity *thread = d_entity_from_id(d_eval_cache->selected_thread);
         Arch arch = thread->arch;
         ARCH_RegCode reg_code = d_eval_reg_code_from_arch_string(arch, identifier);
-        irtree = d_eval_irtree_from_arch_regcode(d_eval_cache->arena, thread->id, d_eval_cache->selected_unwind_idx, arch, reg_code);
+        irtree = d_eval_irtree_from_arch_regcode(d_eval_cache->arena, thread->id, d_eval_cache->selected_frame_idx, arch, reg_code);
         resolved = (irtree != &e2_irnode_nil);
       }
       
@@ -694,13 +830,12 @@ d_eval_from_leaf_identifier(String8 identifier, String8List qualifiers)
       if(!resolved && d_eval_cache->top_parent->v != 0)
       {
         U64 parent_slot_idx = d_eval_cache->top_parent->v%d_eval_cache->slots_count;
-        for(D_EvalNode *n = d_eval_cache->string_slots[string_slot_idx].first; n != 0; n = n->string_next)
+        for(D_EvalNode *n = d_eval_cache->id_slots[parent_slot_idx].first; n != 0; n = n->id_next)
         {
           if(n->eval.id == d_eval_cache->top_parent->v)
           {
-            // TODO(rjf): we need to compile the equivalent of $.<identifier> here, *without*
-            // recursing into another sub-compilation. probably we want to extract member access
-            // compilation logic, and use that to build our ir tree?
+            irtree = d_eval_irtree_from_member_access(d_eval_cache->arena, n->eval.irtree, identifier, &msgs);
+            resolved = (irtree != &e2_irnode_nil);
             break;
           }
         }
@@ -855,19 +990,36 @@ BasicCase("float64", F64)
       //- rjf: resolve as a debug entity
       if(!resolved)
       {
-        D_EntityID entity_id = 0;
+        D_Entity *entity = &d_entity_nil;
         if(0){}
-#define Case(string, id) else if(str8_match(identifier, s(string), 0)) do { entity_id = (id); } while(0)
-        Case("current_thread",  d_eval_cache->selected_thread);
-        Case("current_process", d_entity_ancestor_from_kind(d_entity_from_id(d_eval_cache->selected_thread), D_EntityKind_Process)->id);
-        Case("current_server",  d_entity_ancestor_from_kind(d_entity_from_id(d_eval_cache->selected_thread), D_EntityKind_Server)->id);
-        Case("current_module",  d_module_from_process_vaddr(d_entity_ancestor_from_kind(d_entity_from_id(d_eval_cache->selected_thread), D_EntityKind_Process), d_cached_ip_from_thread(d_entity_from_id(d_eval_cache->selected_thread)->handle))->id);
+#define Case(string, entity_) else if(str8_match(identifier, s(string), 0)) do { entity = (entity_); } while(0)
+        Case("current_thread",  d_entity_from_id(d_eval_cache->selected_thread));
+        Case("current_process", d_entity_ancestor_from_kind(d_entity_from_id(d_eval_cache->selected_thread), D_EntityKind_Process));
+        Case("current_server",  d_entity_ancestor_from_kind(d_entity_from_id(d_eval_cache->selected_thread), D_EntityKind_Server));
+        Case("current_module",  d_module_from_process_vaddr(d_entity_ancestor_from_kind(d_entity_from_id(d_eval_cache->selected_thread), D_EntityKind_Process), d_cached_ip_from_thread(d_entity_from_id(d_eval_cache->selected_thread)->handle)));
 #undef Case
-        if(entity_id != 0)
+        else
+        {
+          if(entity == &d_entity_nil) { entity = d_entity_from_string_kind(identifier, D_EntityKind_Thread); }
+          if(entity == &d_entity_nil) { entity = d_entity_from_string_kind(identifier, D_EntityKind_Module); }
+          if(entity == &d_entity_nil) { entity = d_entity_from_string_kind(identifier, D_EntityKind_Process); }
+        }
+        if(entity != &d_entity_nil)
         {
           resolved = 1;
-          D_Entity *entity = d_entity_from_id(entity_id);
-          irtree = e2_irnode_set_u64(d_eval_cache->arena, d_entity_kind_code_name_table[entity->kind], entity_id);
+          irtree = e2_irnode_set_u64(d_eval_cache->arena, d_entity_kind_code_name_table[entity->kind], entity->id);
+        }
+      }
+      
+      //- rjf: resolve as a debug entity collection
+      if(!resolved)
+      {
+        String8 single = d_singular_from_plural(identifier);
+        D_EntityKind entity_kind = d_entity_kind_from_string(single);
+        if(entity_kind != D_EntityKind_Null)
+        {
+          resolved = 1;
+          irtree = e2_irnode_set_u64(d_eval_cache->arena, identifier, 0);
         }
       }
       
@@ -891,11 +1043,11 @@ BasicCase("float64", F64)
         if(str8_match(identifier, s("current_call_stack_frame"), 0))
         {
           D_EntityID id = d_eval_cache->selected_thread;
-          U32 unwind_idx = d_eval_cache->selected_unwind_idx;
+          U32 frame_idx = d_eval_cache->selected_frame_idx;
           if(id != 0)
           {
             resolved = 1;
-            irtree = e2_irnode_set_u64(d_eval_cache->arena, s("call_stack_frame"), d_frame_id(id, unwind_idx));
+            irtree = e2_irnode_set_u64(d_eval_cache->arena, s("call_stack_frame"), d_frame_id(id, frame_idx));
           }
         }
       }
@@ -907,11 +1059,11 @@ BasicCase("float64", F64)
            str8_match(identifier, s("registers"), 0))
         {
           D_EntityID id = d_eval_cache->selected_thread;
-          U32 unwind_idx = d_eval_cache->selected_unwind_idx;
+          U32 frame_idx = d_eval_cache->selected_frame_idx;
           if(id != 0)
           {
             resolved = 1;
-            irtree = e2_irnode_set_u64(d_eval_cache->arena, identifier, d_frame_id(id, unwind_idx));
+            irtree = e2_irnode_set_u64(d_eval_cache->arena, identifier, d_frame_id(id, frame_idx));
           }
         }
       }
@@ -939,7 +1091,7 @@ BasicCase("float64", F64)
         // rjf: bytecode -> value
         if(need_val)
         {
-          val = d_eval_val_from_bytecode(d_eval_cache->arena, bytecode, &space_id, &msgs);
+          space_vals = d_eval_space_vals_from_bytecode(d_eval_cache->arena, bytecode, &msgs);
         }
         
         // rjf: generate an ID for this string
@@ -956,8 +1108,7 @@ BasicCase("float64", F64)
           node->eval.expr              = expr;
           node->eval.irtree            = irtree;
           node->eval.bytecode          = bytecode;
-          node->eval.space_id          = space_id;
-          node->eval.val               = val;
+          node->eval.space_vals        = space_vals;
           node->eval.msgs              = msgs;
           SLLQueuePush_N(d_eval_cache->string_slots[string_slot_idx].first, d_eval_cache->string_slots[string_slot_idx].last, node, string_next);
           SLLQueuePush_N(d_eval_cache->id_slots[id_slot_idx].first, d_eval_cache->id_slots[id_slot_idx].last, node, id_next);
@@ -974,13 +1125,13 @@ BasicCase("float64", F64)
 internal D_Eval
 d_eval_from_string(String8 string)
 {
-  D_Eval eval = {.expr = &e2_expr_nil, .irtree = &e2_irnode_nil};
+  D_Eval eval = d_eval_nil;
   
   //////////////////////////////
   //- rjf: find existing evaluation of this expression
   //
   B32 found = 0;
-  U64 string_hash = u64_hash_from_str8(string);
+  U64 string_hash = u64_hash_from_seed_str8(d_eval_cache->top_parent->v, string);
   U64 string_slot_idx = string_hash%d_eval_cache->slots_count;
   {
     for(D_EvalNode *n = d_eval_cache->string_slots[string_slot_idx].first; n != 0; n = n->string_next)
@@ -1060,8 +1211,8 @@ d_eval_from_string(String8 string)
             if(!e2_type_key_match(identifier_eval.irtree->type_key, e2_type_key_zero()))
             {
               E2_IRNode *identifier_eval_val = e2_irnode(d_eval_cache->arena);
-              identifier_eval_val->val = identifier_eval.val;
-              if(identifier_eval.val.string.size != 0)
+              identifier_eval_val->val = identifier_eval.space_vals.v[0].val;
+              if(identifier_eval.space_vals.v[0].val.string.size != 0)
               {
                 identifier_eval_val->op = RDI_EvalOp_ConstString;
               }
@@ -1084,9 +1235,9 @@ d_eval_from_string(String8 string)
                 }
               }
               resolve_result = identifier_eval_val;
-              if(identifier_eval.space_id != 0)
+              if(identifier_eval.space_vals.v[0].space_id != 0)
               {
-                E2_IRNode *set_space_id = e2_irnode_set_space_id(d_eval_cache->arena, identifier_eval.space_id);
+                E2_IRNode *set_space_id = e2_irnode_set_space_id(d_eval_cache->arena, identifier_eval.space_vals.v[0].space_id);
                 e2_irnode_push_child(d_eval_cache->arena, set_space_id, identifier_eval_val);
                 resolve_result = set_space_id;
               }
@@ -1109,128 +1260,12 @@ d_eval_from_string(String8 string)
           //
           case E2_CompileStatus_MemberAccess:
           {
-            E2_TypeKey type_key = compile.irtree->type_key;
-            E2_TypeKind type_kind = e2_type_kind_from_key(type_key);
-            switch(type_kind)
-            {
-              default:{}break;
-              
-              //////////////////
-              //- rjf: set . accesses
-              //
-              case E2_TypeKind_Set:
-              {
-                Temp scratch = scratch_begin(0, 0);
-                String8 type_name = e2_name_from_type_key(scratch.arena, type_key);
-                MD_Node *entity_schema = cfg_schema_from_name(&d_shared->entity_schema_table, type_name);
-                MD_Node *cfg_schema = cfg_schema_from_name(&d_shared->cfg_schema_table, type_name);
-                
-                ////////////////
-                //- rjf: debug entity . accesses
-                //
-                if(entity_schema != &md_nil_node)
-                {
-                  D_Entity *lhs_entity = d_entity_from_irtree(d_eval_cache->arena, compile.irtree, &msgs);
-                  if(lhs_entity != &d_entity_nil)
-                  {
-                    // NOTE(rjf): @schema_builtin entity .id access
-                    if(str8_match(compile.member_name, s("id"), 0))
-                    {
-                      resolve_result = e2_irnode_const_u64(d_eval_cache->arena, lhs_entity->os_id);
-                    }
-                    
-                    // NOTE(rjf): @schema_builtin entity .name access
-                    else if(str8_match(compile.member_name, s("name"), 0))
-                    {
-                      String8 name = lhs_entity->string;
-                      resolve_result = e2_irnode_set_space_id(d_eval_cache->arena, d_entity_metadata_space_id(lhs_entity->id));
-                      resolve_result->type_key = e2_type_key_cons_array(e2_type_key_basic(E2_TypeKind_U8), name.size);
-                      resolve_result->mode     = E2_Mode_Address;
-                      E2_IRNode *member_addr = e2_irnode_const_u64_or_smaller(d_eval_cache->arena, u64_hash_from_str8(compile.member_name));
-                      e2_irnode_push_child(d_eval_cache->arena, resolve_result, member_addr);
-                    }
-                    
-                    // NOTE(rjf): @schema_builtin entity .active access
-                    else if(str8_match(compile.member_name, s("active"), 0))
-                    {
-                      resolve_result = e2_irnode_set_space_id(d_eval_cache->arena, d_entity_metadata_space_id(lhs_entity->id));
-                      resolve_result->type_key = e2_type_key_basic(E2_TypeKind_Bool);
-                      resolve_result->mode     = E2_Mode_Address;
-                      E2_IRNode *member_addr = e2_irnode_const_u64_or_smaller(d_eval_cache->arena, u64_hash_from_str8(compile.member_name));
-                      e2_irnode_push_child(d_eval_cache->arena, resolve_result, member_addr);
-                    }
-                    
-                    // NOTE(rjf): schema set members
-                    else
-                    {
-                      MD_Node *member_schema = md_child_from_string(entity_schema, compile.member_name, 0);
-                      if(str8_match(member_schema->first->string, s("set"), 0))
-                      {
-                        resolve_result = e2_irnode_set_u64(d_eval_cache->arena, compile.member_name, lhs_entity->id);
-                      }
-                    }
-                  }
-                }
-                
-                ////////////////
-                //- rjf: cfg . accesses
-                //
-                else if(cfg_schema != &md_nil_node)
-                {
-                  // TODO(rjf)
-                }
-                
-                ////////////////
-                //- rjf: call stack frame . accesses
-                //
-                else if(str8_match(type_name, s("call_stack_frame"), 0))
-                {
-                  if(str8_match(compile.member_name, s("registers"), 0) ||
-                     str8_match(compile.member_name, s("locals"), 0))
-                  {
-                    E2_Val lhs_val = d_eval_val_from_irtree(d_eval_cache->arena, compile.irtree, 0, &msgs);
-                    resolve_result = e2_irnode_set_u64(d_eval_cache->arena, compile.member_name, lhs_val.u64);
-                  }
-                }
-                
-                ////////////////
-                //- rjf: registers . accesses
-                //
-                else if(str8_match(type_name, s("registers"), 0))
-                {
-                  E2_Val lhs_val = d_eval_val_from_irtree(d_eval_cache->arena, compile.irtree, 0, &msgs);
-                  D_EntityID lhs_entity_id = d_entity_id_from_frame_id(lhs_val.u64);
-                  U32 lhs_idx = d_unwind_idx_from_frame_id(lhs_val.u64);
-                  D_Entity *lhs_entity = d_entity_from_id(lhs_entity_id);
-                  if(lhs_entity->kind == D_EntityKind_Thread)
-                  {
-                    Arch arch = lhs_entity->arch;
-                    ARCH_RegCode reg_code = d_eval_reg_code_from_arch_string(arch, compile.member_name);
-                    resolve_result = d_eval_irtree_from_arch_regcode(d_eval_cache->arena, lhs_entity_id, lhs_idx, arch, reg_code);
-                  }
-                }
-                
-                ////////////////
-                //- rjf: locals . accesses
-                //
-                else if(str8_match(type_name, s("locals"), 0))
-                {
-                  E2_Val lhs_val = d_eval_val_from_irtree(d_eval_cache->arena, compile.irtree, 0, &msgs);
-                  D_EntityID lhs_entity_id = d_entity_id_from_frame_id(lhs_val.u64);
-                  D_Entity *lhs_entity = d_entity_from_id(lhs_entity_id);
-                  if(lhs_entity->kind == D_EntityKind_Thread)
-                  {
-                    U32 lhs_idx = d_unwind_idx_from_frame_id(lhs_val.u64);
-                    resolve_result = d_eval_irtree_from_thread_unwind_idx_local_string(d_eval_cache->arena, lhs_entity, lhs_idx, compile.member_name);
-                  }
-                }
-                
-                scratch_end(scratch);
-              }break;
-            }
+            resolve_result = d_eval_irtree_from_member_access(d_eval_cache->arena, compile.irtree, compile.member_name, &msgs);
           }break;
           
+          //////////////////////
           //- rjf: indexing operator
+          //
           case E2_CompileStatus_IndexAccess:
           {
             E2_TypeKey type_key = compile.irtree->type_key;
@@ -1244,38 +1279,92 @@ d_eval_from_string(String8 string)
               {
                 Temp scratch = scratch_begin(0, 0);
                 String8 type_name = e2_name_from_type_key(scratch.arena, type_key);
+                String8 type_name_singular = d_singular_from_plural(type_name);
+                D_EntityKind element_entity_kind = d_entity_kind_from_string(type_name_singular);
                 
                 //- rjf: call stack [] accesses
                 if(str8_match(type_name, s("call_stack"), 0))
                 {
                   // rjf: unpack lhs
-                  E2_Val lhs_val = d_eval_val_from_irtree(d_eval_cache->arena, compile.irtree, 0, &msgs);
+                  E2_Val lhs_val = d_eval_val_from_irtree(d_eval_cache->arena, compile.irtree, &msgs);
                   D_EntityID lhs_entity_id = lhs_val.u64;
                   D_Entity *lhs_entity = d_entity_from_id(lhs_entity_id);
                   
                   // rjf: lhs is thread -> resolve to frame
                   if(lhs_entity->kind == D_EntityKind_Thread)
                   {
-                    E2_Val rhs_val = d_eval_val_from_irtree(d_eval_cache->arena, compile.params_irtree, 0, &msgs);
+                    Access *access = access_open();
+                    D_CallStack call_stack = d_call_stack_from_thread(access, lhs_entity->handle, 1, d_eval_cache->async_endt_us);
+                    E2_Val rhs_val = d_eval_val_from_irtree(d_eval_cache->arena, compile.params_irtree, &msgs);
                     U64 rhs_idx = rhs_val.u64;
-                    D_FrameID frame_id = d_frame_id(lhs_entity_id, rhs_idx);
-                    resolve_result = e2_irnode_set_u64(d_eval_cache->arena, s("call_stack_frame"), frame_id);
+                    if(rhs_idx < call_stack.frames_count)
+                    {
+                      D_FrameID frame_id = d_frame_id(lhs_entity_id, rhs_idx);
+                      resolve_result = e2_irnode_set_u64(d_eval_cache->arena, s("call_stack_frame"), frame_id);
+                    }
+                    access_close(access);
                   }
                 }
+                
+                //- rjf: entity collection [] accesses
+                else if(element_entity_kind != D_EntityKind_Null)
+                {
+                  // rjf: unpack lhs
+                  E2_Val lhs_val = d_eval_val_from_irtree(d_eval_cache->arena, compile.irtree, &msgs);
+                  D_EntityID lhs_entity_id = lhs_val.u64;
+                  D_Entity *lhs_entity = d_entity_from_id(lhs_entity_id);
+                  
+                  // rjf: lhs is an entity -> gather children matching the element kind
+                  D_EntityArray entities = {0};
+                  if(lhs_entity != &d_entity_nil)
+                  {
+                    D_EntityList entities_list = {0};
+                    for(D_Entity *child = lhs_entity->first; child != &d_entity_nil; child = child->next)
+                    {
+                      if(child->kind == element_entity_kind)
+                      {
+                        d_entity_list_push(scratch.arena, &entities_list, child);
+                      }
+                    }
+                    entities = d_entity_array_from_list(scratch.arena, &entities_list);
+                  }
+                  
+                  // rjf: lhs is not an entity -> gather all entities of the element kind
+                  else
+                  {
+                    entities = d_entity_array_from_kind(element_entity_kind);
+                  }
+                  
+                  // rjf: grab nth element from `entities`
+                  {
+                    E2_Val rhs_val = d_eval_val_from_irtree(d_eval_cache->arena, compile.params_irtree, &msgs);
+                    U64 rhs_idx = rhs_val.u64;
+                    if(0 <= rhs_idx && rhs_idx < entities.count)
+                    {
+                      D_Entity *entity = entities.v[rhs_idx];
+                      resolve_result = e2_irnode_set_u64(d_eval_cache->arena, d_entity_kind_code_name_table[element_entity_kind], entity->id);
+                    }
+                  }
+                }
+                
                 scratch_end(scratch);
               }break;
             }
           }break;
           
+          //////////////////////
           //- rjf: calls
+          //
           case E2_CompileStatus_Call:
           {
           }break;
           
+          //////////////////////
           //- rjf: compile-time-evaluation
+          //
           case E2_CompileStatus_CompileTimeEval:
           {
-            compile_time_eval_result = d_eval_val_from_irtree(d_eval_cache->arena, compile.irtree, 0, &msgs);
+            compile_time_eval_result = d_eval_val_from_irtree(d_eval_cache->arena, compile.irtree, &msgs);
           }break;
         }
         if(e2_compile_status_is_terminal(compile.status))
@@ -1293,8 +1382,7 @@ d_eval_from_string(String8 string)
     ////////////////////////////
     //- rjf: bytecode -> value
     //
-    E2_SpaceID space_id = 0;
-    E2_Val val = d_eval_val_from_bytecode(d_eval_cache->arena, bytecode, &space_id, &msgs);
+    E2_SpaceValArray space_vals = d_eval_space_vals_from_bytecode(d_eval_cache->arena, bytecode, &msgs);
     
     ////////////////////////////
     //- rjf: generate an ID for this expression string
@@ -1314,8 +1402,7 @@ d_eval_from_string(String8 string)
       node->eval.expr              = expr;
       node->eval.irtree            = irtree;
       node->eval.bytecode          = bytecode;
-      node->eval.space_id          = space_id;
-      node->eval.val               = val;
+      node->eval.space_vals        = space_vals;
       node->eval.msgs              = msgs;
       SLLQueuePush_N(d_eval_cache->string_slots[string_slot_idx].first, d_eval_cache->string_slots[string_slot_idx].last, node, string_next);
       SLLQueuePush_N(d_eval_cache->id_slots[id_slot_idx].first, d_eval_cache->id_slots[id_slot_idx].last, node, id_next);
@@ -1324,6 +1411,122 @@ d_eval_from_string(String8 string)
   }
   
   return eval;
+}
+
+internal String8
+d_value_string_from_eval(Arena *arena, D_Eval eval)
+{
+  String8 result = {0};
+  Temp scratch = scratch_begin(&arena, 1);
+  String8List strings = {0};
+  {
+    E2_StringParams params = {.flags = E2_StringFlag_ReadOnly, .radix = 10};
+    E2_StringifyState state = {0};
+    D_Eval next_eval = eval;
+    for(;;)
+    {
+      E2_Stringify stringify = e2_stringify_from_type_val(scratch.arena, &state, &params, next_eval.id, next_eval.irtree->type_key, next_eval.space_vals.v[0].val);
+      next_eval = d_eval_nil;
+      if(stringify.string.size != 0)
+      {
+        str8_list_push(scratch.arena, &strings, stringify.string);
+      }
+      switch(stringify.status)
+      {
+        default:{}break;
+        case E2_StringifyStatus_ExpandAccess:
+        {
+          U64 expanded_id = stringify.id;
+          E2_TypeKey expanded_type_key = stringify.type_key;
+          E2_TypeKind expanded_type_kind = e2_type_kind_from_key(expanded_type_key);
+          D_Eval expansion_eval = d_eval_nil;
+          d_eval_push_parent(expanded_id);
+          switch(expanded_type_kind)
+          {
+            default:{}break;
+            
+            ////////////////////
+            //- rjf: set expansions
+            //
+            case E2_TypeKind_Set:
+            {
+              //- rjf: set type -> schema
+              String8 type_name = e2_string_from_type_key(scratch.arena, expanded_type_key);
+              MD_Node *schema = &md_nil_node;
+              if(schema == &md_nil_node) { schema = cfg_schema_from_name(&d_shared->entity_schema_table, type_name); }
+              if(schema == &md_nil_node) { schema = cfg_schema_from_name(&d_shared->cfg_schema_table, type_name); }
+              
+              //- rjf: set w/ schema -> schema defines a list of members, so we evaluate the Nth member access
+              if(schema != &md_nil_node)
+              {
+                MD_Node *member_schema = md_child_from_index(schema, stringify.expand_num-1);
+                if(member_schema != &md_nil_node)
+                {
+                  expansion_eval = d_eval_from_string(sf("$.%S", member_schema->string));
+                }
+              }
+              
+              //- rjf: set w/out schema -> we just do array index accesses
+              else
+              {
+                expansion_eval = d_eval_from_string(sf("$[%I64u]", stringify.expand_num-1));
+              }
+            }break;
+          }
+          d_eval_pop_parent();
+          next_eval = expansion_eval;
+        }break;
+      }
+      if(e2_stringify_status_is_terminal(stringify.status))
+      {
+        break;
+      }
+    }
+  }
+  result = str8_list_join(arena, &strings, 0);
+  scratch_end(scratch);
+  return result;
+}
+
+////////////////////////////////
+//~ rjf: Vocabulary Lookups
+
+internal String8
+d_singular_from_plural(String8 string)
+{
+  String8 single = {0};
+  {
+    U64 hash = u64_hash_from_str8(string);
+    U64 slot_idx = hash%d_shared->vocab_slots_count;
+    for(D_VocabNode *n = d_shared->vocab_plural_slots[slot_idx]; n != 0; n = n->plural_next)
+    {
+      if(str8_match(n->v.plural, string, 0))
+      {
+        single = n->v.single;
+        break;
+      }
+    }
+  }
+  return single;
+}
+
+internal String8
+d_plural_from_singular(String8 string)
+{
+  String8 plural = {0};
+  {
+    U64 hash = u64_hash_from_str8(string);
+    U64 slot_idx = hash%d_shared->vocab_slots_count;
+    for(D_VocabNode *n = d_shared->vocab_single_slots[slot_idx]; n != 0; n = n->single_next)
+    {
+      if(str8_match(n->v.single, string, 0))
+      {
+        plural = n->v.plural;
+        break;
+      }
+    }
+  }
+  return plural;
 }
 
 ////////////////////////////////
@@ -1349,6 +1552,24 @@ d_init(void)
       {
         String8 name = arch_info->reg_code_name_table[code];
         d_string2num_table_insert(arena, table, name, code, 0);
+      }
+    }
+    
+    // rjf: build vocab map
+    {
+      d_shared->vocab_slots_count = ArrayCount(d_vocab_info_table);
+      d_shared->vocab_single_slots = push_array(arena, D_VocabNode *, d_shared->vocab_slots_count);
+      d_shared->vocab_plural_slots = push_array(arena, D_VocabNode *, d_shared->vocab_slots_count);
+      for EachElement(idx, d_vocab_info_table)
+      {
+        U64 single_hash = u64_hash_from_str8(d_vocab_info_table[idx].single);
+        U64 plural_hash = u64_hash_from_str8(d_vocab_info_table[idx].plural);
+        U64 single_slot_idx = single_hash%d_shared->vocab_slots_count;
+        U64 plural_slot_idx = plural_hash%d_shared->vocab_slots_count;
+        D_VocabNode *n = push_array(arena, D_VocabNode, 1);
+        MemoryCopyStruct(&n->v, &d_vocab_info_table[idx]);
+        SLLStackPush_N(d_shared->vocab_single_slots[single_slot_idx], n, single_next);
+        SLLStackPush_N(d_shared->vocab_plural_slots[plural_slot_idx], n, plural_next);
       }
     }
     

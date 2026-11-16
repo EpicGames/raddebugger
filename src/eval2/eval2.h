@@ -106,6 +106,27 @@ E2_InterpStatus;
 #define e2_interp_status_is_caller_request(s) (E2_InterpStatus_FirstCallerRequest <= (s) && (s) <= E2_InterpStatus_LastCallerRequest)
 
 ////////////////////////////////
+//~ rjf: Stringification Statuses
+
+typedef enum E2_StringifyStatus
+{
+  E2_StringifyStatus_Good,
+  E2_StringifyStatus_FirstTerminal = E2_StringifyStatus_Good,
+  E2_StringifyStatus_LastTerminal = E2_StringifyStatus_Good,
+  
+  E2_StringifyStatus_NextString,
+  
+  E2_StringifyStatus_ExpandAccess,
+  E2_StringifyStatus_FirstCallerRequest = E2_StringifyStatus_ExpandAccess,
+  E2_StringifyStatus_LastCallerRequest = E2_StringifyStatus_ExpandAccess,
+}
+E2_StringifyStatus;
+
+
+#define e2_stringify_status_is_terminal(s) (E2_StringifyStatus_FirstTerminal <= (s) && (s) <= E2_StringifyStatus_LastTerminal)
+#define e2_stringify_status_is_caller_request(s) (E2_StringifyStatus_FirstCallerRequest <= (s) && (s) <= E2_StringifyStatus_LastCallerRequest)
+
+////////////////////////////////
 //~ rjf: Type Keys
 
 typedef enum E2_TypeKeyKind
@@ -198,6 +219,8 @@ struct E2_ConsTypeMap
 ////////////////////////////////
 //~ rjf: Evaluation Values
 
+typedef U64 E2_SpaceID;
+
 typedef enum E2_Mode
 {
   E2_Mode_Type,     // no value content - just type content
@@ -229,10 +252,23 @@ struct E2_Val
   String8 string;
 };
 
+typedef struct E2_SpaceVal E2_SpaceVal;
+struct E2_SpaceVal
+{
+  E2_SpaceID space_id;
+  E2_Val val;
+};
+
+typedef struct E2_SpaceValArray E2_SpaceValArray;
+struct E2_SpaceValArray
+{
+  E2_SpaceVal *v;
+  U64 count;
+};
+
 ////////////////////////////////
 //~ rjf: Evaluation "Asset" Parameters (Debug Info / Modules)
 
-typedef U64 E2_SpaceID;
 typedef U32 E2_DbgInfoID;
 
 typedef struct E2_DbgInfo E2_DbgInfo;
@@ -497,7 +533,7 @@ typedef struct E2_InterpStackValNode E2_InterpStackValNode;
 struct E2_InterpStackValNode
 {
   E2_InterpStackValNode *next;
-  E2_Val val;
+  E2_SpaceVal space_val;
 };
 
 typedef struct E2_InterpState E2_InterpState;
@@ -505,6 +541,7 @@ struct E2_InterpState
 {
   U64 bytecode_off;
   E2_Ctx selected_ctx;
+  U64 stack_val_count;
   E2_InterpStackValNode *top_val;
   E2_InterpStackValNode *free_val;
   U64 last_caller_request_bytecode_off;
@@ -518,8 +555,55 @@ struct E2_Interp
   Rng1U64 missed_read_space_addr_range;
   E2_CtxFlags missing_ctx_flags;
   E2_SpaceID space_id;
-  E2_Val val;
+  E2_SpaceValArray result;
   E2_MsgList msgs;
+};
+
+////////////////////////////////
+//~ rjf: Stringification
+
+typedef U32 E2_StringFlags;
+enum
+{
+  E2_StringFlag_ReadOnly     = (1<<0),
+  E2_StringFlag_DisableChars = (1<<1),
+};
+
+typedef struct E2_StringParams E2_StringParams;
+struct E2_StringParams
+{
+  E2_StringFlags flags;
+  U8 radix;
+  U8 min_digits;
+};
+
+typedef struct E2_StringifyTask E2_StringifyTask;
+struct E2_StringifyTask
+{
+  E2_StringifyTask *next;
+  U64 id;
+  E2_TypeKey type_key;
+  E2_Val val;
+  U64 last_child_num;
+};
+
+typedef struct E2_StringifyState E2_StringifyState;
+struct E2_StringifyState
+{
+  E2_StringifyTask *top_task;
+  E2_StringifyTask *free_task;
+  U64 caller_request_count;
+};
+
+typedef struct E2_Stringify E2_Stringify;
+struct E2_Stringify
+{
+  E2_StringifyStatus status;
+  U64 id;
+  E2_TypeKey type_key;
+  E2_Val val;
+  U64 expand_num;
+  String8 string;
 };
 
 ////////////////////////////////
@@ -531,11 +615,13 @@ read_only global E2_ConsTypeNode e2_cons_type_node_nil = {&e2_cons_type_node_nil
 read_only global E2_DbgInfo e2_dbg_info_nil = {0, {0}, &rdi_parsed_nil};
 read_only global E2_Expr e2_expr_nil = {0};
 read_only global E2_IRNode e2_irnode_nil = {0};
+read_only global E2_SpaceVal e2_space_val_nil = {0};
 
 ////////////////////////////////
 //~ rjf: Basics
 
 internal String8 e2_name_from_eval_op(RDI_EvalOp op);
+internal String8 e2_raw_identifier_from_tick_escaped(Arena *arena, String8 string);
 
 ////////////////////////////////
 //~ rjf: Space -> Memory Map Helpers
@@ -703,8 +789,18 @@ internal E2_Compile e2_compile_from_expr(Arena *arena, E2_CompileState *state, E
 internal String8 e2_bytecode_from_irnode(Arena *arena, E2_IRNode *irnode);
 
 ////////////////////////////////
-//~ rjf: Bytecode -> Result
+//~ rjf: Bytecode -> Value
 
 internal E2_Interp e2_interp_from_bytecode(Arena *arena, E2_InterpState *state, E2_SpaceMap *space_map, String8 bytecode);
+
+////////////////////////////////
+//~ rjf: Type / Value -> String
+
+internal String8 e2_string_from_ascii_value(Arena *arena, U8 val);
+internal String8 e2_string_from_hresult_facility_code(U32 code);
+internal String8 e2_string_from_hresult_code(U32 code);
+internal String8 e2_string_from_simple_type_val(Arena *arena, E2_TypeKey type_key, E2_Val val, E2_StringParams *params);
+
+internal E2_Stringify e2_stringify_from_type_val(Arena *arena, E2_StringifyState *state, E2_StringParams *string_params, U64 id, E2_TypeKey next_type_key, E2_Val next_val);
 
 #endif // EVAL2_H

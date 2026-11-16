@@ -1388,6 +1388,42 @@ d_push_active_dbgi_key_list(Arena *arena)
 //- rjf: per-run caches
 
 internal U64
+d_cached_ip_from_thread_frame_idx(D_Entity *thread, U64 frame_idx)
+{
+  U64 result = 0;
+  if(frame_idx == 0)
+  {
+    result = d_cached_ip_from_thread(thread->handle);
+  }
+  else
+  {
+    Access *access = access_open();
+    D_CallStack callstack = d_call_stack_from_thread(access, thread->handle, 1, 0);
+    if(callstack.frames_count != 0)
+    {
+      ARCH_Info *arch_info = arch_info_from_arch(thread->arch);
+      result = arch_ip_from_reg_block(arch_info, callstack.frames[frame_idx%callstack.frames_count].regs);
+    }
+    access_close(access);
+  }
+  return result;
+}
+
+internal U64
+d_cached_cfa_from_thread_frame_idx(D_Entity *thread, U64 frame_idx)
+{
+  U64 cfa = 0;
+  Access *access = access_open();
+  D_CallStack callstack = d_call_stack_from_thread(access, thread->handle, 1, 0);
+  if(callstack.frames_count != 0)
+  {
+    cfa = callstack.frames[frame_idx%callstack.frames_count].cfa;
+  }
+  access_close(access);
+  return cfa;
+}
+
+internal U64
 d_cached_ip_from_thread_unwind(D_Entity *thread, U64 unwind_count)
 {
   U64 result = 0;

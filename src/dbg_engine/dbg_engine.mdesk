@@ -187,6 +187,22 @@ D_EntityKindTable:
 }
 
 ////////////////////////////////
+//~ rjf: Vocabulary
+
+@table(single plural) D_VocabInfoTable:
+{
+  {server   _         }
+  {process  processes }
+  {module   _         }
+  {thread   _         }
+}
+
+@data(D_VocabInfo) d_vocab_info_table:
+{
+  @expand(D_VocabInfoTable a) `{str8_lit_comp("$(a.single)"), str8_lit_comp("$(a.plural == '_' -> a.single .. 's')$(a.plural != '_' -> a.plural)")}`
+}
+
+////////////////////////////////
 //~ rjf: Evaluation Schemas
 //
 // Each schema defines partial type info for evaluation. It is "partial"

@@ -74,7 +74,25 @@ D_ControllerIDEnum;
 
 #define d_frame_id(entity_id, unwind_idx) ((((U64)entity_id)<<32)|((unwind_idx)&0xffffffff))
 #define d_entity_id_from_frame_id(frame_id) (((frame_id)&0xffffffff00000000ull)>>32)
-#define d_unwind_idx_from_frame_id(frame_id) (((frame_id)&0xffffffffull)>>0)
+#define d_frame_idx_from_frame_id(frame_id) (((frame_id)&0xffffffffull)>>0)
+
+////////////////////////////////
+//~ rjf: Vocabulary Types
+
+typedef struct D_VocabInfo D_VocabInfo;
+struct D_VocabInfo
+{
+  String8 single;
+  String8 plural;
+};
+
+typedef struct D_VocabNode D_VocabNode;
+struct D_VocabNode
+{
+  D_VocabNode *single_next;
+  D_VocabNode *plural_next;
+  D_VocabInfo v;
+};
 
 ////////////////////////////////
 //~ rjf: Entity Handle Types
@@ -130,8 +148,8 @@ D_SpaceKindEnum;
 #define d_content_key_id_from_space_id(id)   (d_space_kind_from_id(id) == D_SpaceKind_ContentKey ? ((id)&0x00ffffffffffffffull) : 0)
 
 #define d_entity_metadata_space_id(entity_id) ((((U64)D_SpaceKind_EntityMetadata)<<56)|((entity_id)&0xffffffffull))
-#define d_memory_space_id(entity_id, unwind_index) ((((U64)D_SpaceKind_Memory)<<56)|(((unwind_index)&0xffffffull)<<32)|(entity_id&0xffffffffull))
-#define d_registers_space_id(entity_id, unwind_index) ((((U64)D_SpaceKind_Registers)<<56)|(((unwind_index)&0xffffffull)<<32)|((entity_id)&0xffffffffull))
+#define d_memory_space_id(entity_id, frame_index) ((((U64)D_SpaceKind_Memory)<<56)|(((frame_index)&0xffffffull)<<32)|(entity_id&0xffffffffull))
+#define d_registers_space_id(entity_id, frame_index) ((((U64)D_SpaceKind_Registers)<<56)|(((frame_index)&0xffffffull)<<32)|((entity_id)&0xffffffffull))
 #define d_content_key_space_id(content_key_id) ((((U64)D_SpaceKind_ContentKey)<<56)|((content_key_id)&0x00ffffffffffffffull))
 
 typedef enum D_EvalCtxIDKind
@@ -160,8 +178,7 @@ struct D_Eval
   E2_Expr *expr;
   E2_IRNode *irtree;
   String8 bytecode;
-  E2_SpaceID space_id;
-  E2_Val val;
+  E2_SpaceValArray space_vals;
   E2_MsgList msgs;
 };
 
@@ -188,7 +205,7 @@ struct D_EvalCache
   // rjf: per evaluation phase context
   U64 async_endt_us;
   D_EntityID selected_thread;
-  U32 selected_unwind_idx;
+  U32 selected_frame_idx;
   
   // rjf: evaluation phase reset marker
   U64 arena_eval_start_pos;
@@ -357,6 +374,8 @@ struct D_EntityCtx
   D_EntityHashSlot *hash_slots;
   U64 id_slots_count;
   D_EntityHashSlot *id_slots;
+  U64 string_slots_count;
+  D_EntityHashSlot *string_slots;
   U64 entity_kind_counts[D_EntityKind_COUNT];
   U64 entity_kind_alloc_gens[D_EntityKind_COUNT];
 };
@@ -508,6 +527,9 @@ struct D_Shared
 {
   Arena *arena;
   D_String2NumTable arch_string2regcode_tables[Arch_COUNT];
+  U64 vocab_slots_count;
+  D_VocabNode **vocab_single_slots;
+  D_VocabNode **vocab_plural_slots;
   CFG_SchemaTable entity_schema_table;
   CFG_SchemaTable cfg_schema_table;
 };
@@ -517,6 +539,7 @@ struct D_Shared
 
 global D_Shared *d_shared = 0;
 read_only global D_String2NumTable d_nil_string2num_table = {0};
+read_only global D_Eval d_eval_nil = {.expr = &e2_expr_nil, .irtree = &e2_irnode_nil, .space_vals = {.count = 1, .v = &e2_space_val_nil}};
 thread_static D_EvalCache *d_eval_cache = 0;
 
 ////////////////////////////////
@@ -536,21 +559,30 @@ internal B32 d_space_write(E2_SpaceID space_id, void *in, Rng1U64 range);
 internal B32 d_space_read(E2_SpaceID space_id, void *out, Rng1U64 range);
 
 //- rjf: eval building helpers
-internal E2_Val d_eval_val_from_bytecode(Arena *arena, String8 bytecode, E2_SpaceID *space_id_out, E2_MsgList *msgs_out);
-internal E2_Val d_eval_val_from_irtree(Arena *arena, E2_IRNode *irtree, E2_SpaceID *space_id_out, E2_MsgList *msgs_out);
+internal E2_SpaceValArray d_eval_space_vals_from_bytecode(Arena *arena, String8 bytecode, E2_MsgList *msgs_out);
+internal E2_SpaceValArray d_eval_space_vals_from_irtree(Arena *arena, E2_IRNode *irtree, E2_MsgList *msgs_out);
+internal E2_Val d_eval_val_from_irtree(Arena *arena, E2_IRNode *irtree, E2_MsgList *msgs_out);
 internal D_Entity *d_entity_from_irtree(Arena *arena, E2_IRNode *irtree, E2_MsgList *msgs_out);
 internal ARCH_RegCode d_eval_reg_code_from_arch_string(Arch arch, String8 string);
 internal E2_IRNode *d_eval_irtree_from_arch_regcode(Arena *arena, D_EntityID thread_id, U64 frame_idx, Arch arch, ARCH_RegCode reg_code);
 internal E2_IRNode *d_eval_irtree_from_location(Arena *arena, RDI_Parsed *rdi, RDI_Location location, U64 ctx_voff);
-internal E2_IRNode *d_eval_irtree_from_thread_unwind_idx_local_string(Arena *arena, D_Entity *thread, U64 unwind_idx, String8 name);
+internal E2_IRNode *d_eval_irtree_from_thread_frame_idx_local_string(Arena *arena, D_Entity *thread, U64 frame_idx, String8 name);
+internal E2_IRNode *d_eval_irtree_from_member_access(Arena *arena, E2_IRNode *lhs_irtree, String8 member_name, E2_MsgList *msgs);
 
 //- rjf: eval cache operations
 internal D_EvalCache *d_eval_cache_alloc(void);
-internal void d_eval_cache_select(D_EvalCache *cache, D_EntityID selected_thread, U32 selected_unwind_idx, U64 async_endt_us);
+internal void d_eval_cache_select(D_EvalCache *cache, D_EntityID selected_thread, U32 selected_frame_idx, U64 async_endt_us);
 internal D_EvalID d_eval_push_parent(D_EvalID id);
 internal D_EvalID d_eval_pop_parent(void);
 internal D_Eval d_eval_from_leaf_identifier(String8 identifier, String8List qualifiers);
 internal D_Eval d_eval_from_string(String8 string);
+internal String8 d_value_string_from_eval(Arena *arena, D_Eval eval);
+
+////////////////////////////////
+//~ rjf: Vocabulary Lookups
+
+internal String8 d_singular_from_plural(String8 string);
+internal String8 d_plural_from_singular(String8 string);
 
 ////////////////////////////////
 //~ rjf: Layer Initialization

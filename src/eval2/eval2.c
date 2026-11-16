@@ -25,6 +25,46 @@ e2_name_from_eval_op(RDI_EvalOp op)
   return result;
 }
 
+internal String8
+e2_raw_identifier_from_tick_escaped(Arena *arena, String8 string)
+{
+  String8 result = string;
+  if(str8_match(str8_prefix(string, 1), s("`"), 0) &&
+     str8_match(str8_postfix(string, 1), s("`"), 0))
+  {
+    Temp scratch = scratch_begin(&arena, 1);
+    String8List parts = {0};
+    String8 string_content = str8_skip(str8_chop(string, 1), 1);
+    U64 start_off = 0;
+    for(U64 off = 0; off <= string_content.size; off += 1)
+    {
+      if(off == string_content.size || (off+1 < string_content.size && string_content.str[off] == '\\'))
+      {
+        String8 part = str8_substr(string_content, r1u64(start_off, off));
+        str8_list_push(scratch.arena, &parts, part);
+        if(off+1 < string_content.size) switch(string_content.str[off+1])
+        {
+          default:{}break;
+          case '`':
+          {
+            str8_list_push(scratch.arena, &parts, s("`"));
+            off += 1;
+          }break;
+          case '\\':
+          {
+            str8_list_push(scratch.arena, &parts, s("\\"));
+            off += 1;
+          }break;
+        }
+        start_off = off+1;
+      }
+    }
+    result = str8_list_join(arena, &parts, 0);
+    scratch_end(scratch);
+  }
+  return result;
+}
+
 ////////////////////////////////
 //~ rjf: Space -> Memory Map Helpers
 
@@ -1977,7 +2017,7 @@ e2_parse_from_string(Arena *arena, E2_ParseState *state, B32 identifier_is_type,
     S64 max_precedence = state->top_task->max_precedence;
     B32 type_ancestors = state->top_task->do_type_ancestors;
     B32 need_new_expr = (expr == &e2_expr_nil && !type_ancestors);
-    E2_Token token = {0};
+    E2_Token token = {E2_TokenKind_Null};
     
     //- rjf: skip leading whitespace / comments
     for(;;)
@@ -2099,6 +2139,7 @@ e2_parse_from_string(Arena *arena, E2_ParseState *state, B32 identifier_is_type,
               qualifier_range = union_1u64(qualifier_range, ext_identifier_token.range);
             }
             String8 qualifier = str8_substr(string, qualifier_range);
+            qualifier = e2_raw_identifier_from_tick_escaped(arena, qualifier);
             str8_list_push(arena, &qualifiers, qualifier);
             if(!e2_try_token(lang, string, E2_TokenKind_Identifier, s(""), &next_off_maybe, &last_identifier_token))
             {
@@ -2109,6 +2150,7 @@ e2_parse_from_string(Arena *arena, E2_ParseState *state, B32 identifier_is_type,
           else
           {
             identifier = str8_substr(string, last_identifier_token.range);
+            identifier = e2_raw_identifier_from_tick_escaped(arena, identifier);
             break;
           }
         }
@@ -2536,11 +2578,16 @@ e2_parse_from_string(Arena *arena, E2_ParseState *state, B32 identifier_is_type,
       }
       
       //- rjf: consume expected splitters
+      B32 splitter_found = 0;
       if(state->top_task->child_count >= state->top_task->splitter_min_child_count &&
          state->top_task->expected_splitter.size != 0 &&
          state->top_task->child_count < state->top_task->child_count_target)
       {
-        if(!e2_try_token(lang, string, E2_TokenKind_Symbol, state->top_task->expected_splitter, &off, 0) && state->top_task->splitter_is_required)
+        if(e2_try_token(lang, string, E2_TokenKind_Symbol, state->top_task->expected_splitter, &off, 0))
+        {
+          splitter_found = 1;
+        }
+        else if(state->top_task->splitter_is_required)
         {
           e2_msgf(arena, &parse.msgs, r1u64(off, off), "Expected `%S`.", state->top_task->expected_splitter);
         }
@@ -2663,7 +2710,10 @@ e2_parse_from_string(Arena *arena, E2_ParseState *state, B32 identifier_is_type,
       
       //- rjf: caller-provided info completes a task, *or* explicit closer found,
       // *or* task child count hits limit -> complete this subtree
-      else if(state->top_task->child_count >= state->top_task->child_count_target || (closer_found && state->top_task->expected_closer.size != 0))
+      else if(state->top_task->child_count >= state->top_task->child_count_target || // NOTE(rjf): task expected N children, got N
+              (closer_found && state->top_task->expected_closer.size != 0) || // NOTE(rjf): task expected closer, got closer
+              (off >= string.size) // NOTE(rjf): task still could take children but we are done parsing
+              )
       {
         E2_ParseTask *completed_task = state->top_task;
         
@@ -2717,7 +2767,7 @@ e2_parse_from_string(Arena *arena, E2_ParseState *state, B32 identifier_is_type,
       // if we have an active op kind, reset expression, because we need to parse another.
       // if we don't, we need to look for extensions of our current expression instead.
       //
-      else if(state->top_task->expr_kind != E2_ExprKind_Null)
+      else if(state->top_task->expr_kind != E2_ExprKind_Null || splitter_found)
       {
         expr = &e2_expr_nil;
       }
@@ -3678,6 +3728,16 @@ e2_compile_from_expr(Arena *arena, E2_CompileState *state, E2_IRNode *resolve_re
         }
       }
       
+      //- rjf: if this finished node has no op, no type, but has children with types,
+      // e.g. multiple-return-values, then pick the rightmost one (it will be popped
+      // from the stack first)
+      if(finished_root->op == 0 && e2_type_key_match(finished_root->type_key, e2_type_key_zero()) &&
+         finished_root->last_child != 0)
+      {
+        finished_root->type_key = finished_root->last_child->v->type_key;
+        finished_root->mode = finished_root->last_child->v->mode;
+      }
+      
       //- rjf: if this task is done, pop - if there is a parent, push this task's
       // IR tree as a child - otherwise this is our final compilation result
       if(!done && !new_child_task)
@@ -3716,7 +3776,12 @@ e2_compile_from_expr(Arena *arena, E2_CompileState *state, E2_IRNode *resolve_re
           {
             e2_msgf(arena, &compile.msgs, state->top_task->expr->src_range, "Couldn't find member named `%S`.", compile.member_name);
           }break;
+          case E2_CompileStatus_IndexAccess:
+          {
+            e2_msgf(arena, &compile.msgs, state->top_task->expr->src_range, "Couldn't resolve index operation.");
+          }break;
         }
+        compile.irtree = &e2_irnode_nil;
         compile.status = E2_CompileStatus_Error;
       }
       state->caller_request_count += 1;
@@ -3877,7 +3942,7 @@ e2_interp_from_bytecode(Arena *arena, E2_InterpState *state, E2_SpaceMap *space_
         E2_InterpStackValNode *node = state->top_val;
         for(U64 pop_idx = 0; node != 0 && pop_idx < pop_count; pop_idx += 1, node = node->next)
         {
-          popped_vals[pop_idx] = node->val;
+          popped_vals[pop_idx] = node->space_val.val;
         }
       }
       
@@ -4202,7 +4267,7 @@ BinOp(U, u64, u64, symbol);
             if(idx == target_idx)
             {
               found = 1;
-              push_vals[0] = n->val;
+              push_vals[0] = n->space_val.val;
               break;
             }
           }
@@ -4311,6 +4376,7 @@ BinOp(U, u64, u64, symbol);
         {
           SLLStackPop(state->top_val);
           SLLStackPush(state->free_val, popped);
+          state->stack_val_count -= 1;
         }
         else
         {
@@ -4330,8 +4396,10 @@ BinOp(U, u64, u64, symbol);
         {
           node = push_array(arena, E2_InterpStackValNode, 1);
         }
-        node->val = push_vals[push_idx];
+        node->space_val.space_id = state->selected_ctx.space_id;
+        node->space_val.val = push_vals[push_idx];
         SLLStackPush(state->top_val, node);
+        state->stack_val_count += 1;
       }
       
       //- rjf: if opcode successful -> commit new bytecode offset
@@ -4377,12 +4445,471 @@ BinOp(U, u64, u64, symbol);
     if(off == off_opl && good)
     {
       interp.status = E2_InterpStatus_Good;
-      interp.space_id = state->selected_ctx.space_id;
-      if(state->top_val != 0)
+      interp.result.count = Max(1, state->stack_val_count);
+      interp.result.v = push_array(arena, E2_SpaceVal, interp.result.count);
       {
-        interp.val = state->top_val->val;
+        U64 idx = 0;
+        for EachNode(n, E2_InterpStackValNode, state->top_val)
+        {
+          interp.result.v[idx] = n->space_val;
+          idx += 1;
+        }
       }
+    }
+    
+    //- rjf: if we're terminal, and we have no space values, always return a nil
+    if(e2_interp_status_is_terminal(interp.status) && interp.result.count == 0)
+    {
+      interp.result.count = 1;
+      interp.result.v = &e2_space_val_nil;
     }
   }
   return interp;
+}
+
+////////////////////////////////
+//~ rjf: Type / Value -> String
+
+internal String8
+e2_string_from_ascii_value(Arena *arena, U8 val)
+{
+  String8 result = {0};
+  switch(val)
+  {
+    case 0x00:{result = s("\\0");}break;
+    case 0x07:{result = s("\\a");}break;
+    case 0x08:{result = s("\\b");}break;
+    case 0x0c:{result = s("\\f");}break;
+    case 0x0a:{result = s("\\n");}break;
+    case 0x0d:{result = s("\\r");}break;
+    case 0x09:{result = s("\\t");}break;
+    case 0x0b:{result = s("\\v");}break;
+    case 0x3f:{result = s("\\?");}break;
+    case '"': {result = s("\\\"");}break;
+    case '\'':{result = s("\\'");}break;
+    case '\\':{result = s("\\\\");}break;
+    default:
+    if(32 <= val && val < 255)
+    {
+      result = str8f(arena, "%c", val);
+    }break;
+  }
+  return result;
+}
+
+internal String8
+e2_string_from_hresult_facility_code(U32 code)
+{
+  String8 result = {0};
+  switch(code)
+  {
+    default:{}break;
+    case 0x1:{result = s("RPC");}break;
+    case 0x2:{result = s("DISPATCH");}break;
+    case 0x3:{result = s("STORAGE");}break;
+    case 0x4:{result = s("ITF");}break;
+    case 0x7:{result = s("WIN32");}break;
+    case 0x8:{result = s("WINDOWS");}break;
+    case 0x9:{result = s("SECURITY|SSPI");}break;
+    case 0xA:{result = s("CONTROL");}break;
+    case 0xB:{result = s("CERT");}break;
+    case 0xC:{result = s("INTERNET");}break;
+    case 0xD:{result = s("MEDIASERVER");}break;
+    case 0xE:{result = s("MSMQ");}break;
+    case 0xF:{result = s("SETUPAPI");}break;
+    case 0x10:{result = s("SCARD");}break;
+    case 0x11:{result = s("COMPLUS");}break;
+    case 0x12:{result = s("AAF");}break;
+    case 0x13:{result = s("URT");}break;
+    case 0x14:{result = s("ACS");}break;
+    case 0x15:{result = s("DPLAY");}break;
+    case 0x16:{result = s("UMI");}break;
+    case 0x17:{result = s("SXS");}break;
+    case 0x18:{result = s("WINDOWS_CE");}break;
+    case 0x19:{result = s("HTTP");}break;
+    case 0x1A:{result = s("USERMODE_COMMONLOG");}break;
+    case 0x1B:{result = s("WER");}break;
+    case 0x1F:{result = s("USERMODE_FILTER_MANAGER");}break;
+    case 0x20:{result = s("BACKGROUNDCOPY");}break;
+    case 0x21:{result = s("CONFIGURATION|WIA");}break;
+    case 0x22:{result = s("STATE_MANAGEMENT");}break;
+    case 0x23:{result = s("METADIRECTORY");}break;
+    case 0x24:{result = s("WINDOWSUPDATE");}break;
+    case 0x25:{result = s("DIRECTORYSERVICE");}break;
+    case 0x26:{result = s("GRAPHICS");}break;
+    case 0x27:{result = s("SHELL|NAP");}break;
+    case 0x28:{result = s("TPM_SERVICES");}break;
+    case 0x29:{result = s("TPM_SOFTWARE");}break;
+    case 0x2A:{result = s("UI");}break;
+    case 0x2B:{result = s("XAML");}break;
+    case 0x2C:{result = s("ACTION_QUEUE");}break;
+    case 0x30:{result = s("WINDOWS_SETUP|PLA");}break;
+    case 0x31:{result = s("FVE");}break;
+    case 0x32:{result = s("FWP");}break;
+    case 0x33:{result = s("WINRM");}break;
+    case 0x34:{result = s("NDIS");}break;
+    case 0x35:{result = s("USERMODE_HYPERVISOR");}break;
+    case 0x36:{result = s("CMI");}break;
+    case 0x37:{result = s("USERMODE_VIRTUALIZATION");}break;
+    case 0x38:{result = s("USERMODE_VOLMGR");}break;
+    case 0x39:{result = s("BCD");}break;
+    case 0x3A:{result = s("USERMODE_VHD");}break;
+    case 0x3C:{result = s("SDIAG");}break;
+    case 0x3D:{result = s("WINPE|WEBSERVICES");}break;
+    case 0x3E:{result = s("WPN");}break;
+    case 0x3F:{result = s("WINDOWS_STORE");}break;
+    case 0x40:{result = s("INPUT");}break;
+    case 0x42:{result = s("EAP");}break;
+    case 0x50:{result = s("WINDOWS_DEFENDER");}break;
+    case 0x51:{result = s("OPC");}break;
+    case 0x52:{result = s("XPS");}break;
+    case 0x53:{result = s("RAS");}break;
+    case 0x54:{result = s("POWERSHELL|MBN");}break;
+    case 0x55:{result = s("EAS");}break;
+    case 0x62:{result = s("P2P_INT");}break;
+    case 0x63:{result = s("P2P");}break;
+    case 0x64:{result = s("DAF");}break;
+    case 0x65:{result = s("BLUETOOTH_ATT");}break;
+    case 0x66:{result = s("AUDIO");}break;
+    case 0x6D:{result = s("VISUALCPP");}break;
+    case 0x70:{result = s("SCRIPT");}break;
+    case 0x71:{result = s("PARSE");}break;
+    case 0x78:{result = s("BLB");}break;
+    case 0x79:{result = s("BLB_CLI");}break;
+    case 0x7A:{result = s("WSBAPP");}break;
+    case 0x80:{result = s("BLBUI");}break;
+    case 0x81:{result = s("USN");}break;
+    case 0x82:{result = s("USERMODE_VOLSNAP");}break;
+    case 0x83:{result = s("TIERING");}break;
+    case 0x85:{result = s("WSB_ONLINE");}break;
+    case 0x86:{result = s("ONLINE_ID");}break;
+    case 0x99:{result = s("DLS");}break;
+    case 0xA0:{result = s("SOS");}break;
+    case 0xB0:{result = s("DEBUGGERS");}break;
+    case 0xE7:{result = s("USERMODE_SPACES");}break;
+    case 0x100:{result = s("DMSERVER|RESTORE|SPP");}break;
+    case 0x101:{result = s("DEPLOYMENT_SERVICES_SERVER");}break;
+    case 0x102:{result = s("DEPLOYMENT_SERVICES_IMAGING");}break;
+    case 0x103:{result = s("DEPLOYMENT_SERVICES_MANAGEMENT");}break;
+    case 0x104:{result = s("DEPLOYMENT_SERVICES_UTIL");}break;
+    case 0x105:{result = s("DEPLOYMENT_SERVICES_BINLSVC");}break;
+    case 0x107:{result = s("DEPLOYMENT_SERVICES_PXE");}break;
+    case 0x108:{result = s("DEPLOYMENT_SERVICES_TFTP");}break;
+    case 0x110:{result = s("DEPLOYMENT_SERVICES_TRANSPORT_MANAGEMENT");}break;
+    case 0x116:{result = s("DEPLOYMENT_SERVICES_DRIVER_PROVISIONING");}break;
+    case 0x121:{result = s("DEPLOYMENT_SERVICES_MULTICAST_SERVER");}break;
+    case 0x122:{result = s("DEPLOYMENT_SERVICES_MULTICAST_CLIENT");}break;
+    case 0x125:{result = s("DEPLOYMENT_SERVICES_CONTENT_PROVIDER");}break;
+    case 0x131:{result = s("LINGUISTIC_SERVICES");}break;
+    case 0x375:{result = s("WEB");}break;
+    case 0x376:{result = s("WEB_SOCKET");}break;
+    case 0x446:{result = s("AUDIOSTREAMING");}break;
+    case 0x600:{result = s("ACCELERATOR");}break;
+    case 0x701:{result = s("MOBILE");}break;
+    case 0x7CC:{result = s("WMAAECMA");}break;
+    case 0x801:{result = s("WEP");}break;
+    case 0x802:{result = s("SYNCENGINE");}break;
+    case 0x878:{result = s("DIRECTMUSIC");}break;
+    case 0x879:{result = s("DIRECT3D10");}break;
+    case 0x87A:{result = s("DXGI");}break;
+    case 0x87B:{result = s("DXGI_DDI");}break;
+    case 0x87C:{result = s("DIRECT3D11");}break;
+    case 0x888:{result = s("LEAP");}break;
+    case 0x889:{result = s("AUDCLNT");}break;
+    case 0x898:{result = s("WINCODEC_DWRITE_DWM");}break;
+    case 0x899:{result = s("DIRECT2D");}break;
+    case 0x900:{result = s("DEFRAG");}break;
+    case 0x901:{result = s("USERMODE_SDBUS");}break;
+    case 0x902:{result = s("JSCRIPT");}break;
+    case 0xA01:{result = s("PIDGENX");}break;
+  }
+  return result;
+}
+
+internal String8
+e2_string_from_hresult_code(U32 code)
+{
+  String8 result = {0};
+  switch(code)
+  {
+    default:{}break;
+    case 0x00000000: {result = s("S_OK: Operation successful");}break;
+    case 0x00000001: {result = s("S_FALSE: Operation successful but returned no results");}break;
+    case 0x80004004: {result = s("E_ABORT: Operation aborted");}break;
+    case 0x80004005: {result = s("E_FAIL: Unspecified failure");}break;
+    case 0x80004002: {result = s("E_NOINTERFACE: No such interface supported");}break;
+    case 0x80004001: {result = s("E_NOTIMPL: Not implemented");}break;
+    case 0x80004003: {result = s("E_POINTER: Pointer that is not valid");}break;
+    case 0x8000FFFF: {result = s("E_UNEXPECTED: Unexpected failure");}break;
+    case 0x80070005: {result = s("E_ACCESSDENIED: General access denied error");}break;
+    case 0x80070006: {result = s("E_HANDLE: Handle that is not valid");}break;
+    case 0x80070057: {result = s("E_INVALIDARG: One or more arguments are not valid");}break;
+    case 0x8007000E: {result = s("E_OUTOFMEMORY: Failed to allocate necessary memory");}break;
+  }
+  return result;
+}
+
+internal String8
+e2_string_from_simple_type_val(Arena *arena, E2_TypeKey type_key, E2_Val val, E2_StringParams *params)
+{
+  String8 result = {0};
+  E2_TypeKind type_kind = e2_type_kind_from_key(type_key);
+  {
+    S64 s64 = 0;
+    U64 u64 = 0;
+    F64 f64 = 0;
+    switch(type_kind)
+    {
+      default:{}break;
+      
+      case E2_TypeKind_Handle:
+      {
+        result = str8_from_u64(arena, val.u64, params->radix, params->min_digits, 0);
+      }break;
+      
+      case E2_TypeKind_HResult:
+      {
+        if(params->flags & E2_StringFlag_ReadOnly)
+        {
+          Temp scratch = scratch_begin(&arena, 1);
+          U32 hresult_value = val.u32;
+          U32 is_error   = !!(hresult_value & (1ull<<31));
+          U32 error_code = (hresult_value);
+          U32 facility   = (hresult_value & 0x7ff0000) >> 16;
+          String8 value_string = str8_from_s64(scratch.arena, val.u64, params->radix, params->min_digits, 0);
+          String8 facility_string = e2_string_from_hresult_facility_code(facility);
+          String8 error_string = e2_string_from_hresult_code(error_code);
+          result = str8f(arena, "%S%s%s%S%s%s%S%s",
+                         error_string,
+                         error_string.size != 0 ? " " : "",
+                         facility_string.size != 0 ? "[" : "",
+                         facility_string,
+                         facility_string.size != 0 ? "] ": "",
+                         error_string.size != 0 ? "(" : "",
+                         value_string,
+                         error_string.size != 0 ? ")" : "");
+          scratch_end(scratch);
+        }
+        else
+        {
+          result = str8_from_s64(arena, val.u64, params->radix, params->min_digits, 0);
+        }
+      }break;
+      
+      case E2_TypeKind_Char8:
+      case E2_TypeKind_Char16:
+      case E2_TypeKind_Char32:
+      case E2_TypeKind_UChar8:
+      case E2_TypeKind_UChar16:
+      case E2_TypeKind_UChar32:
+      {
+        B32 type_is_unsigned = (E2_TypeKind_UChar8 <= type_kind && type_kind <= E2_TypeKind_UChar32);
+        String8 char_str = {0};
+        if(!(params->flags & E2_StringFlag_DisableChars))
+        {
+          char_str = e2_string_from_ascii_value(arena, val.s64);
+        }
+        if(char_str.size != 0)
+        {
+          if(params->flags & E2_StringFlag_ReadOnly)
+          {
+            String8 imm_string = (type_is_unsigned
+                                  ? str8_from_u64(arena, val.u64, params->radix, params->min_digits, 0)
+                                  : str8_from_s64(arena, val.s64, params->radix, params->min_digits, 0));
+            result = str8f(arena, "'%S' (%S)", char_str, imm_string);
+          }
+          else
+          {
+            result = str8f(arena, "'%S'", char_str);
+          }
+        }
+        else
+        {
+          result = (type_is_unsigned
+                    ? str8_from_u64(arena, val.u64, params->radix, params->min_digits, 0)
+                    : str8_from_s64(arena, val.s64, params->radix, params->min_digits, 0));
+        }
+      }break;
+      
+      case E2_TypeKind_S8:  s64 = (S64)val.s8; goto sint_path;
+      case E2_TypeKind_S16: s64 = (S64)val.s16; goto sint_path;
+      case E2_TypeKind_S32: s64 = (S64)val.s32; goto sint_path;
+      case E2_TypeKind_S64: s64 = (S64)val.s64; goto sint_path;
+      sint_path:;
+      {
+        result = str8_from_s64(arena, s64, params->radix, params->min_digits, 0);
+      }break;
+      
+      case E2_TypeKind_U8:  u64 = (U64)val.u8; goto uint_path;
+      case E2_TypeKind_U16: u64 = (U64)val.u16; goto uint_path;
+      case E2_TypeKind_U32: u64 = (U64)val.u32; goto uint_path;
+      case E2_TypeKind_U64: u64 = (U64)val.u64; goto uint_path;
+      uint_path:;
+      {
+        result = str8_from_u64(arena, u64, params->radix, params->min_digits, 0);
+      }break;
+      
+      case E2_TypeKind_S128:
+      case E2_TypeKind_S256:
+      case E2_TypeKind_S512:
+      {
+        // TODO(rjf): @eval2
+      }break;
+      
+      case E2_TypeKind_U128:
+      case E2_TypeKind_U256:
+      case E2_TypeKind_U512:
+      {
+        // TODO(rjf): @eval2
+      }break;
+      
+      case E2_TypeKind_F32:{f64 = (F64)val.f32;}goto f64_path;
+      case E2_TypeKind_F64:{f64 = val.f64;}goto f64_path;
+      f64_path:;
+      {
+        result = str8f(arena, "%.*f", params->min_digits ? params->min_digits : 16, f64);
+        U64 num_to_chop = 0;
+        for(U64 num_trimmed = 0; num_trimmed < result.size; num_trimmed += 1)
+        {
+          if(result.str[result.size - 1 - num_trimmed] != '0')
+          {
+            if(result.str[result.size - 1 - num_trimmed] == '.' && num_to_chop > 0)
+            {
+              num_to_chop -= 1;
+            }
+            break;
+          }
+          num_to_chop += 1;
+        }
+        result = str8_chop(result, num_to_chop);
+      }break;
+      
+      case E2_TypeKind_Bool:{result = str8f(arena, "%s", val.u64 ? "true" : "false");}break;
+      case E2_TypeKind_Ptr: {result = str8f(arena, "0x%I64x", val.u64);}break;
+      case E2_TypeKind_LRef:{result = str8f(arena, "0x%I64x", val.u64);}break;
+      case E2_TypeKind_RRef:{result = str8f(arena, "0x%I64x", val.u64);}break;
+      case E2_TypeKind_Function:{result = str8f(arena, "0x%I64x", val.u64);}break;
+    }
+  }
+  return result;
+}
+
+internal E2_Stringify
+e2_stringify_from_type_val(Arena *arena, E2_StringifyState *state, E2_StringParams *string_params, U64 id, E2_TypeKey next_type_key, E2_Val next_val)
+{
+  E2_Stringify result = {E2_StringifyStatus_Good};
+  
+  //- rjf: prepare initial task
+  if(state->top_task == 0)
+  {
+    state->top_task = push_array(arena, E2_StringifyTask, 1);
+    state->top_task->id = id;
+    state->top_task->type_key = next_type_key;
+    state->top_task->val = next_val;
+  }
+  
+  //- rjf: generate next string / push new task
+  B32 is_task_done = 0;
+  if(state->top_task != 0)
+  {
+    E2_TypeKey type_key = state->top_task->type_key;
+    E2_TypeKind type_kind = e2_type_kind_from_key(type_key);
+    E2_Val val = state->top_task->val;
+    switch(type_kind)
+    {
+      //////////////////////////
+      //- rjf: default - leaf cases
+      //
+      default:
+      {
+        result.string = e2_string_from_simple_type_val(arena, type_key, val, string_params);
+        is_task_done = 1;
+      }break;
+      
+      //////////////////////////
+      //- rjf: set expansions
+      //
+      case E2_TypeKind_Set:
+      case E2_TypeKind_Struct:
+      case E2_TypeKind_Class:
+      case E2_TypeKind_Union:
+      case E2_TypeKind_Array:
+      {
+        // rjf: start expansion
+        if(state->top_task->last_child_num == 0)
+        {
+          state->top_task->last_child_num += 1;
+          result.status     = E2_StringifyStatus_ExpandAccess;
+          result.id         = state->top_task->id;
+          result.type_key   = type_key;
+          result.val        = val;
+          result.expand_num = state->top_task->last_child_num;
+          result.string     = (type_kind == E2_TypeKind_Array ? s("[") : s("{"));
+        }
+        
+        // rjf: requested expansion from caller, nonzero type? -> push new expansion
+        else if(state->caller_request_count > 0 && !e2_type_key_match(e2_type_key_zero(), next_type_key))
+        {
+          if(state->top_task->last_child_num > 1)
+          {
+            result.string = s(", ");
+          }
+          state->caller_request_count = 0;
+          E2_StringifyTask *t = state->free_task;
+          if(t != 0)
+          {
+            SLLStackPop(state->free_task);
+          }
+          else
+          {
+            t = push_array(arena, E2_StringifyTask, 1);
+          }
+          SLLStackPush(state->top_task, t);
+          t->id       = id;
+          t->type_key = next_type_key;
+          t->val      = next_val;
+          t->last_child_num = 0;
+        }
+        
+        // rjf: requested expansion, but got a zero type? -> set is done
+        else if(state->caller_request_count > 0)
+        {
+          result.string = (type_kind == E2_TypeKind_Array ? s("]") : s("}"));
+          is_task_done = 1;
+        }
+      }break;
+      
+    }
+  }
+  
+  //- rjf: task is done -> pop
+  if(is_task_done)
+  {
+    E2_StringifyTask *t = state->top_task;
+    SLLStackPop(state->top_task);
+    SLLStackPush(state->free_task, t);
+    if(state->top_task != 0)
+    {
+      state->top_task->last_child_num += 1;
+      result.status     = E2_StringifyStatus_ExpandAccess;
+      result.id         = state->top_task->id;
+      result.type_key   = state->top_task->type_key;
+      result.val        = state->top_task->val;
+      result.expand_num = state->top_task->last_child_num;
+    }
+  }
+  
+  //- rjf: count caller requests
+  if(e2_stringify_status_is_caller_request(result.status))
+  {
+    state->caller_request_count += 1;
+  }
+  
+  //- rjf: good status - if we're still working on a task, keep asking for more
+  if(result.status == E2_StringifyStatus_Good && state->top_task != 0)
+  {
+    result.status = E2_StringifyStatus_NextString;
+  }
+  
+  return result;
 }

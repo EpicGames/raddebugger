@@ -4487,6 +4487,10 @@ rd_view_ui(Rng2F32 rect)
                                 if(top_task->last_child == 0)
                                 {
                                   String8 expr_kind_name = e2_expr_kind_string_table[expr->kind];
+                                  if(expr_kind_name.size == 0)
+                                  {
+                                    expr_kind_name = s("[nil]");
+                                  }
                                   String8 string_ext = {0};
                                   if(expr->string.size != 0)
                                   {
@@ -4662,10 +4666,8 @@ rd_view_ui(Rng2F32 rect)
                             {
                               ui_spacer(ui_em(1.f, 1.f));
                               UI_TagF("weak") ui_label(s("--- Value ---"));
-                              ui_labelf("U128: %I64u %I64u (0x%I64x 0x%I64x)", eval.val.u128.u64[0], eval.val.u128.u64[1], eval.val.u128.u64[0], eval.val.u128.u64[1]);
-                              ui_labelf("U64: %I64u (0x%I64x)", eval.val.u64, eval.val.u64);
-                              ui_labelf("F32: %f", eval.val.f32);
-                              ui_labelf("F64: %f", eval.val.f64);
+                              String8 string = d_value_string_from_eval(scratch.arena, eval);
+                              ui_label(string);
                             }
                             
                             // rjf: log messages

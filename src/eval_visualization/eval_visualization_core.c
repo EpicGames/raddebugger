@@ -1227,7 +1227,6 @@ ev_string_from_simple_typed_eval(Arena *arena, EV_StringParams *params, E_Eval e
   String8 result = {0};
   E_TypeKey type_key = e_type_key_unwrap(eval.irtree.type_key, E_TypeUnwrapFlag_AllDecorative & ~E_TypeUnwrapFlag_Enums);
   E_TypeKind type_kind = e_type_kind_from_key(type_key);
-  U64 type_byte_size = e_type_byte_size_from_key(type_key);
   U8 digit_group_separator = 0;
   if(!(params->flags & EV_StringFlag_ReadOnlyDisplayRules))
   {

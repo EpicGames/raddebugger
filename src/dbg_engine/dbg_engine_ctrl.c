@@ -795,6 +795,25 @@ d_entity_from_id(D_EntityID id)
 }
 
 internal D_Entity *
+d_entity_from_string_kind(String8 string, D_EntityKind kind)
+{
+  D_Entity *result = &d_entity_nil;
+  {
+    U64 hash = u64_hash_from_str8(string);
+    U64 slot_idx = hash%d_entity_ctx->string_slots_count;
+    for(D_EntityHashNode *n = d_entity_ctx->string_slots[slot_idx].first; n != 0; n = n->next)
+    {
+      if(n->entity->kind == kind && str8_match(n->entity->string, string, 0))
+      {
+        result = n->entity;
+        break;
+      }
+    }
+  }
+  return result;
+}
+
+internal D_Entity *
 d_entity_child_from_kind(D_Entity *parent, D_EntityKind kind)
 {
   D_Entity *result = &d_entity_nil;
@@ -951,10 +970,12 @@ d_entity_ctx_rw_store_alloc(void)
   Arena *arena = arena_alloc();
   D_EntityCtxRWStore *store = push_array(arena, D_EntityCtxRWStore, 1);
   store->arena = arena;
-  store->ctx.hash_slots_count = 1024;
+  store->ctx.hash_slots_count = 4096;
   store->ctx.hash_slots = push_array(arena, D_EntityHashSlot, store->ctx.hash_slots_count);
-  store->ctx.id_slots_count = 1024;
+  store->ctx.id_slots_count = 4096;
   store->ctx.id_slots = push_array(arena, D_EntityHashSlot, store->ctx.id_slots_count);
+  store->ctx.string_slots_count = 4096;
+  store->ctx.string_slots = push_array(arena, D_EntityHashSlot, store->ctx.string_slots_count);
   D_Entity *root = store->ctx.root = d_entity_alloc(store, &d_entity_nil, D_EntityKind_Root, Arch_Null, d_handle_zero(), 0);
   D_Entity *local_server = d_entity_alloc(store, root, D_EntityKind_Server, Arch_CURRENT, d_handle_from_server_id(D_ServerID_LocalHost), 0);
   Temp scratch = scratch_begin(0, 0);
@@ -1254,11 +1275,40 @@ d_entity_release(D_EntityCtxRWStore *store, D_Entity *entity)
 internal void
 d_entity_equip_string(D_EntityCtxRWStore *store, D_Entity *entity, String8 string)
 {
+  //- rjf: unequip old string, remove from name lookup accelerator table
   if(entity->string.size != 0)
   {
+    U64 hash = u64_hash_from_str8(entity->string);
+    U64 slot_idx = hash%store->ctx.string_slots_count;
+    for(D_EntityHashNode *n = store->ctx.string_slots[slot_idx].first; n != 0; n = n->next)
+    {
+      if(n->entity == entity)
+      {
+        DLLRemove(store->ctx.string_slots[slot_idx].first, store->ctx.string_slots[slot_idx].last, n);
+        SLLStackPush(store->hash_node_free, n);
+        break;
+      }
+    }
     d_entity_string_release(store, entity->string);
   }
-  entity->string = d_entity_string_alloc(store, string);
+  
+  //- rjf: equip new string, add to name lookup accelerator table
+  {
+    entity->string = d_entity_string_alloc(store, string);
+    U64 hash = u64_hash_from_str8(string);
+    U64 slot_idx = hash%store->ctx.string_slots_count;
+    D_EntityHashNode *n = store->hash_node_free;
+    if(n != 0)
+    {
+      SLLStackPop(store->hash_node_free);
+    }
+    else
+    {
+      n = push_array(store->arena, D_EntityHashNode, 1);
+    }
+    n->entity = entity;
+    DLLPushBack(store->ctx.string_slots[slot_idx].first, store->ctx.string_slots[slot_idx].last, n);
+  }
 }
 
 //- rjf: accelerated entity context lookups

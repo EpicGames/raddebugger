@@ -624,6 +624,7 @@ internal D_EntityArray d_entity_array_from_list(Arena *arena, D_EntityList *list
 //- rjf: entity context (entity group read-only) functions
 internal D_Entity *d_entity_from_handle(D_Handle handle);
 internal D_Entity *d_entity_from_id(D_EntityID id);
+internal D_Entity *d_entity_from_string_kind(String8 string, D_EntityKind kind);
 internal D_Entity *d_entity_child_from_kind(D_Entity *parent, D_EntityKind kind);
 internal D_Entity *d_entity_ancestor_from_kind(D_Entity *entity, D_EntityKind kind);
 internal D_Entity *d_process_from_entity(D_Entity *entity);

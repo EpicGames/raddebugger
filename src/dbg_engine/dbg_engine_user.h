@@ -448,6 +448,8 @@ internal U64 d_stop_count(void);
 internal DI_KeyList d_push_active_dbgi_key_list(Arena *arena);
 
 //- rjf: per-run caches
+internal U64 d_cached_ip_from_thread_frame_idx(D_Entity *thread, U64 frame_idx);
+internal U64 d_cached_cfa_from_thread_frame_idx(D_Entity *thread, U64 frame_idx);
 internal U64 d_cached_ip_from_thread_unwind(D_Entity *thread, U64 unwind_count);
 internal U64 d_cached_cfa_from_thread_unwind(D_Entity *thread, U64 unwind_count);
 internal E_String2NumMap *d_cached_locals_map_from_dbgi_key_voff(DI_Key dbgi_key, U64 voff);
