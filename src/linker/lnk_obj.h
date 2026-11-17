@@ -53,16 +53,25 @@ typedef struct LNK_Input   LNK_Input;
 typedef struct LNK_Lib     LNK_Lib;
 typedef struct LNK_ObjNode LNK_ObjNode;
 
+typedef struct LNK_ObjCommonContrib LNK_ObjCommonContrib;
+struct LNK_ObjCommonContrib
+{
+  LNK_ObjCommonContrib *next;
+  U64 symbol_idx;
+  U32 size;
+};
+
 typedef struct LNK_Obj
 {
-  String8           path;                    // path where object file was loaded from
-  LNK_ObjCoff       coff;                    // extracted COFF info about the object
-  B8                exclude_from_debug_info; // is object linkgen
-  U32               input_idx;               // input index of the object file
-  LNK_SymbolHandle *symlinks;                // indexed by COFF section number; slot zero is null
-  LNK_Lib          *lib;                     // library that contains the object
-  LNK_ObjNode      *self;                    // object node in the link list
-  LNK_Input        *input;
+  String8              path;                    // path where object file was loaded from
+  LNK_ObjCoff          coff;                    // extracted COFF info about the object
+  B8                   exclude_from_debug_info; // is object linkgen
+  U32                  input_idx;               // input index of the object file
+  LNK_SymbolHandle     *symlinks;               // indexed by COFF section number; slot zero is null
+  LNK_Lib              *lib;                    // library that contains the object
+  LNK_ObjNode          *self;                   // object node in the link list
+  LNK_Input            *input;
+  LNK_ObjCommonContrib *common_contribs;        // common block contributions; populated during image building pass
 
   // @type_server
   Rng1U64       ti_range;

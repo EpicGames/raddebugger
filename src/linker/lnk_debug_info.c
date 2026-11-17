@@ -3462,6 +3462,38 @@ THREAD_POOL_TASK_FUNC(lnk_push_dbi_sec_contrib_task)
     sc->reloc_crc    = 0;
   }
 
+  // emit common block contributions
+  for EachNode(contrib, LNK_ObjCommonContrib, obj->common_contribs) {
+    COFF_ParsedSymbol symbol = lnk_parsed_symbol_from_coff_symbol_idx_no_name(obj, contrib->symbol_idx);
+    if (symbol.section_number == 0 || symbol.section_number >= task->image_section_table_count) { continue; }
+
+    COFF_SectionHeader *section = task->image_section_table[symbol.section_number];
+
+    if (symbol.value > section->vsize || contrib->size > section->vsize - symbol.value) {
+      Temp scratch = scratch_begin(0,0);
+      lnk_log(LNK_Log_Debug, "%S: common contrib (symbol 0x%llx) falls outside its image section; skipping section contribution", lnk_loc_from_obj(scratch.arena, obj), contrib->symbol_idx);
+      scratch_end(scratch);
+      continue;
+    }
+
+    U64 sc_idx = sc_array->count++;
+    if (sc_array->v == 0) { continue; }
+
+    Assert(sc_idx < sc_array->cap);
+    U64 align = Min(32, u64_up_to_pow2(contrib->size));
+    sc_array->v[sc_idx] = (PDB_DbiSC){
+      .base = {
+        .sec     = safe_cast_u16(symbol.section_number),
+        .sec_off = safe_cast_u32(symbol.value),
+        .size    = contrib->size,
+        .flags   = PE_BSS_SECTION_FLAGS | coff_section_flag_from_align_size(align),
+        .mod     = mod->imod,
+      },
+      .data_crc  = 0,
+      .reloc_crc = 0,
+    };
+  }
+
   if (sc_array->v == 0) { return; }
 
   // find first code section contribution for the Mod1::fUpdateSecContrib

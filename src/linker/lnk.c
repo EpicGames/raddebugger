@@ -6177,11 +6177,19 @@ lnk_build_image(TP_Arena *arena, TP_Context *tp, LNK_Config *config, LNK_SymbolT
         lnk_finalize_section_layout(common_block_sect, config->file_align, config->function_pad_min);
         U32 common_block_cursor = common_block_sect->vsize;
 
-        // compute and assign offsets into the common block
         for EachIndex(contrib_idx, common_block_contribs_count) {
           LNK_CommonBlockContrib *contrib = &common_block_contribs[contrib_idx];
           U32 size  = contrib->u.size;
           U32 align = Min(32, u64_up_to_pow2(size)); // link.exe caps align at 32 bytes
+
+          // record obj common block contribution
+          LNK_SymbolHandle      contrib_owner   = lnk_ref_from_symbol(contrib->symbol);
+          LNK_ObjCommonContrib *record = push_array(arena->v[0], LNK_ObjCommonContrib, 1);
+          record->symbol_idx = contrib_owner.symbol_idx;
+          record->size       = size;
+          SLLStackPush(contrib_owner.obj->common_contribs, record);
+
+          // advance cursor
           common_block_cursor = AlignPow2(common_block_cursor, align);
           contrib->u.offset = common_block_cursor;
           common_block_cursor += size;
