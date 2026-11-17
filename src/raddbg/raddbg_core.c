@@ -4650,9 +4650,21 @@ rd_view_ui(Rng2F32 rect)
                                 U64 op_arithmetic_size = (U64)decode_val.u512.u8[1];
                                 off += decode_size;
                                 
+                                //- rjf: do per-op stuff
+                                String8 op_ext = {0};
+                                switch(op)
+                                {
+                                  default:{}break;
+                                  case RDI_EvalOp_ConstString:
+                                  {
+                                    op_ext = sf(" \"%S\"", str8_substr(bytecode, r1u64(off, off+decode_val.u64)));
+                                    off += decode_val.u64;
+                                  }break;
+                                }
+                                
                                 //- rjf: label
                                 String8 op_name = e2_name_from_eval_op(op);
-                                ui_labelf("%S%s0x%I64x%s", op_name, (decode_size != 0 ? " (" : ""), decode_val.u64, (decode_size != 0 ? ")" : ""));
+                                ui_labelf("%S%s0x%I64x%s%S", op_name, (decode_size != 0 ? " (" : ""), decode_val.u64, (decode_size != 0 ? ")" : ""), op_ext);
                                 
                                 scratch_end(scratch);
                                 if(off == start_off)

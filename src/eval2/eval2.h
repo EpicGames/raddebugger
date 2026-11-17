@@ -766,6 +766,7 @@ internal E2_IRNode *e2_irnode_type(Arena *arena, E2_TypeKey type_key);
 internal E2_IRNode *e2_irnode_set_u64(Arena *arena, String8 set_name, U64 value);
 internal E2_IRNode *e2_irnode_set_u128(Arena *arena, String8 set_name, U128 value);
 internal E2_IRNode *e2_irnode_set_u256(Arena *arena, String8 set_name, U256 value);
+internal E2_IRNode *e2_irnode_set_string(Arena *arena, String8 set_name, String8 value);
 internal E2_IRNode *e2_irnode_set_space_id(Arena *arena, E2_SpaceID id);
 internal void e2_irnode_push_child_node(E2_IRNode *parent, E2_IRNodePtrNode *node);
 internal void e2_irnode_push_child(Arena *arena, E2_IRNode *parent, E2_IRNode *expr);

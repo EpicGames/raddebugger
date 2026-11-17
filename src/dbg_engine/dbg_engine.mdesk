@@ -245,7 +245,7 @@ D_EntityKindTable:
   // @schema server, process, module, thread
   {server      `{name, @no_expand active, unattached_processes:set, processes:set}`}
   {process     `{name, id, @no_expand active, modules:set, threads:set, @no_expand memory}`}
-  {module      `{exe, dbg, vaddr_range}`}
+  {module      `{exe, dbg, vaddr_range:set}`}
   {thread      `{name, id, @no_expand active, call_stack:set}`}
 }
 
@@ -303,6 +303,20 @@ D_EntityKindTable:
   }
 }
 
+@table(name, schema) D_QueryEvalSchemaTable:
+{
+  //- rjf: @schema call_stack_frame, vaddr_range, file
+  {call_stack_frame `{registers:set, locals:set}`}
+  {vaddr_range `{min max}`}
+  {file `{data, modified, created}`}
+}
+
+@table(name, schema) D_BuiltInFunctionEvalSchemaTable:
+{
+  {file, `{path}`}
+  {module, `{address}`}
+}
+
 @struct D_SchemaInfo:
 {
   `String8 name`;
@@ -317,4 +331,14 @@ D_EntityKindTable:
 @data(D_SchemaInfo) d_cfg_schema_info_table:
 {
   @expand(D_CfgEvalSchemaTable a) `{str8_lit_comp("$(a.name)"), str8_lit_comp("$(a.schema)")}`,
+}
+
+@data(D_SchemaInfo) d_query_schema_info_table:
+{
+  @expand(D_QueryEvalSchemaTable a) `{str8_lit_comp("$(a.name)"), str8_lit_comp("$(a.schema)")}`,
+}
+
+@data(D_SchemaInfo) d_builtin_function_schema_info_table:
+{
+  @expand(D_BuiltInFunctionEvalSchemaTable a) `{str8_lit_comp("$(a.name)"), str8_lit_comp("$(a.schema)")}`,
 }

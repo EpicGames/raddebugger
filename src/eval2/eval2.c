@@ -1657,12 +1657,13 @@ e2_irnode_convert_if_possible(Arena *arena, E2_IRNode *expr, E2_TypeKey dst_type
   {
     // rjf: unpack src / dst types
     E2_TypeKey src_type_key = expr->type_key;
+    E2_TypeKey dst_type_key__undecorated = e2_type_key_undecorate(dst_type_key);
     E2_TypeKind src_type_kind = e2_type_kind_from_key(src_type_key);
-    E2_TypeKind dst_type_kind = e2_type_kind_from_key(dst_type_key);
+    E2_TypeKind dst_type_kind = e2_type_kind_from_key(dst_type_key__undecorated);
     RDI_EvalTypeGroup src_type_group = e2_type_group_from_kind(src_type_kind);
     RDI_EvalTypeGroup dst_type_group = e2_type_group_from_kind(dst_type_kind);
     U64 src_byte_size = e2_byte_size_from_type_key(src_type_key);
-    U64 dst_byte_size = e2_byte_size_from_type_key(dst_type_key);
+    U64 dst_byte_size = e2_byte_size_from_type_key(dst_type_key__undecorated);
     
     // rjf: convert from src -> dst
     RDI_EvalConversionKind conversion_kind = rdi_eval_conversion_kind_from_typegroups(src_type_group, dst_type_group);
@@ -1730,6 +1731,18 @@ e2_irnode_set_u256(Arena *arena, String8 set_name, U256 value)
   expr->mode     = E2_Mode_Value;
   expr->op       = RDI_EvalOp_ConstU256;
   expr->val.u256 = value;
+  return expr;
+}
+
+internal E2_IRNode *
+e2_irnode_set_string(Arena *arena, String8 set_name, String8 value)
+{
+  E2_IRNode *expr = e2_irnode(arena);
+  expr->type_key = e2_type_key_cons(E2_TypeKind_Set, .name = set_name);
+  expr->mode     = E2_Mode_Value;
+  expr->op       = RDI_EvalOp_ConstString;
+  expr->val.u64 = value.size;
+  expr->string = str8_copy(arena, value);
   return expr;
 }
 
@@ -3267,12 +3280,13 @@ e2_compile_from_expr(Arena *arena, E2_CompileState *state, E2_IRNode *resolve_re
             {
               E2_IRNode *cast_type_ir = lhs;
               E2_TypeKey cast_type_key = cast_type_ir->type_key;
-              if(e2_type_key_match(e2_type_key_zero(), cast_type_key))
-              {
-                e2_msgf(arena, &compile.msgs, e->src_range, "Cannot cast to this type.");
-              }
               E2_IRNode *castee_ir = rhs;
               finished_root = e2_irnode_convert_if_possible(arena, castee_ir, cast_type_key);
+              if(e2_type_key_match(e2_type_key_zero(), cast_type_key) || (finished_root == castee_ir && !e2_type_key_match(finished_root->type_key, cast_type_key)))
+              {
+                finished_root = &e2_irnode_nil;
+                e2_msgf(arena, &compile.msgs, e->src_range, "Cannot cast to this type.");
+              }
             }break;
             
             //- rjf: dereferences
@@ -3536,7 +3550,7 @@ e2_compile_from_expr(Arena *arena, E2_CompileState *state, E2_IRNode *resolve_re
                     offset_ir = e2_irnode_binary_op(arena, e2_type_key_basic(E2_TypeKind_U64), RDI_EvalOp_Mul, index_ir, size_ir);
                   }
                   E2_IRNode *addr_value_ir = e2_irnode_binary_op(arena, e2_type_key_basic(E2_TypeKind_U64), RDI_EvalOp_Add, base_addr_ir, offset_ir);
-                  addr_value_ir->mode = E2_Mode_Address;
+                  addr_value_ir->mode = E2_Mode_Value;
                   addr_value_ir->type_key = ptr_ir->type_key;
                   finished_root = addr_value_ir;
                 }break;
@@ -3778,7 +3792,11 @@ e2_compile_from_expr(Arena *arena, E2_CompileState *state, E2_IRNode *resolve_re
           }break;
           case E2_CompileStatus_IndexAccess:
           {
-            e2_msgf(arena, &compile.msgs, state->top_task->expr->src_range, "Couldn't resolve index operation.");
+            e2_msgf(arena, &compile.msgs, state->top_task->expr->src_range, "Couldn't index into this type.");
+          }break;
+          case E2_CompileStatus_Call:
+          {
+            e2_msgf(arena, &compile.msgs, state->top_task->expr->src_range, "Couldn't call this type.");
           }break;
         }
         compile.irtree = &e2_irnode_nil;
@@ -4073,7 +4091,7 @@ e2_interp_from_bytecode(Arena *arena, E2_InterpState *state, E2_SpaceMap *space_
           U64 string_size = decode_val.u64;
           String8 string = str8_substr(bytecode, r1u64(off, off+string_size));
           off += string_size;
-          push_vals[0].string = string;
+          push_vals[0].string = str8_copy(arena, string);
         }break;
         
         case RDI_EvalOp_Abs:

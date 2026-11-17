@@ -152,14 +152,6 @@ D_SpaceKindEnum;
 #define d_registers_space_id(entity_id, frame_index) ((((U64)D_SpaceKind_Registers)<<56)|(((frame_index)&0xffffffull)<<32)|((entity_id)&0xffffffffull))
 #define d_content_key_space_id(content_key_id) ((((U64)D_SpaceKind_ContentKey)<<56)|((content_key_id)&0x00ffffffffffffffull))
 
-typedef enum D_EvalCtxIDKind
-{
-  D_EvalCtxIDKind_DebugEntitiesMetadata,
-  D_EvalCtxIDKind_DebugEntities,
-  D_EvalCtxIDKind_Registers,
-}
-D_EvalCtxIDKind;
-
 typedef U64 D_EvalID;
 
 typedef struct D_EvalIDNode D_EvalIDNode;
@@ -212,7 +204,6 @@ struct D_EvalCache
   
   // rjf: per evaluation phase dynamic state
   D_EvalID id_gen;
-  E2_SpaceID space_id_gen;
   U64 slots_count;
   D_EvalSlot *string_slots;
   D_EvalSlot *id_slots;
@@ -532,6 +523,8 @@ struct D_Shared
   D_VocabNode **vocab_plural_slots;
   CFG_SchemaTable entity_schema_table;
   CFG_SchemaTable cfg_schema_table;
+  CFG_SchemaTable query_schema_table;
+  CFG_SchemaTable builtin_function_schema_table;
 };
 
 ////////////////////////////////
@@ -561,7 +554,11 @@ internal B32 d_space_read(E2_SpaceID space_id, void *out, Rng1U64 range);
 //- rjf: eval building helpers
 internal E2_SpaceValArray d_eval_space_vals_from_bytecode(Arena *arena, String8 bytecode, E2_MsgList *msgs_out);
 internal E2_SpaceValArray d_eval_space_vals_from_irtree(Arena *arena, E2_IRNode *irtree, E2_MsgList *msgs_out);
+internal E2_Val d_eval_value_val_from_irtree_space_val(Arena *arena, E2_IRNode *irtree, E2_SpaceVal space_val, E2_MsgList *msgs_out);
+internal E2_SpaceVal d_eval_space_val_from_irtree(Arena *arena, E2_IRNode *irtree, E2_MsgList *msgs_out);
+internal E2_SpaceVal d_eval_value_space_val_from_irtree(Arena *arena, E2_IRNode *irtree, E2_MsgList *msgs_out);
 internal E2_Val d_eval_val_from_irtree(Arena *arena, E2_IRNode *irtree, E2_MsgList *msgs_out);
+internal E2_Val d_eval_value_val_from_irtree(Arena *arena, E2_IRNode *irtree, E2_MsgList *msgs_out);
 internal D_Entity *d_entity_from_irtree(Arena *arena, E2_IRNode *irtree, E2_MsgList *msgs_out);
 internal ARCH_RegCode d_eval_reg_code_from_arch_string(Arch arch, String8 string);
 internal E2_IRNode *d_eval_irtree_from_arch_regcode(Arena *arena, D_EntityID thread_id, U64 frame_idx, Arch arch, ARCH_RegCode reg_code);
