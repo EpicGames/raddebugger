@@ -3063,7 +3063,13 @@ THREAD_POOL_TASK_FUNC(lnk_build_pdb_strings_modules_and_globals)
     CV_SymbolList *public_symbol_list = &public_symbols[task_id];
     for EachNode(chunk, LNK_SymbolHashTrieChunk, symbol_chunks.first) {
       for EachIndex(i, chunk->count) {
-        LNK_Symbol        *symbol        = chunk->v[i].value;
+        LNK_Symbol *symbol = chunk->v[i].value;
+
+        // is this a private symbol?
+        if (hash_map_search_string_u64(&task->config->private_symbols_ht, symbol->name)) {
+          continue;
+        }
+
         LNK_SymbolHandle   symbol_ref    = lnk_ref_from_symbol(symbol);
         COFF_ParsedSymbol  symbol_parsed = lnk_parsed_from_symbol(symbol);
 
@@ -3571,6 +3577,7 @@ lnk_build_pdb(TP_Context *tp, Arena *arena, String8 image_data, LNK_Config *conf
   Temp scratch = scratch_begin(&arena, 1);
 
   LNK_BuildPdb task = {
+    .config                             = config,
     .image_data                         = image_data,
     .symtab                             = symtab,
     .cv                                 = cv,

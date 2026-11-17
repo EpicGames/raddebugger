@@ -210,6 +210,7 @@ typedef enum
 
 typedef struct
 {
+  LNK_Config          *config;
   String8              image_data;
   LNK_SymbolTable     *symtab;
   LNK_CodeViewInput   *cv;

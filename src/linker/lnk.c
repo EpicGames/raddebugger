@@ -2418,6 +2418,14 @@ lnk_resolved_exports_from_config(Arena *arena, LNK_Config *config, LNK_SymbolTab
   return result;
 }
 
+force_inline int
+lnk_imp_libs_kv_sort(void *raw_a, void *raw_b)
+{
+  HashMapKeyValue *key_a = raw_a, *key_b = raw_b;
+  LNK_Lib *a = key_a->key.key_raw, *b = key_b->key.key_raw;
+  return a->input_idx < b->input_idx;
+}
+
 internal LNK_LinkResult
 lnk_link_image(TP_Context *tp, TP_Arena *arena, LNK_Config *config, LNK_Inputer *inputer, LNK_SymbolTable *symtab)
 {
@@ -2480,17 +2488,29 @@ lnk_link_image(TP_Context *tp, TP_Arena *arena, LNK_Config *config, LNK_Inputer 
       B32                is_delay_load  = lnk_is_dll_delay_load(config, import_header.dll_name);
       String8List       *dll_names      = is_delay_load ? &delayed_dll_names : &static_dll_names;
       HashMap           *imports_hm     = is_delay_load ? &delayed_imports_hm : &static_imports_hm;
-      PE_MakeImportList *import_symbols = hash_map_search_path_raw(imports_hm, import_header.dll_name);
+      HashMap           *imp_lib_hm     = hash_map_search_path_raw(imports_hm, import_header.dll_name);
 
-      // create record for a first time-DLL
-      if (import_symbols == 0) {
-        import_symbols = push_array(scratch.arena, PE_MakeImportList, 1);
+      // create dll -> import libs hash map
+      if (imp_lib_hm == 0) {
         str8_list_push(scratch.arena, dll_names, import_header.dll_name);
-        hash_map_push_path_raw(scratch.arena, imports_hm, import_header.dll_name, import_symbols);
+
+        imp_lib_hm = push_array(scratch.arena, HashMap, 1);
+        hash_map_push_path_raw(scratch.arena, imports_hm, import_header.dll_name, imp_lib_hm);
       }
 
-      // push make import info
-      pe_make_import_header_list_push(scratch.arena, import_symbols, (PE_MakeImport){ .header = import->input->data, .make_jump_thunk = import->make_jump_thunk });
+      LNK_ImportPtrList *import_symbols = hash_map_search_raw_raw(imp_lib_hm, import->input->lib);
+
+      // create lib -> import symbols hash map
+      if (import_symbols == 0) {
+        import_symbols = push_array(scratch.arena, LNK_ImportPtrList, 1);
+        hash_map_push_raw_raw(scratch.arena, imp_lib_hm, import->input->lib, import_symbols);
+      }
+
+      // append import for the reference list
+      LNK_ImportPtrNode *import_ref = push_array(scratch.arena, LNK_ImportPtrNode, 1);
+      import_ref->v = import;
+      SLLQueuePush(import_symbols->first, import_symbols->last, import_ref);
+      import_symbols->count += 1;
     }
     AssertAlways(delayed_dll_names.node_count == delayed_imports_hm.count);
     AssertAlways(static_dll_names.node_count == static_imports_hm.count);
@@ -2502,19 +2522,43 @@ lnk_link_image(TP_Context *tp, TP_Arena *arena, LNK_Config *config, LNK_Inputer 
       COFF_TimeStamp time_stamp = COFF_TimeStamp_Max;
       B32            emit_biat  = config->import_table_emit_biat == LNK_SwitchState_Yes;
       B32            emit_uiat  = config->import_table_emit_uiat == LNK_SwitchState_Yes;
+      String8 linker_debug_symbols = lnk_make_linker_debug_symbols(scratch.arena, config->machine);
 
       for EachNode(name, String8Node, delayed_dll_names.first) {
-        PE_MakeImportList *imports              = hash_map_search_path_raw(&delayed_imports_hm, name->string);
-        String8            import_debug_symbols = lnk_make_dll_import_debug_symbols(scratch.arena, config->machine, name->string);
-        String8            import_obj           = pe_make_import_dll_obj_delayed(arena->v[0], time_stamp, config->machine, name->string, config->delay_load_helper_name, import_debug_symbols, *imports, emit_biat, emit_uiat);
-        lnk_inputer_push_obj(inputer, 0, str8f(inputer->arena, "Import:%S", name->string), import_obj);
+        HashMap *imp_libs_hm = hash_map_search_path_raw(&delayed_imports_hm, name->string);
+        Assert(imp_libs_hm->count != 0);
+
+        HashMapKeyValue *imp_libs_kv = key_value_from_hash_map(scratch.arena, imp_libs_hm);
+        radsort(imp_libs_kv, imp_libs_hm->count, lnk_imp_libs_kv_sort);
+
+        String8             image_name     = name->next == 0 ? lnk_get_image_name(config) : str8_zero();
+        PE_MakeImportTable *table          = pe_make_delayed_import_table(scratch.arena, time_stamp, config->machine, name->string, config->delay_load_helper_name, emit_biat, emit_uiat, image_name);
+        String8             descriptor_obj = pe_make_delayed_dlldesc_obj(arena->v[0], table, linker_debug_symbols);
+        LNK_Lib            *first_lib      = imp_libs_kv[0].key.key_raw;
+        lnk_inputer_push_obj(inputer, first_lib, name->string, descriptor_obj);
+
+        for EachIndex(i, imp_libs_hm->count) {
+          Temp temp = temp_begin(scratch.arena);
+          LNK_Lib           *imp_lib  = imp_libs_kv[i].key.key_raw;
+          LNK_ImportPtrList *imp_syms = imp_libs_kv[i].value.value_raw;
+          PE_MakeImportList make_imports = {0};
+          for EachNode(n, LNK_ImportPtrNode, imp_syms->first) {
+            pe_make_import_header_list_push(temp.arena, &make_imports, (PE_MakeImport){ n->v->input->data, n->v->make_jump_thunk });
+          }
+
+          String8 imp_debug = lnk_make_dll_import_debug_symbols(temp.arena, config->machine, name->string);
+          String8 imp_obj = pe_make_delayed_imports_obj(arena->v[0], table, make_imports, imp_debug, i + 1 == imp_libs_hm->count);
+          lnk_inputer_push_obj(inputer, imp_lib, str8f(inputer->arena, "Import:%S", name->string), imp_obj);
+          temp_end(temp);
+        }
+
       }
 
-      String8 linker_debug_symbols = lnk_make_linker_debug_symbols(arena->v[0], config->machine);
-      String8 null_desc_obj        = pe_make_null_import_descriptor_delayed(arena->v[0], time_stamp, config->machine, linker_debug_symbols);
-      String8 null_thunk_obj       = pe_make_null_thunk_data_obj_delayed(arena->v[0], lnk_get_image_name(config), time_stamp, config->machine, linker_debug_symbols);
-      lnk_inputer_push_obj(inputer, 0, str8_lit("* Delayed Null Import Descriptor *"), null_desc_obj);
-      lnk_inputer_push_obj(inputer, 0, str8_lit("* Delayed Null Thunk Data *"),        null_thunk_obj);
+      LNK_Symbol *null_descriptor = lnk_symbol_table_search(symtab, str8_lit("__NULL_DELAY_IMPORT_DESCRIPTOR"));
+      if (null_descriptor == 0 || lnk_interp_from_symbol(null_descriptor) == COFF_SymbolValueInterp_Undefined) {
+        String8 null_desc_obj = pe_make_null_import_descriptor_delayed(arena->v[0], time_stamp, config->machine, linker_debug_symbols);
+        lnk_inputer_push_obj(inputer, 0, str8_lit("* Delayed Null Import Descriptor *"), null_desc_obj);
+      }
 
       ProfEnd();
     }
@@ -2524,22 +2568,44 @@ lnk_link_image(TP_Context *tp, TP_Arena *arena, LNK_Config *config, LNK_Inputer 
       ProfBegin("Build Static Import Table");
 
       COFF_TimeStamp time_stamp = COFF_TimeStamp_Max;
-
-      for (String8Node *dll_name_n = static_dll_names.first; dll_name_n != 0; dll_name_n = dll_name_n->next) {
-        PE_MakeImportList *imports              = hash_map_search_path_raw(&static_imports_hm, dll_name_n->string);
-        String8            import_debug_symbols = lnk_make_dll_import_debug_symbols(scratch.arena, config->machine, dll_name_n->string);
-        String8            import_obj           = pe_make_import_dll_obj_static(arena->v[0], time_stamp, config->machine, dll_name_n->string, import_debug_symbols, *imports, dll_name_n->next != 0);
-        lnk_inputer_push_obj(inputer, 0, str8f(inputer->arena, "Import:%S", dll_name_n->string), import_obj);
-      }
-
       String8 linker_debug_symbols = lnk_make_linker_debug_symbols(scratch.arena, config->machine);
-      String8 null_thunk_obj       = pe_make_null_thunk_data_obj(arena->v[0], lnk_get_image_name(config), time_stamp, config->machine, linker_debug_symbols);
-      LNK_Symbol *null_descriptor = lnk_symbol_table_search(symtab, str8_lit("__NULL_IMPORT_DESCRIPTOR"));
-      if (!null_descriptor || lnk_interp_from_symbol(null_descriptor) == COFF_SymbolValueInterp_Undefined) {
-        String8 null_desc_obj = pe_make_null_import_descriptor_obj(arena->v[0], time_stamp, config->machine, linker_debug_symbols);
-        lnk_inputer_push_obj_linkgen(inputer, 0, str8_lit("* Null Import Descriptor *"), null_desc_obj);
+
+      for EachNode(name, String8Node, static_dll_names.first) {
+        HashMap *imp_libs_hm = hash_map_search_path_raw(&static_imports_hm, name->string);
+        Assert(imp_libs_hm->count != 0);
+
+        HashMapKeyValue *imp_libs_kv = key_value_from_hash_map(scratch.arena, imp_libs_hm);
+        radsort(imp_libs_kv, imp_libs_hm->count, lnk_imp_libs_kv_sort);
+
+        PE_MakeImportTable *table          = pe_make_static_import_table(scratch.arena, time_stamp, config->machine, name->string);
+        String8             descriptor_obj = pe_make_static_dlldesc_obj(arena->v[0], table, linker_debug_symbols);
+        LNK_Lib            *first_lib      = imp_libs_kv[0].key.key_raw;
+        lnk_inputer_push_obj(inputer, first_lib, name->string, descriptor_obj);
+
+        for EachIndex(i, imp_libs_hm->count) {
+          Temp temp = temp_begin(scratch.arena);
+
+          LNK_Lib           *imp_lib      = imp_libs_kv[i].key.key_raw;
+          LNK_ImportPtrList *imp_syms     = imp_libs_kv[i].value.value_raw;
+          PE_MakeImportList  make_imports = {0};
+          for EachNode(n, LNK_ImportPtrNode, imp_syms->first) {
+            pe_make_import_header_list_push(temp.arena, &make_imports, (PE_MakeImport){ n->v->input->data, n->v->make_jump_thunk });
+          }
+
+          String8 imp_debug = lnk_make_dll_import_debug_symbols(temp.arena, config->machine, name->string);
+          String8 imp_obj   = pe_make_static_imports_obj(arena->v[0], table, make_imports, imp_debug, i + 1 == imp_libs_hm->count);
+          lnk_inputer_push_obj(inputer, imp_lib, str8f(inputer->arena, "Import:%S", name->string), imp_obj);
+
+          temp_end(temp);
+        }
+
       }
-      lnk_inputer_push_obj_linkgen(inputer, 0, str8_lit("* Null Thunk Data *"),        null_thunk_obj);
+
+      LNK_Symbol *null_descriptor = lnk_symbol_table_search(symtab, str8_lit("__NULL_IMPORT_DESCRIPTOR"));
+      if (null_descriptor == 0 || lnk_interp_from_symbol(null_descriptor) == COFF_SymbolValueInterp_Undefined) {
+        String8 null_desc_obj = pe_make_null_import_descriptor_obj(arena->v[0], time_stamp, config->machine, linker_debug_symbols);
+        lnk_inputer_push_obj(inputer, 0, str8_lit("* Null Import Descriptor *"), null_desc_obj);
+      }
 
       ProfEnd();
     }
@@ -6424,37 +6490,30 @@ lnk_build_image(TP_Arena *arena, TP_Context *tp, LNK_Config *config, LNK_SymbolT
 
     // patch import and import addr
     {
-      LNK_Section *idata_sect       = lnk_image_section_table_search(config, sectab, str8_lit(".idata"), PE_IDATA_SECTION_FLAGS);
-      LNK_Symbol  *null_import_desc = lnk_symbol_table_searchf(symtab, "__NULL_IMPORT_DESCRIPTOR");
-      LNK_Symbol  *null_thunk_data  = lnk_symbol_table_searchf(symtab, "\x7f%S_NULL_THUNK_DATA", lnk_get_image_name(config));
-      if (idata_sect && null_import_desc && null_thunk_data) {
-        COFF_ParsedSymbol   null_import_desc_parsed = lnk_parsed_from_symbol(null_import_desc);
-        LNK_SectionContrib *idata_first_contrib     = lnk_get_first_section_contrib(idata_sect);
-        PE_DataDirectory   *import_dir              = pe_data_directory_from_idx(image_data, &pe, PE_DataDirectoryIndex_IMPORT);
-        import_dir->virt_off  = image_section_table[idata_first_contrib->u.sect_idx + 1]->voff + idata_first_contrib->u.off;
-        import_dir->virt_size = null_import_desc_parsed.value - idata_first_contrib->u.off + sizeof(PE_ImportEntry);
+      Rng1U64 descriptors = lnk_voff_range_from_section_contribs(image_section_table, task.image_sects, str8_lit(".idata$2"));
+      Rng1U64 terminator  = lnk_voff_range_from_section_contribs(image_section_table, task.image_sects, str8_lit(".idata$3"));
+      if (dim_1u64(descriptors) && dim_1u64(terminator)) {
+        PE_DataDirectory *import_dir = pe_data_directory_from_idx(image_data, &pe, PE_DataDirectoryIndex_IMPORT);
+        import_dir->virt_off  = safe_cast_u32(descriptors.min);
+        import_dir->virt_size = safe_cast_u32(Max(descriptors.max, terminator.max) - descriptors.min);
+      }
 
-        COFF_ParsedSymbol  null_thunk_data_parsed = lnk_parsed_from_symbol(null_thunk_data);
-        U64                null_thunk_data_voff   = image_section_table[null_thunk_data_parsed.section_number]->voff + null_thunk_data_parsed.value;
-        U64                first_import_foff      = image_section_table[idata_first_contrib->u.sect_idx+1]->foff + idata_first_contrib->u.off;
-        PE_ImportEntry    *first_import           = str8_deserial_get_raw_ptr(image_data, first_import_foff, sizeof(*first_import));
-        PE_DataDirectory  *import_addr_dir        = pe_data_directory_from_idx(image_data, &pe, PE_DataDirectoryIndex_IMPORT_ADDR);
-        import_addr_dir->virt_off  = first_import->import_addr_table_voff;
-        import_addr_dir->virt_size = null_thunk_data_voff - first_import->import_addr_table_voff /* null */ + coff_word_size_from_machine(config->machine);
+      Rng1U64 iat = lnk_voff_range_from_section_contribs(image_section_table, task.image_sects, str8_lit(".idata$5"));
+      if (dim_1u64(iat)) {
+        PE_DataDirectory *import_addr_dir = pe_data_directory_from_idx(image_data, &pe, PE_DataDirectoryIndex_IMPORT_ADDR);
+        import_addr_dir->virt_off  = safe_cast_u32(iat.min);
+        import_addr_dir->virt_size = safe_cast_u32(dim_1u64(iat));
       }
     }
 
     // patch delay imports
     {
-      LNK_Section *didat_sect       = lnk_image_section_table_search(config, sectab, str8_lit(".didat"), PE_IDATA_SECTION_FLAGS);
-      LNK_Symbol  *null_import_desc = lnk_symbol_table_search(symtab, str8_lit("__NULL_DELAY_IMPORT_DESCRIPTOR"));
-      LNK_Symbol  *last_null_thunk  = lnk_symbol_table_searchf(symtab,"\x7f%S_NULL_THUNK_DATA_DLA", lnk_get_image_name(config));
-      if (didat_sect && null_import_desc && last_null_thunk) {
-        COFF_ParsedSymbol   null_import_desc_parsed = lnk_parsed_from_symbol(null_import_desc);
-        LNK_SectionContrib *didat_first_contrib     = lnk_get_first_section_contrib(didat_sect);
-        PE_DataDirectory   *import_dir              = pe_data_directory_from_idx(image_data, &pe, PE_DataDirectoryIndex_DELAY_IMPORT);
-        import_dir->virt_off  = lnk_get_first_section_contrib_voff(image_section_table, didat_sect);
-        import_dir->virt_size = lnk_get_section_contrib_size(didat_sect);
+      Rng1U64 descriptors = lnk_voff_range_from_section_contribs(image_section_table, task.image_sects, str8_lit(".didat$2"));
+      Rng1U64 terminator  = lnk_voff_range_from_section_contribs(image_section_table, task.image_sects, str8_lit(".didat$3"));
+      if (dim_1u64(descriptors) && dim_1u64(terminator)) {
+        PE_DataDirectory *import_dir = pe_data_directory_from_idx(image_data, &pe, PE_DataDirectoryIndex_DELAY_IMPORT);
+        import_dir->virt_off  = safe_cast_u32(descriptors.min);
+        import_dir->virt_size = safe_cast_u32(Max(descriptors.max, terminator.max) - descriptors.min);
       }
     }
 

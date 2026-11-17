@@ -458,6 +458,32 @@ lnk_fopl_from_section_contrib(COFF_SectionHeader **image_section_table, LNK_Sect
   return foff + lnk_size_from_section_contrib(sc);
 }
 
+internal Rng1U64
+lnk_voff_range_from_section_contribs(COFF_SectionHeader **image_section_table, LNK_SectionArray image_sections, String8 postfix)
+{
+  Rng1U64 result = {0};
+  B32     found  = 0;
+  for EachIndex(section_idx, image_sections.count) {
+    for EachNode(chunk, LNK_SectionContribChunk, image_sections.v[section_idx]->contribs.first) {
+      if (str8_starts_with(chunk->sort_idx, postfix)) {
+        for EachIndex(i, chunk->count) {
+          LNK_SectionContrib *sc = chunk->v[i];
+          U64 size = lnk_size_from_section_contrib(sc);
+          if (size > 0) {
+            U64 begin = lnk_voff_from_section_contrib(image_section_table, sc);
+            U64 end   = begin + size;
+            result.min = found ? Min(result.min, begin) : begin;
+            result.max = found ? Max(result.max, end)   : end;
+
+            found = 1;
+          }
+        }
+      }
+    }
+  }
+  return result;
+}
+
 internal LNK_SectionContrib *
 lnk_get_first_section_contrib(LNK_Section *sect)
 {

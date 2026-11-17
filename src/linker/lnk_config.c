@@ -102,6 +102,7 @@ global LNK_CmdSwitch g_switch_map[] =
   { LNK_Tool_Linker, LNK_CmdSwitch_Rad_PdbHashTypeNameLength,        0, LNK_CmdValueKind_Scalar, "RAD_PDB_HASH_TYPE_NAME_LENGTH",        ":#",                   "Number of hash bytes to use to replace type name. Default 8 bytes (Max 16)."      },
   { LNK_Tool_Linker, LNK_CmdSwitch_Rad_PdbHashTypeNameMap,           0, LNK_CmdValueKind_Scalar, "RAD_PDB_HASH_TYPE_NAME_MAP",           ":FILENAME",            "Produce map file with hash -> type name mappings."                                },
   { LNK_Tool_Linker, LNK_CmdSwitch_Rad_PdbHashTypeNames,             0, LNK_CmdValueKind_Scalar, "RAD_PDB_HASH_TYPE_NAMES",              ":{NONE|LENIENT|FULL}", "Replace type names in LF_STRUCTURE and LF_CLASS with hashes."                     },
+  { LNK_Tool_Linker, LNK_CmdSwitch_Rad_PrivateSymbol,                1, LNK_CmdValueKind_List,   "RAD_PRIVATE_SYMBOL",                   ":NAME",                "Discards extern symbol from the public symbol table in debug info."               },
   { LNK_Tool_Linker, LNK_CmdSwitch_Rad_RemoveSection,                0, LNK_CmdValueKind_Scalar, "RAD_REMOVE_SECTION",                   ":NAME",                "Removes a section from the image."                                                },
   { LNK_Tool_All,    LNK_CmdSwitch_Rad_SharedThreadPool,             0, LNK_CmdValueKind_Scalar, "RAD_SHARED_THREAD_POOL",               "[:STRING]",            "Default value \"" LNK_DEFAULT_THREAD_POOL_NAME "\""                               },
   { LNK_Tool_All,    LNK_CmdSwitch_Rad_SharedThreadPoolMaxWorkers,   0, LNK_CmdValueKind_Scalar, "RAD_SHARED_THREAD_POOL_MAX_WORKERS",   ":#",                   "Set maximum number of workers in a thread pool."                                  },
@@ -2222,6 +2223,14 @@ lnk_apply_cmd_option_to_config_ex(LNK_Config *config, LNK_CmdSwitch *cmd, String
         lnk_error_cmd_switch(LNK_Error_Cmdl, obj, cmd_switch, "unknown parameter: \"%S\"", mode_string);
       } else {
         config->pdb_hash_type_names = mode;
+      }
+    }
+  } break;
+
+  case LNK_CmdSwitch_Rad_PrivateSymbol: {
+    for EachNode(n, String8Node, values.first) {
+      if ( ! hash_map_search_string_u64(&config->private_symbols_ht, n->string)) {
+        hash_map_push_string_u64(config->arena, &config->private_symbols_ht, n->string, 1);
       }
     }
   } break;

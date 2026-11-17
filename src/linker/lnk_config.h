@@ -151,6 +151,7 @@ typedef enum
   LNK_CmdSwitch_Rad_PdbHashTypeNameLength,
   LNK_CmdSwitch_Rad_PdbHashTypeNameMap,
   LNK_CmdSwitch_Rad_PdbHashTypeNames,
+  LNK_CmdSwitch_Rad_PrivateSymbol,
   LNK_CmdSwitch_Rad_RemoveSection,
   LNK_CmdSwitch_Rad_SharedThreadPool,
   LNK_CmdSwitch_Rad_SharedThreadPoolMaxWorkers,
@@ -442,6 +443,7 @@ typedef struct LNK_Config
   HashMap                     disallow_lib_ht;
   HashMap                     fail_if_mismatch_ht;
   HashMap                     whole_archive_ht;
+  HashMap                     private_symbols_ht;
   B32                         whole_archive_all;
   U64                         unresolved_symbol_limit;
   U64                         unresolved_symbol_ref_limit;

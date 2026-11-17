@@ -19,6 +19,9 @@ pe_make_debug_directory_pdb_obj(Arena *arena, COFF_MachineType machine, Guid gui
   COFF_ObjSection *debug_dir_sect = coff_obj_writer_push_section(obj_writer, str8_lit(".RAD_LINK_PE_DEBUG_DIR"), PE_DEBUG_DIR_SECTION_FLAGS, str8_struct(dir));
   coff_obj_writer_section_push_reloc_voff(obj_writer, debug_dir_sect, OffsetOf(PE_DebugDirectory, voff), debug_symbol);
 
+  coff_obj_writer_push_directive(obj_writer, s("/RAD_PRIVATE_SYMBOL:RAD_LINK_PE_DEBUG_PDB"));
+  coff_obj_writer_push_directive(obj_writer, s("/RAD_PRIVATE_SYMBOL:RAD_LINK_PE_DEBUG_GUID_PDB"));
+
   String8 obj = coff_obj_writer_serialize(arena, obj_writer);
   return obj;
 }
@@ -40,6 +43,9 @@ pe_make_debug_directory_rdi_obj(Arena *arena, COFF_MachineType machine, Guid gui
   dir->size       = debug_data.size;
   COFF_ObjSection *dir_sect = coff_obj_writer_push_section(obj_writer, str8_lit(".RAD_LINK_PE_DEBUG_DIR"), PE_DEBUG_DIR_SECTION_FLAGS, str8_struct(dir));
   coff_obj_writer_section_push_reloc_voff(obj_writer, dir_sect, OffsetOf(PE_DebugDirectory, voff), debug_symbol);
+
+  coff_obj_writer_push_directive(obj_writer, s("/RAD_PRIVATE_SYMBOL:RAD_LINK_PE_DEBUG_RDI"));
+  coff_obj_writer_push_directive(obj_writer, s("/RAD_PRIVATE_SYMBOL:RAD_LINK_PE_DEBUG_GUID_RDI"));
 
   String8 obj = coff_obj_writer_serialize(arena, obj_writer);
   return obj;

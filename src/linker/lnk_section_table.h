@@ -126,6 +126,7 @@ internal U64 lnk_size_from_section_contrib(LNK_SectionContrib *sc);
 internal U64 lnk_voff_from_section_contrib(COFF_SectionHeader **image_section_table, LNK_SectionContrib *sc);
 internal U64 lnk_foff_from_section_contrib(COFF_SectionHeader **image_section_table, LNK_SectionContrib *sc);
 internal U64 lnk_fopl_from_section_contrib(COFF_SectionHeader **image_section_table, LNK_SectionContrib *sc);
+internal Rng1U64 lnk_voff_range_from_section_contribs(COFF_SectionHeader **image_section_table, LNK_SectionArray image_sections, String8 subsection_prefix);
 
 internal LNK_SectionContrib * lnk_get_first_section_contrib(LNK_Section *sect);
 internal LNK_SectionContrib * lnk_get_last_section_contrib(LNK_Section *sect);

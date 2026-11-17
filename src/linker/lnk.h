@@ -114,10 +114,10 @@ enum
 typedef struct LNK_Import LNK_Import;
 struct LNK_Import
 {
-  LNK_Import                     *next;
-  LNK_Input                      *input;
-  U64                             input_order;
-  U32                             make_jump_thunk;
+  LNK_Import *next;
+  LNK_Input  *input;
+  U64         input_order;
+  U32         make_jump_thunk;
 };
 
 typedef struct LNK_ImportList
@@ -126,6 +126,20 @@ typedef struct LNK_ImportList
   LNK_Import *last;
   U64         count;
 } LNK_ImportList;
+
+typedef struct LNK_ImportPtrNode LNK_ImportPtrNode;
+struct LNK_ImportPtrNode
+{
+  LNK_ImportPtrNode *next;
+  LNK_Import        *v;
+};
+
+typedef struct
+{
+  LNK_ImportPtrNode *first;
+  LNK_ImportPtrNode *last;
+  U64                count;
+} LNK_ImportPtrList;
 
 typedef struct LNK_LibMemberInfo
 {
