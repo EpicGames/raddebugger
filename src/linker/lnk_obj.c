@@ -951,7 +951,14 @@ lnk_resolve_reloc_value(LNK_Obj *obj, U64 section_number, COFF_Reloc *reloc, U64
   case COFF_SymbolValueInterp_Undefined: {
     // unresolved symbols retain the zero target values
   } break;
-  default: { InvalidPath; return 0; } break;
+  case COFF_SymbolValueInterp_Debug: {
+    // mirror MSVC for this case, there are tools that rely on this behavior
+    lnk_error_obj(LNK_Warning_IllegalRelocation, obj, "relocation references debug symbol; assuming value is zero; reloc %llu, symbol %llu", reloc_idx, reloc->isymbol);
+  } break;
+  default: {
+    lnk_error_obj(LNK_Error_IllegalRelocation, obj, "relocation references an illegal symbol; reloc %llu, symbol %llu", reloc_idx, reloc->isymbol);
+    return 0;
+  }
   }
 
   U64 reloc_voff = (U64)section->voff + reloc->apply_off;
