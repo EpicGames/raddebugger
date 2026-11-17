@@ -432,10 +432,11 @@ D_SchemaInfo d_query_schema_info_table[3] =
 {str8_lit_comp("file"), str8_lit_comp("{data, modified, created}")},
 };
 
-D_SchemaInfo d_builtin_function_schema_info_table[2] =
+D_SchemaInfo d_builtin_function_schema_info_table[3] =
 {
 {str8_lit_comp("file"), str8_lit_comp("{path}")},
 {str8_lit_comp("module"), str8_lit_comp("{address}")},
+{str8_lit_comp("process"), str8_lit_comp("{entity}")},
 };
 
 C_LINKAGE_END

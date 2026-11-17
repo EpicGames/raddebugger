@@ -313,8 +313,9 @@ D_EntityKindTable:
 
 @table(name, schema) D_BuiltInFunctionEvalSchemaTable:
 {
-  {file, `{path}`}
-  {module, `{address}`}
+  {file,    `{path}`}
+  {module,  `{address}`}
+  {process, `{entity}`}
 }
 
 @struct D_SchemaInfo:

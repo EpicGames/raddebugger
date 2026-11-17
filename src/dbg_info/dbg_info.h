@@ -198,6 +198,18 @@ struct DI_SearchItemArray
 ////////////////////////////////
 //~ rjf: Match Types
 
+typedef U32 DI_MatchFlags;
+enum
+{
+  DI_MatchFlag_AllowOtherDebugInfos = (1<<0),
+  DI_MatchFlag_GlobalVars           = (1<<1),
+  DI_MatchFlag_ThreadVars           = (1<<2),
+  DI_MatchFlag_Procedures           = (1<<3),
+  DI_MatchFlag_Constants            = (1<<4),
+  DI_MatchFlag_Types                = (1<<5),
+  DI_MatchFlag_AllSymbols = (DI_MatchFlag_GlobalVars|DI_MatchFlag_ThreadVars|DI_MatchFlag_Procedures|DI_MatchFlag_Constants|DI_MatchFlag_Types),
+};
+
 typedef struct DI_Match DI_Match;
 struct DI_Match
 {
@@ -375,6 +387,6 @@ internal DI_SearchItemArray di_search_item_array_from_target_query(Access *acces
 //~ rjf: Match Artifact Cache Hooks / Lookups
 
 internal AC_Artifact di_match_artifact_create(String8 key, B32 *cancel_signal, AC_Status *status_out, U64 *gen_out);
-internal DI_Match di_match_from_string(String8 string, U32 match_index, U32 unit_idx, B32 allow_other_dbgis, DI_Key preferred_dbgi_key, U64 endt_us);
+internal DI_Match di_match_from_string(String8 string, U32 match_index, U32 unit_idx, DI_MatchFlags flags, DI_Key preferred_dbgi_key, U64 endt_us);
 
 #endif // DBG_INFO_H

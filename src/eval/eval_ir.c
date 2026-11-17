@@ -2012,7 +2012,7 @@ e_push_irtree_and_type_from_expr(Arena *arena, E_IRTreeAndType *root_parent, E_I
               }
               
               // rjf: find match
-              DI_Match match = di_match_from_string(string, match_disambiguating_idx, (U32)unit_idx, allow_other_dbg_infos, target_dbg_info->dbgi_key, 0);
+              DI_Match match = di_match_from_string(string, match_disambiguating_idx, (U32)unit_idx, DI_MatchFlag_AllSymbols|(DI_MatchFlag_AllowOtherDebugInfos*allow_other_dbg_infos), target_dbg_info->dbgi_key, 0);
               
               // rjf: match -> RDI
               RDI_Parsed *rdi = di_rdi_from_key(access, match.key, 0, 0);
@@ -2034,7 +2034,7 @@ e_push_irtree_and_type_from_expr(Arena *arena, E_IRTreeAndType *root_parent, E_I
                   String8 procedure_name = fully_qualified_str8_from_rdi_symbol(scratch.arena, rdi, procedure);
                   fully_qualified_name = str8f(scratch.arena, "%S.%S", procedure_name, string);
                 }
-                DI_Match fully_qualified_match_maybe = di_match_from_string(fully_qualified_name, match_disambiguating_idx, unit_idx, 0, e_base_ctx->primary_dbg_info->dbgi_key, 0);
+                DI_Match fully_qualified_match_maybe = di_match_from_string(fully_qualified_name, match_disambiguating_idx, unit_idx, DI_MatchFlag_AllSymbols, e_base_ctx->primary_dbg_info->dbgi_key, 0);
                 if(fully_qualified_match_maybe.idx != 0)
                 {
                   match = fully_qualified_match_maybe;

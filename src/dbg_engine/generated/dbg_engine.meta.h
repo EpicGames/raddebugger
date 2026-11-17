@@ -182,7 +182,7 @@ extern D_VocabInfo d_vocab_info_table[4];
 extern D_SchemaInfo d_entity_schema_info_table[4];
 extern D_SchemaInfo d_cfg_schema_info_table[2];
 extern D_SchemaInfo d_query_schema_info_table[3];
-extern D_SchemaInfo d_builtin_function_schema_info_table[2];
+extern D_SchemaInfo d_builtin_function_schema_info_table[3];
 
 C_LINKAGE_END
 

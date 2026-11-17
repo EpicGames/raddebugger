@@ -1581,14 +1581,14 @@ di_match_artifact_create(String8 key, B32 *cancel_signal, AC_Status *status_out,
   //- rjf: unpack key
   U32 index = 0;
   U32 unit_idx = 0;
-  B32 allow_other_dbgis = 0;
+  DI_MatchFlags flags = 0;
   String8 name = {0};
   DI_Key preferred_key = {0};
   {
     U64 key_read_off = 0;
     key_read_off += str8_deserial_read_struct(key, key_read_off, &index);
     key_read_off += str8_deserial_read_struct(key, key_read_off, &unit_idx);
-    key_read_off += str8_deserial_read_struct(key, key_read_off, &allow_other_dbgis);
+    key_read_off += str8_deserial_read_struct(key, key_read_off, &flags);
     key_read_off += str8_deserial_read_struct(key, key_read_off, &preferred_key);
     key_read_off += str8_deserial_read_struct(key, key_read_off, &name.size);
     name.str = push_array_no_zero(scratch.arena, U8, name.size);
@@ -1703,13 +1703,25 @@ di_match_artifact_create(String8 key, B32 *cancel_signal, AC_Status *status_out,
         RDI_SectionKind_Procedures,
         RDI_SectionKind_TypeNodes,
       };
+      B8 name_map_enable[] =
+      {
+        !!(flags & DI_MatchFlag_GlobalVars),
+        !!(flags & DI_MatchFlag_ThreadVars),
+        !!(flags & DI_MatchFlag_Constants),
+        !!(flags & DI_MatchFlag_Procedures),
+        !!(flags & DI_MatchFlag_Types),
+      };
       for EachElement(name_map_kind_idx, name_map_kinds)
       {
+        if(!name_map_enable[name_map_kind_idx])
+        {
+          continue;
+        }
         Rng1U64 range = lane_range(dbgi_keys.count);
         for EachInRange(dbgi_idx, range)
         {
           DI_Key dbgi_key = dbgi_keys.v[dbgi_idx];
-          if(!allow_other_dbgis && !di_key_match(preferred_key, dbgi_key))
+          if(!(flags & DI_MatchFlag_AllowOtherDebugInfos) && !di_key_match(preferred_key, dbgi_key))
           {
             continue;
           }
@@ -1863,7 +1875,7 @@ di_match_artifact_create(String8 key, B32 *cancel_signal, AC_Status *status_out,
 }
 
 internal DI_Match
-di_match_from_string(String8 string, U32 match_index, U32 unit_idx, B32 allow_other_dbgis, DI_Key preferred_dbgi_key, U64 endt_us)
+di_match_from_string(String8 string, U32 match_index, U32 unit_idx, DI_MatchFlags flags, DI_Key preferred_dbgi_key, U64 endt_us)
 {
   DI_Match result = {0};
   Access *access = access_open();
@@ -1872,13 +1884,13 @@ di_match_from_string(String8 string, U32 match_index, U32 unit_idx, B32 allow_ot
     String8List key_parts = {0};
     str8_list_push(scratch.arena, &key_parts, str8_struct(&match_index));
     str8_list_push(scratch.arena, &key_parts, str8_struct(&unit_idx));
-    str8_list_push(scratch.arena, &key_parts, str8_struct(&allow_other_dbgis));
+    str8_list_push(scratch.arena, &key_parts, str8_struct(&flags));
     str8_list_push(scratch.arena, &key_parts, str8_struct(&preferred_dbgi_key));
     str8_list_push(scratch.arena, &key_parts, str8_struct(&string.size));
     str8_list_push(scratch.arena, &key_parts, string);
     String8 key = str8_list_join(scratch.arena, &key_parts, 0);
     U64 dbgi_count = di_load_count();
-    B32 wide = (dbgi_count > 256 && allow_other_dbgis);
+    B32 wide = (dbgi_count > 256 && (flags & DI_MatchFlag_AllowOtherDebugInfos));
     AC_Artifact artifact = ac_artifact_from_key(access, key, di_match_artifact_create, 0, endt_us, .flags = wide ? AC_Flag_Wide : 0, .gen = di_load_gen(), .evict_threshold_us = wide ? 20000000 : 10000000);
     result.key.u64[0]   = artifact.u64[0];
     result.key.u64[1]   = artifact.u64[1];

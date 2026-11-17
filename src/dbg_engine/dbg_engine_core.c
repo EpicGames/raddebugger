@@ -626,6 +626,16 @@ d_eval_irtree_from_member_access(Arena *arena, E2_IRNode *lhs_irtree, String8 me
     default:{}break;
     
     ////////////////////////////
+    //- rjf: struct . accesses
+    //
+    case E2_TypeKind_Struct:
+    case E2_TypeKind_Union:
+    case E2_TypeKind_Class:
+    {
+      // TODO(rjf)
+    }break;
+    
+    ////////////////////////////
     //- rjf: set . accesses
     //
     case E2_TypeKind_Set:
@@ -925,8 +935,43 @@ d_eval_from_leaf_identifier(String8 identifier, String8List qualifiers)
       B32 need_bytecode = 1;
       B32 need_val = 1;
       
+      //- rjf: unpack qualifiers
+      typedef U32 ResolveFlags;
+      enum
+      {
+        ResolveFlag_Locals           = (1<<0),
+        ResolveFlag_Registers        = (1<<1),
+        ResolveFlag_GlobalVars       = (1<<2),
+        ResolveFlag_ThreadVars       = (1<<3),
+        ResolveFlag_Procedures       = (1<<4),
+        ResolveFlag_Constants        = (1<<5),
+        ResolveFlag_Types            = (1<<6),
+        ResolveFlag_Debugger         = (1<<7),
+        ResolveFlag_ParentExpr       = (1<<8),
+        ResolveFlag_ParentExprMember = (1<<9),
+        ResolveFlag_BuiltIns         = (1<<10),
+      };
+      ResolveFlags flags = 0xffffffff;
+      if(qualifiers.node_count != 0)
+      {
+        flags = 0;
+        for EachNode(n, String8Node, qualifiers.first)
+        {
+#define Case(string_, name) do { if(str8_match(n->string, s(string_), 0)) { flags |= ResolveFlag_##name; } }while(0)
+          Case("local",       Locals);
+          Case("reg",         Registers);
+          Case("global",      GlobalVars);
+          Case("thread",      ThreadVars);
+          Case("proc",        Procedures);
+          Case("constant",    Constants);
+          Case("type",        Types);
+          Case("raddbg",      Debugger);
+#undef Case
+        }
+      }
+      
       //- rjf: resolve as parent expression marker ($)
-      if(!resolved && str8_match(identifier, s("$"), 0) && d_eval_cache->top_parent->v != 0)
+      if(!resolved && (flags & ResolveFlag_ParentExpr) && str8_match(identifier, s("$"), 0) && d_eval_cache->top_parent->v != 0)
       {
         U64 parent_slot_idx = d_eval_cache->top_parent->v%d_eval_cache->slots_count;
         for(D_EvalNode *n = d_eval_cache->id_slots[parent_slot_idx].first; n != 0; n = n->id_next)
@@ -946,7 +991,7 @@ d_eval_from_leaf_identifier(String8 identifier, String8List qualifiers)
       }
       
       //- rjf: resolve as a local variable name (within the implicitly selected context)
-      if(!resolved)
+      if(!resolved && (flags & ResolveFlag_Locals))
       {
         D_Entity *thread = d_entity_from_id(d_eval_cache->selected_thread);
         U64 frame_idx = d_eval_cache->selected_frame_idx;
@@ -955,7 +1000,7 @@ d_eval_from_leaf_identifier(String8 identifier, String8List qualifiers)
       }
       
       //- rjf: resolve as a register name (within the implicitly selected context)
-      if(!resolved)
+      if(!resolved && (flags & ResolveFlag_Registers))
       {
         D_Entity *thread = d_entity_from_id(d_eval_cache->selected_thread);
         Arch arch = thread->arch;
@@ -965,7 +1010,7 @@ d_eval_from_leaf_identifier(String8 identifier, String8List qualifiers)
       }
       
       //- rjf: resolve as an implicit parent expression member name
-      if(!resolved && d_eval_cache->top_parent->v != 0)
+      if(!resolved && (flags & ResolveFlag_ParentExprMember) && d_eval_cache->top_parent->v != 0)
       {
         U64 parent_slot_idx = d_eval_cache->top_parent->v%d_eval_cache->slots_count;
         for(D_EvalNode *n = d_eval_cache->id_slots[parent_slot_idx].first; n != 0; n = n->id_next)
@@ -980,14 +1025,23 @@ d_eval_from_leaf_identifier(String8 identifier, String8List qualifiers)
       }
       
       //- rjf: resolve as a debug info match
-      if(!resolved)
+      if(!resolved && (flags & (ResolveFlag_GlobalVars|ResolveFlag_ThreadVars|ResolveFlag_Procedures|ResolveFlag_Constants|ResolveFlag_Types)))
       {
+        // rjf: choose matching flags
+        DI_MatchFlags match_flags = DI_MatchFlag_AllowOtherDebugInfos;
+        {
+          if(flags & ResolveFlag_GlobalVars) { match_flags |= DI_MatchFlag_GlobalVars; }
+          if(flags & ResolveFlag_ThreadVars) { match_flags |= DI_MatchFlag_ThreadVars; }
+          if(flags & ResolveFlag_Procedures) { match_flags |= DI_MatchFlag_Procedures; }
+          if(flags & ResolveFlag_Constants)  { match_flags |= DI_MatchFlag_Constants; }
+          if(flags & ResolveFlag_Types)      { match_flags |= DI_MatchFlag_Types; }
+        }
+        
         // rjf: get debug info match from string / params
         U32 match_idx = 0;
         U32 unit_idx = 0;
-        B32 allow_other_dbg_infos = 1;
         DI_Key preferred_dbgi_key = {0};
-        DI_Match match = di_match_from_string(identifier, match_idx, unit_idx, allow_other_dbg_infos, preferred_dbgi_key, d_eval_cache->async_endt_us);
+        DI_Match match = di_match_from_string(identifier, match_idx, unit_idx, match_flags, preferred_dbgi_key, d_eval_cache->async_endt_us);
         
         // rjf: dbgi key -> debug info ID
         //
@@ -1052,7 +1106,7 @@ d_eval_from_leaf_identifier(String8 identifier, String8List qualifiers)
       }
       
       //- rjf: resolve as a built-in constant
-      if(!resolved)
+      if(!resolved && flags & ResolveFlag_BuiltIns)
       {
         if(str8_match(identifier, s("true"), 0))
         {
@@ -1069,7 +1123,7 @@ d_eval_from_leaf_identifier(String8 identifier, String8List qualifiers)
       }
       
       //- rjf: resolve as a built-in type
-      if(!resolved)
+      if(!resolved && flags & ResolveFlag_BuiltIns)
       {
         resolved = 1;
         if(0){}
@@ -1126,7 +1180,7 @@ BasicCase("float64", F64)
       }
       
       //- rjf: resolve as a debug entity
-      if(!resolved)
+      if(!resolved && (flags & ResolveFlag_Debugger))
       {
         D_Entity *entity = &d_entity_nil;
         if(0){}
@@ -1150,7 +1204,7 @@ BasicCase("float64", F64)
       }
       
       //- rjf: resolve as a debug entity collection
-      if(!resolved)
+      if(!resolved && (flags & ResolveFlag_Debugger))
       {
         String8 single = d_singular_from_plural(identifier);
         D_EntityKind entity_kind = d_entity_kind_from_string(single);
@@ -1162,7 +1216,7 @@ BasicCase("float64", F64)
       }
       
       //- rjf: resolve as current-thread accesses
-      if(!resolved)
+      if(!resolved && (flags & ResolveFlag_Debugger))
       {
         if(str8_match(identifier, s("call_stack"), 0))
         {
@@ -1176,7 +1230,7 @@ BasicCase("float64", F64)
       }
       
       //- rjf: resolve as a call stack frame
-      if(!resolved)
+      if(!resolved && (flags & ResolveFlag_Debugger))
       {
         if(str8_match(identifier, s("current_call_stack_frame"), 0))
         {
@@ -1191,7 +1245,7 @@ BasicCase("float64", F64)
       }
       
       //- rjf: resolve as current-call-stack-frame collections
-      if(!resolved)
+      if(!resolved && (flags & ResolveFlag_Debugger))
       {
         if(str8_match(identifier, s("locals"), 0) ||
            str8_match(identifier, s("registers"), 0))
@@ -1207,7 +1261,7 @@ BasicCase("float64", F64)
       }
       
       //- rjf: resolve as a built-in function
-      if(!resolved)
+      if(!resolved && (flags & ResolveFlag_Debugger))
       {
         MD_Node *fn_schema = cfg_schema_from_name(&d_shared->builtin_function_schema_table, identifier);
         if(fn_schema != &md_nil_node)
@@ -1374,9 +1428,40 @@ d_eval_from_string(String8 string)
               else if(identifier_eval.irtree->mode == E2_Mode_Value)
               {
                 U64 byte_size = e2_byte_size_from_type_key(identifier_eval.irtree->type_key);
+                U512 u512 = identifier_eval_val->val.u512;
                 switch(byte_size)
                 {
-                  default:{identifier_eval_val->op = RDI_EvalOp_ConstU512;}break;
+                  default:
+                  {
+                    if(!MemoryIsZeroStruct(&u512.u256[1]))
+                    {
+                      identifier_eval_val->op = RDI_EvalOp_ConstU512;
+                    }
+                    else if(!MemoryIsZeroStruct(&u512.u128[1]))
+                    {
+                      identifier_eval_val->op = RDI_EvalOp_ConstU256;
+                    }
+                    else if(!MemoryIsZeroStruct(&u512.u64[1]))
+                    {
+                      identifier_eval_val->op = RDI_EvalOp_ConstU128;
+                    }
+                    else if(!MemoryIsZeroStruct(&u512.u32[1]))
+                    {
+                      identifier_eval_val->op = RDI_EvalOp_ConstU64;
+                    }
+                    else if(!MemoryIsZeroStruct(&u512.u16[1]))
+                    {
+                      identifier_eval_val->op = RDI_EvalOp_ConstU32;
+                    }
+                    else if(!MemoryIsZeroStruct(&u512.u8[1]))
+                    {
+                      identifier_eval_val->op = RDI_EvalOp_ConstU16;
+                    }
+                    else
+                    {
+                      identifier_eval_val->op = RDI_EvalOp_ConstU8;
+                    }
+                  }break;
                   case 1: {identifier_eval_val->op = RDI_EvalOp_ConstU8;}break;
                   case 2: {identifier_eval_val->op = RDI_EvalOp_ConstU16;}break;
                   case 4: {identifier_eval_val->op = RDI_EvalOp_ConstU32;}break;
@@ -1552,6 +1637,27 @@ d_eval_from_string(String8 string)
                   if(module != &d_entity_nil)
                   {
                     resolve_result = e2_irnode_set_u64(d_eval_cache->arena, d_entity_kind_code_name_table[module->kind], module->id);
+                  }
+                }
+              }
+              
+              //////////////////
+              //- rjf: @builtin_fn `process` function calls
+              //
+              else if(type_key.kind == E2_TypeKeyKind_Cons && str8_match(type_name, s("process"), 0))
+              {
+                if(compile.params_irtree->first_child == 0)
+                {
+                  e2_msgf(d_eval_cache->arena, &msgs, r1u64(0, 0), "Expected a thread or module argument.");
+                }
+                else
+                {
+                  E2_SpaceVal entity_space_val = d_eval_value_space_val_from_irtree(scratch.arena, compile.params_irtree->first_child->v, &msgs);
+                  D_Entity *entity = d_entity_from_id(entity_space_val.val.u64);
+                  D_Entity *process = d_process_from_entity(entity);
+                  if(process != &d_entity_nil)
+                  {
+                    resolve_result = e2_irnode_set_u64(d_eval_cache->arena, d_entity_kind_code_name_table[process->kind], process->id);
                   }
                 }
               }

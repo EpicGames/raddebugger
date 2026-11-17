@@ -2809,7 +2809,7 @@ e2_parse_from_string(Arena *arena, E2_ParseState *state, B32 identifier_is_type,
     {
       if(parse.status == E2_ParseStatus_CheckIdentifierIsType)
       {
-        e2_msgf(arena, &parse.msgs, r1u64(state->string_off, state->string_off + parse.identifier.size), "`%S` couldn't be resolved.", parse.identifier);
+        e2_msgf(arena, &parse.msgs, r1u64(state->string_off, state->string_off + parse.identifier.size), "`%S` couldn't be found.", parse.identifier);
       }
       parse.status = E2_ParseStatus_Error;
     }
@@ -3784,7 +3784,7 @@ e2_compile_from_expr(Arena *arena, E2_CompileState *state, E2_IRNode *resolve_re
           default:{}break;
           case E2_CompileStatus_MissedIdentifierResolution:
           {
-            e2_msgf(arena, &compile.msgs, state->top_task->expr->src_range, "`%S` couldn't be resolved.", compile.identifier);
+            e2_msgf(arena, &compile.msgs, state->top_task->expr->src_range, "`%S` couldn't be found.", compile.identifier);
           }break;
           case E2_CompileStatus_MemberAccess:
           {

@@ -10637,7 +10637,7 @@ rd_code_color_slot_from_txt_token_kind_lookup_string(TXT_TokenKind kind, String8
     // rjf: try to map using asynchronous matching system
     if(!mapped && kind == TXT_TokenKind_Identifier)
     {
-      DI_Match match = di_match_from_string(string, 0, 0, 1, di_key_zero(), 0);
+      DI_Match match = di_match_from_string(string, 0, 0, DI_MatchFlag_AllSymbols|DI_MatchFlag_AllowOtherDebugInfos, di_key_zero(), 0);
       RDI_SectionKind section_kind = match.section_kind;
       mapped = 1;
       switch(section_kind)
@@ -15975,11 +15975,11 @@ rd_frame(void)
                 DI_Match match = {0};
                 if(match.idx == 0)
                 {
-                  match = di_match_from_string(name, 0, 0, 1, e_base_ctx->primary_dbg_info->dbgi_key, rd_state->frame_eval_memread_endt_us);
+                  match = di_match_from_string(name, 0, 0, DI_MatchFlag_AllowOtherDebugInfos|DI_MatchFlag_AllSymbols, e_base_ctx->primary_dbg_info->dbgi_key, rd_state->frame_eval_memread_endt_us);
                 }
                 if(match.idx == 0)
                 {
-                  match = di_match_from_string(name, 0, 0, 1, di_key_zero(), rd_state->frame_eval_memread_endt_us);
+                  match = di_match_from_string(name, 0, 0, DI_MatchFlag_AllowOtherDebugInfos|DI_MatchFlag_AllSymbols, di_key_zero(), rd_state->frame_eval_memread_endt_us);
                 }
                 if(match.section_kind == RDI_SectionKind_Procedures)
                 {
