@@ -1551,6 +1551,18 @@ e2_irnode_const_f64(Arena *arena, F64 f64)
 }
 
 internal E2_IRNode *
+e2_irnode_const_string(Arena *arena, String8 string)
+{
+  E2_IRNode *e = e2_irnode(arena);
+  e->mode = E2_Mode_Value;
+  e->op = RDI_EvalOp_ConstString;
+  e->type_key = e2_type_key_cons_array(e2_type_key_basic(E2_TypeKind_U8), string.size);
+  e->string = string;
+  e->val.u64 = string.size;
+  return e;
+}
+
+internal E2_IRNode *
 e2_irnode_unary_op(Arena *arena, E2_TypeKey type_key, RDI_EvalOp op, E2_IRNode *operand)
 {
   E2_IRNode *e = e2_irnode(arena);

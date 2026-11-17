@@ -415,21 +415,27 @@ D_SchemaInfo d_entity_schema_info_table[4] =
 {
 {str8_lit_comp("server"), str8_lit_comp("{name, @no_expand active, unattached_processes:set, processes:set}")},
 {str8_lit_comp("process"), str8_lit_comp("{name, id, @no_expand active, modules:set, threads:set, @no_expand memory}")},
-{str8_lit_comp("module"), str8_lit_comp("{exe, dbg, vaddr_range:set}")},
+{str8_lit_comp("module"), str8_lit_comp("{exe, debug_info_path, vaddr_range:set, debug_info:set}")},
 {str8_lit_comp("thread"), str8_lit_comp("{name, id, @no_expand active, call_stack:set}")},
 };
 
-D_SchemaInfo d_cfg_schema_info_table[2] =
+D_SchemaInfo d_cfg_schema_info_table[3] =
 {
 {str8_lit_comp("breakpoint"), str8_lit_comp("@row_commands(enable_cfg, duplicate_cfg, remove_cfg)\n@collection_commands(toggle_breakpoint, add_breakpoint, add_address_breakpoint, add_function_breakpoint, clear_breakpoints)\n{\n  label:            @code string,\n  condition:        @expr string,\n  source_location:  path_pt,\n  address_location: @expr string,\n  hit_count:        u64,\n  address_range_size: @or(0, 1, 2, 4, 8) u64,\n  break_on_write:   bool,\n  break_on_read:    bool,\n  break_on_execute: bool,\n  @display_name(\"Break Selected Thread Only\") break_selected_thread_only: bool,\n  @no_revert @no_expand @default(1) enabled: bool,\n}\n")},
 {str8_lit_comp("target"), str8_lit_comp("@row_commands(@cmd_line save_cfg_to_project, enable_cfg, launch_and_run, launch_and_step_into, duplicate_cfg, remove_cfg)\n@collection_commands(add_target)\n{\n  label:              @code string,\n  executable:         path,\n  arguments:          string,\n  working_directory:  @folder path,\n  entry_point:        @expr string,\n  @default(\"output\") output_label: @code string,\n  stdout_path:        @can_not_exist @no_relativize path,\n  stderr_path:        @can_not_exist @no_relativize path,\n  stdin_path:         @can_not_exist @no_relativize path,\n  environment:        set,\n  debug_subprocesses: bool,\n  @display_name(\"Remote\")\n  remote: bool,\n  @expand_if(\"$.remote\") @display_name(\"Deploy\")\n  deploy: bool,\n  @expand_if(\"$.remote\") @display_name(\"Address\")\n  address: string,\n  @no_revert @no_expand @default(0) enabled: bool,\n}\n")},
+{str8_lit_comp("debug_info"), str8_lit_comp("@row_commands(enable_cfg, duplicate_cfg, remove_cfg)\n@collection_commands(load_debug_info)\n{\n  path: @no_relativize path,\n  @no_revert @no_expand @default(1) enabled: bool,\n\n  // NOTE(rjf): debug info queries:\n  guid,\n  top_level_info: set,\n  strings: set,\n  binary_sections: set,\n  source_files: set,\n  units: set,\n  types: set,\n  globals: set,\n  thread_variables: set,\n  constants: set,\n  procedures: set,\n}\n")},
 };
 
-D_SchemaInfo d_query_schema_info_table[3] =
+D_SchemaInfo d_query_schema_info_table[8] =
 {
 {str8_lit_comp("call_stack_frame"), str8_lit_comp("{registers:set, locals:set}")},
 {str8_lit_comp("vaddr_range"), str8_lit_comp("{min max}")},
 {str8_lit_comp("file"), str8_lit_comp("{data, modified, created}")},
+{str8_lit_comp("top_level_info"), str8_lit_comp("{exe, exe_hash, arch, voff_max, producer}")},
+{str8_lit_comp("binary_section"), str8_lit_comp("{name, voff_range, foff_range}")},
+{str8_lit_comp("source_file"), str8_lit_comp("{path}")},
+{str8_lit_comp("unit"), str8_lit_comp("{name, compiler, source_file, object_file, archive_file, build_path, language, procedures:set, globals:set, thread_variables:set, constants:set}")},
+{str8_lit_comp("symbol"), str8_lit_comp("{name, unit}")},
 };
 
 D_SchemaInfo d_builtin_function_schema_info_table[3] =

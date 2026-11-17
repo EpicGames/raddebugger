@@ -672,7 +672,7 @@ d_eval_irtree_from_member_access(Arena *arena, E2_IRNode *lhs_irtree, String8 me
           }
           
           // NOTE(rjf): @schema_builtin entity .name access
-          else if(str8_match(member_name, s("name"), 0) || (lhs_entity->kind == D_EntityKind_Module && str8_match(member_name, s("exe"), 0)))
+          else if(str8_match(member_name, s("name"), 0) && (lhs_entity->kind == D_EntityKind_Thread || lhs_entity->kind == D_EntityKind_Server || lhs_entity->kind == D_EntityKind_Process))
           {
             String8 name = lhs_entity->string;
             irtree = e2_irnode(arena);
@@ -684,8 +684,14 @@ d_eval_irtree_from_member_access(Arena *arena, E2_IRNode *lhs_irtree, String8 me
             e2_irnode_push_child(arena, irtree, member_addr);
           }
           
-          // NOTE(rjf): @schema_builtin module .dbg access
-          else if(lhs_entity->kind == D_EntityKind_Module && str8_match(member_name, s("dbg"), 0))
+          // NOTE(rjf): @schema_builtin module .exe access
+          else if(str8_match(member_name, s("exe"), 0) && lhs_entity->kind == D_EntityKind_Module)
+          {
+            irtree = e2_irnode_const_string(arena, lhs_entity->string);
+          }
+          
+          // NOTE(rjf): @schema_builtin module .debug_info_path access
+          else if(str8_match(member_name, s("debug_info_path"), 0) && lhs_entity->kind == D_EntityKind_Module)
           {
             String8 name = d_entity_child_from_kind(lhs_entity, D_EntityKind_DebugInfoPath)->string;
             irtree = e2_irnode(arena);

@@ -757,6 +757,7 @@ internal E2_IRNode *e2_irnode_const_u64_or_smaller(Arena *arena, U64 u);
 internal E2_IRNode *e2_irnode_const_u64(Arena *arena, U64 u);
 internal E2_IRNode *e2_irnode_const_f32(Arena *arena, F32 f32);
 internal E2_IRNode *e2_irnode_const_f64(Arena *arena, F64 f64);
+internal E2_IRNode *e2_irnode_const_string(Arena *arena, String8 string);
 internal E2_IRNode *e2_irnode_unary_op(Arena *arena, E2_TypeKey type_key, RDI_EvalOp op, E2_IRNode *operand);
 internal E2_IRNode *e2_irnode_binary_op(Arena *arena, E2_TypeKey type_key, RDI_EvalOp op, E2_IRNode *lhs, E2_IRNode *rhs);
 internal E2_IRNode *e2_irnode_resolve_to_value(Arena *arena, E2_IRNode *expr);

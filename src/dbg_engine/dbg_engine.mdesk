@@ -245,7 +245,7 @@ D_EntityKindTable:
   // @schema server, process, module, thread
   {server      `{name, @no_expand active, unattached_processes:set, processes:set}`}
   {process     `{name, id, @no_expand active, modules:set, threads:set, @no_expand memory}`}
-  {module      `{exe, dbg, vaddr_range:set}`}
+  {module      `{exe, debug_info_path, vaddr_range:set, debug_info:set}`}
   {thread      `{name, id, @no_expand active, call_stack:set}`}
 }
 
@@ -301,6 +301,33 @@ D_EntityKindTable:
     }
     ```
   }
+  
+  //- rjf: @schema debug_info
+  {
+    debug_info,
+    ```
+      @row_commands(enable_cfg, duplicate_cfg, remove_cfg)
+      @collection_commands(load_debug_info)
+    {
+      path: @no_relativize path,
+      @no_revert @no_expand @default(1) enabled: bool,
+      
+      // NOTE(rjf): debug info queries:
+      guid,
+      top_level_info: set,
+      strings: set,
+      binary_sections: set,
+      source_files: set,
+      units: set,
+      types: set,
+      globals: set,
+      thread_variables: set,
+      constants: set,
+      procedures: set,
+    }
+    ```,
+  }
+  
 }
 
 @table(name, schema) D_QueryEvalSchemaTable:
@@ -309,6 +336,13 @@ D_EntityKindTable:
   {call_stack_frame `{registers:set, locals:set}`}
   {vaddr_range `{min max}`}
   {file `{data, modified, created}`}
+  
+  //- rjf: @schema RDI info - top_level_info, binary_section, source_file, unit, symbol
+  {top_level_info `{exe, exe_hash, arch, voff_max, producer}`}
+  {binary_section `{name, voff_range, foff_range}`}
+  {source_file    `{path}`}
+  {unit           `{name, compiler, source_file, object_file, archive_file, build_path, language, procedures:set, globals:set, thread_variables:set, constants:set}`}
+  {symbol         `{name, unit}`}
 }
 
 @table(name, schema) D_BuiltInFunctionEvalSchemaTable:
