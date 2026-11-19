@@ -563,201 +563,17 @@ d2r_convert(Arena *arena, D2R_ConvertParams *params)
       unit_file_seq_maps[unit_idx].slots = push_array(scratch.arena, FileSeqNode *, unit_file_seq_maps[unit_idx].slots_count);
       
       //- rjf: set up vm registers
-      DW2_LineVMRegs vm_regs = {0};
-      {
-        vm_regs.file_index = 1;
-        vm_regs.line = 1;
-        vm_regs.is_stmt = line_table_header->default_is_stmt;
-      }
+      DW2_LineVM vm = dw2_line_vm_init(line_table_header);
       
       //- rjf: run the line opcode program
-      B32 emit_line = 0;
       RDIM_SrcFile *line_seq_src_file = 0;
       LineSeqChunk *first_line_seq_chunk = 0;
       LineSeqChunk *last_line_seq_chunk = 0;
       U64 total_line_seq_count = 0;
-      for(U64 off = 0, next_off = 0; off <= unit_line_table_data.size; off = next_off)
+      for(;;)
       {
-        next_off = unit_line_table_data.size;
-        
-        //- rjf: read next opcode
-        U64 op_read_off = off;
-        U8 opcode = 0;
-        str8_deserial_read_struct(unit_line_table_data, op_read_off, &opcode);
-        op_read_off += 1;
-        
-        //- rjf: apply "special opcodes" (DWARF v5 6.2.5.1)
-        if(opcode >= line_table_header->opcode_base)
-        {
-          U32 adjusted_opcode = (U32)(opcode - line_table_header->opcode_base);
-          U32 op_advance = adjusted_opcode / line_table_header->line_range;
-          S64 line_advance = (S64)line_table_header->line_base + (S64)adjusted_opcode%(S64)line_table_header->line_range;
-          U64 addr_advance = line_table_header->min_inst_length * (vm_regs.vliw_op_index + op_advance) / line_table_header->max_ops_per_inst;
-          vm_regs.address += addr_advance;
-          vm_regs.vliw_op_index = (vm_regs.vliw_op_index + op_advance) % line_table_header->max_ops_per_inst;
-          vm_regs.line += line_advance;
-          emit_line = 1;
-        }
-        
-        //- rjf: apply standard opcode
-        else
-        {
-          U64 op_advance = 0;
-          switch(opcode)
-          {
-            //- rjf: skip unknown opcode
-            default:
-            {
-              for EachIndex(uleb_idx, line_table_header->opcode_lengths[opcode - 1])
-              {
-                U64 v = 0;
-                op_read_off += str8_deserial_read_uleb128(unit_line_table_data, op_read_off, &v);
-              }
-            }break;
-            
-            //- rjf: line emissions
-            case DW_StdOpcode_Copy:
-            {
-              emit_line = 1;
-            }break;
-            
-            //- rjf: PC advances
-            case DW_StdOpcode_AdvancePc:
-            {
-              op_read_off += str8_deserial_read_uleb128(unit_line_table_data, op_read_off, &op_advance);
-            }goto advance_pc;
-            case DW_StdOpcode_ConstAddPc:
-            {
-              op_advance = (0xffu - line_table_header->opcode_base) / line_table_header->line_range;
-            }goto advance_pc;
-            advance_pc:;
-            {
-              U64 op_index = vm_regs.vliw_op_index + op_advance;
-              vm_regs.address += line_table_header->min_inst_length * (op_index / line_table_header->max_ops_per_inst);
-              vm_regs.vliw_op_index = op_index % line_table_header->max_ops_per_inst;
-            }break;
-            
-            //- rjf: fixed PC advances
-            case DW_StdOpcode_FixedAdvancePc:
-            {
-              U16 fixed_advance = 0;
-              str8_deserial_read_struct(unit_line_table_data, op_read_off, &fixed_advance);
-              op_read_off += sizeof(U16);
-              vm_regs.address += fixed_advance;
-              vm_regs.vliw_op_index = 0;
-            }break;
-            
-            //- rjf: line number advance
-            case DW_StdOpcode_AdvanceLine:
-            {
-              S64 advance = 0;
-              op_read_off += str8_deserial_read_sleb128(unit_line_table_data, op_read_off, &advance);
-              vm_regs.line += advance;
-            }break;
-            
-            //- rjf: set file
-            case DW_StdOpcode_SetFile:
-            {
-              op_read_off += str8_deserial_read_uleb128(unit_line_table_data, op_read_off, &vm_regs.file_index);
-            }break;
-            
-            //- rjf: set column
-            case DW_StdOpcode_SetColumn:
-            {
-              op_read_off += str8_deserial_read_uleb128(unit_line_table_data, op_read_off, &vm_regs.column);
-            }break;
-            
-            //- rjf: negate statment
-            case DW_StdOpcode_NegateStmt:
-            {
-              vm_regs.is_stmt = !vm_regs.is_stmt;
-            }break;
-            
-            //- rjf: flag sets
-            case DW_StdOpcode_SetBasicBlock:
-            {
-              vm_regs.basic_block = 1;
-            }break;
-            case DW_StdOpcode_SetPrologueEnd:
-            {
-              vm_regs.prologue_end = 1;
-            }break;
-            case DW_StdOpcode_SetEpilogueBegin:
-            {
-              vm_regs.epilogue_begin = 1;
-            }break;
-            
-            //- rjf: isa
-            case DW_StdOpcode_SetIsa:
-            {
-              op_read_off += str8_deserial_read_uleb128(unit_line_table_data, op_read_off, &vm_regs.isa);
-            }break;
-            
-            //- rjf: extended opcode
-            case DW_StdOpcode_ExtendedOpcode:
-            {
-              // rjf: read extended opcode size
-              U64 ext_opcode_size = 0;
-              op_read_off += str8_deserial_read_uleb128(unit_line_table_data, op_read_off, &ext_opcode_size);
-              
-              // rjf: read extended opcode
-              U8 ext_opcode = 0;
-              op_read_off += str8_deserial_read_struct(unit_line_table_data, op_read_off, &ext_opcode);
-              
-              // rjf: grab truncated data for just this extended opcode
-              String8 ext_op_data = str8_prefix(unit_line_table_data, op_read_off + ext_opcode_size);
-              
-              // rjf: do extended opcode
-              switch(ext_opcode)
-              {
-                default:
-                case DW_ExtOpcode_Undefined:
-                case DW_ExtOpcode_UserLo:
-                case DW_ExtOpcode_UserHi:
-                {}break;
-                case DW_ExtOpcode_EndSequence:
-                {
-                  emit_line = 1;
-                  vm_regs.end_sequence = 1;
-                }break;
-                case DW_ExtOpcode_SetAddress:
-                {
-                  U64 addr = 0;
-                  op_read_off += str8_deserial_read(ext_op_data, op_read_off, &addr, line_table_header->addr_size, line_table_header->addr_size);
-                  vm_regs.address = addr;
-                  vm_regs.vliw_op_index = 0;
-                }break;
-                case DW_ExtOpcode_DefineFile:
-                {
-                  String8 file_name = {0};
-                  U64 dir_idx = 0;
-                  U64 modify_time = 0;
-                  U64 file_size = 0;
-                  op_read_off += str8_deserial_read_cstr(ext_op_data, op_read_off, &file_name);
-                  op_read_off += str8_deserial_read_uleb128(ext_op_data, op_read_off, &dir_idx);
-                  op_read_off += str8_deserial_read_uleb128(ext_op_data, op_read_off, &modify_time);
-                  op_read_off += str8_deserial_read_uleb128(ext_op_data, op_read_off, &file_size);
-                  //
-                  // TODO(rjf): this is a real problem, because at this point, we've already gathered & deduped
-                  // all source files, but now we're in a situation where a per-lane line info parse can produce
-                  // new source files, which may - of course - be duplicates of files defined in other unit line
-                  // info.
-                  //
-                }break;
-                case DW_ExtOpcode_SetDiscriminator:
-                {
-                  op_read_off += str8_deserial_read_uleb128(ext_op_data, op_read_off, &vm_regs.discriminator);
-                }break;
-              }
-            }break;
-          }
-        }
-        
-        //- rjf: advance to next op
-        if(op_read_off > off)
-        {
-          next_off = op_read_off;
-        }
+        B32 stepped = dw2_line_vm_step(line_table_header, unit_line_table_data, &vm);
+        DW2_LineVMRegs vm_regs = vm.regs;
         
         //- rjf: map file index -> rdim src file
         RDIM_SrcFile *src_file = 0;
@@ -767,7 +583,7 @@ d2r_convert(Arena *arena, D2R_ConvertParams *params)
         }
         
         //- rjf: sequence ended explicitly, or file change, or end of stream? -> push to line table
-        if(line_seq_src_file != 0 && (vm_regs.end_sequence || (src_file != line_seq_src_file && first_line_seq_chunk != 0) || off >= unit_line_table_data.size))
+        if(line_seq_src_file != 0 && (vm_regs.end_sequence || (src_file != line_seq_src_file && first_line_seq_chunk != 0) || !stepped))
         {
           // rjf: combine voffs/lines/cols
           U64 seq_line_count = total_line_seq_count;
@@ -825,20 +641,15 @@ d2r_convert(Arena *arena, D2R_ConvertParams *params)
           first_line_seq_chunk = last_line_seq_chunk = 0;
           total_line_seq_count = 0;
           line_seq_src_file = 0;
-          if(vm_regs.end_sequence)
-          {
-            MemoryZeroStruct(&vm_regs);
-            vm_regs.file_index = 1;
-            vm_regs.line = 1;
-            vm_regs.is_stmt = line_table_header->default_is_stmt;
-          }
+        }
+        if(!stepped)
+        {
+          break;
         }
         
         //- rjf: emit lines
-        if(emit_line && vm_regs.address != 0 && vm_regs.line != 0)
+        if(vm.emit_row && !vm_regs.end_sequence && vm_regs.address != 0 && vm_regs.line != 0)
         {
-          emit_line = 0;
-          
           // rjf: grab the last emitted line info
           U32 last_line = 0;
           U16 last_col = 0;
@@ -894,10 +705,6 @@ d2r_convert(Arena *arena, D2R_ConvertParams *params)
                    vm_regs.end_sequence ? " end_sequence" : "");
 #endif
           }
-          vm_regs.discriminator = 0;
-          vm_regs.basic_block = 0;
-          vm_regs.prologue_end = 0;
-          vm_regs.epilogue_begin = 0;
         }
       }
       

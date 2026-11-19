@@ -4,8 +4,6 @@
 #ifndef DWARF_WRITER_H
 #define DWARF_WRITER_H
 
-// TODO(rjf): this uses concepts from the old parser
-
 ////////////////////////////////
 
 typedef enum
@@ -67,22 +65,42 @@ typedef struct DW_WriterForm
   };
 } DW_WriterForm;
 
+typedef struct DW_WriterEncodedForm
+{
+  DW_FormKind kind;
+  union {
+    String8 addr;
+    String8 block;
+    String8 data;
+    String8 string;
+    String8 exprloc;
+    B8      flag;
+    S64     sdata;
+    U64     udata;
+    U64     ref;
+    U64     sec_offset;
+    U64     strp_sup;
+    U64     xval;
+    S64     implicit_const;
+  };
+} DW_WriterEncodedForm;
+
 typedef struct DW_WriterXForm
 {
-  DW_WriterForm writer;
-  DW_Form       reader;
+  DW_WriterForm        writer;
+  DW_WriterEncodedForm reader;
 } DW_WriterXForm;
 
 typedef struct DW_WriterAttrib
 {
-  DW_AttribKindEnum kind;
+  DW_AttribKind     kind;
   DW_WriterXForm    form;
   struct DW_WriterAttrib *next;
 } DW_WriterAttrib;
 
 typedef struct DW_WriterTag
 {
-  DW_TagKindEnum       kind;
+  DW_TagKind           kind;
   struct DW_WriterTag *next;
   struct DW_WriterTag *parent;
   struct DW_WriterTag *first_child;
@@ -242,17 +260,77 @@ typedef struct DW_Writer
   
   // Emit
   DW_WriterFixupList       fixups;
-  DW_WriterSection         sections[DW_Section_COUNT];
+  DW_WriterSection         sections[DW_SectionKind_COUNT];
   DW_WriterAttribChunkList attrib_chunk_list;
   DW_WriterTagChunkList    tag_chunk_list;
 } DW_Writer;
 
 
 ////////////////////////////////
+// Expression encoder
+
+typedef enum
+{
+  DW_ExprEncType_Null,
+  DW_ExprEncType_Op,
+  DW_ExprEncType_U8,
+  DW_ExprEncType_U16,
+  DW_ExprEncType_U32,
+  DW_ExprEncType_U64,
+  DW_ExprEncType_S8,
+  DW_ExprEncType_S16,
+  DW_ExprEncType_S32,
+  DW_ExprEncType_S64,
+  DW_ExprEncType_ULEB128,
+  DW_ExprEncType_SLEB128,
+  DW_ExprEncType_Addr,
+  DW_ExprEncType_Block,
+  DW_ExprEncType_DwarfUInt,
+  DW_ExprEncType_Label,
+  DW_ExprEncType_DeclLabel,
+} DW_ExprEncType;
+
+typedef struct DW_ExprEnc
+{
+  DW_ExprEncType type;
+  union {
+    DW_ExprOp op;
+    U8        u8;
+    U16       u16;
+    U32       u32;
+    U64       u64;
+    S8        s8;
+    S16       s16;
+    S32       s32;
+    S64       s64;
+    U64       addr;
+    String8   block;
+    String8   label;
+  };
+} DW_ExprEnc;
+
+#define DW_ExprEnc_Op(v)        { .type = DW_ExprEncType_Op,        .op    = DW_ExprOp_##v    }
+#define DW_ExprEnc_U8(v)        { .type = DW_ExprEncType_U8,        .u8    = v                }
+#define DW_ExprEnc_U16(v)       { .type = DW_ExprEncType_U16,       .u16   = v                }
+#define DW_ExprEnc_U32(v)       { .type = DW_ExprEncType_U32,       .u32   = v                }
+#define DW_ExprEnc_U64(v)       { .type = DW_ExprEncType_U64,       .u64   = v                }
+#define DW_ExprEnc_S8(v)        { .type = DW_ExprEncType_S8,        .s8    = v                }
+#define DW_ExprEnc_S16(v)       { .type = DW_ExprEncType_S16,       .s16   = v                }
+#define DW_ExprEnc_S32(v)       { .type = DW_ExprEncType_S32,       .s32   = v                }
+#define DW_ExprEnc_S64(v)       { .type = DW_ExprEncType_S64,       .s64   = v                }
+#define DW_ExprEnc_ULEB128(v)   { .type = DW_ExprEncType_ULEB128,   .u64   = v                }
+#define DW_ExprEnc_SLEB128(v)   { .type = DW_ExprEncType_SLEB128,   .s64   = v                }
+#define DW_ExprEnc_Addr(v)      { .type = DW_ExprEncType_Addr,      .addr  = v                }
+#define DW_ExprEnc_Block(v)     { .type = DW_ExprEncType_Block,     .block = v                }
+#define DW_ExprEnc_UInt(v)      { .type = DW_ExprEncType_DwarfUInt, .u64   = v                }
+#define DW_ExprEnc_Label(v)     { .type = DW_ExprEncType_Label,     .label = str8_lit_comp(v) }
+#define DW_ExprEnc_DeclLabel(v) { .type = DW_ExprEncType_DeclLabel, .label = str8_lit_comp(v) }
+
+////////////////////////////////
 // Serializers
 
 internal U64 dw_write_to_buffer_uleb128(U8 buffer[10], U64 v);
-internal U64 dw_write_to_buffer_sleb128(U8 buffer[10], U64 v);
+internal U64 dw_write_to_buffer_sleb128(U8 buffer[10], S64 v);
 
 internal String8 dw_write_uleb128(Arena *arena, U64 v);
 internal String8 dw_write_sleb128(Arena *arena, S64 v);

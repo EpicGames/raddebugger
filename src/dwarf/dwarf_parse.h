@@ -299,6 +299,18 @@ struct DW2_LineVMRegs
   U64 discriminator;
 };
 
+typedef struct DW2_LineVM DW2_LineVM;
+struct DW2_LineVM
+{
+  DW2_LineVMRegs regs;
+  U64 off;
+  U8 opcode;
+  U8 ext_opcode;
+  B32 emit_row;
+  B32 reset_regs;
+  B32 error;
+};
+
 ////////////////////////////////
 //~ rjf: Location Lists
 
@@ -427,6 +439,8 @@ internal U64 dw2_reference_info_off_from_form_val(DW2_ParseCtx *ctx, DW2_FormVal
 //~ rjf: Line Table Parsing
 
 internal U64 dw2_read_line_table_header(Arena *arena, DW_Raw *raw, DW2_ParseCtx *ctx, String8 data, U64 off, DW2_LineTableHeader *out);
+internal DW2_LineVM dw2_line_vm_init(DW2_LineTableHeader *header);
+internal B32 dw2_line_vm_step(DW2_LineTableHeader *header, String8 program, DW2_LineVM *vm);
 
 ////////////////////////////////
 //~ rjf: Offset Table Parsing (.debug_str_offsets, .debug_rnglists)

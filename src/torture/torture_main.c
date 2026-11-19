@@ -83,6 +83,7 @@
 #include "rdi_from_pdb/rdi_from_pdb.h"
 #include "rdi_from_dwarf/rdi_from_dwarf.h"
 #include "obj/obj.h"
+#include "dwarf/dwarf_writer.h"
 #include "radbin/radbin.h"
 #include "arch/arch_inc.h"
 #include "dbg_info/dbg_info.h"
@@ -164,6 +165,7 @@
 #include "pdb/pdb_write.c"
 #include "pdb/pdb_stringize.c"
 #include "dwarf/dwarf_inc.c"
+#include "dwarf/dwarf_writer.c"
 #include "eh_frame/eh_frame.c"
 #include "eh_frame/eh_frame_dump.c"
 #include "unwind/unwind_inc.c"
@@ -203,7 +205,6 @@
 #include "dwarf/tests/dwarf_tests.c"
 #include "rdi_from_dwarf/tests/rdi_from_dwarf_tests.c"
 #include "rdi_from_pdb/tests/rdi_from_pdb_tests.c"
-#include "pdb/tests/pdb_parse_tests.c"
 #include "raddbg/tests/raddbg_tests.c"
 #include "eval2/tests/eval2_tests.c"
 

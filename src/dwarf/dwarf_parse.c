@@ -136,9 +136,7 @@ dw2_read_unit_header(String8 data, U64 off, DW2_UnitHeader *out)
     case DW_Version_2:
     {
       // rjf: read abbrev off
-      U32 abbrev_off_32 = 0;
-      off += str8_deserial_read_struct(data, off, &abbrev_off_32);
-      abbrev_off = (U64)abbrev_off_32;
+      off += dw2_read_fmt_u64(data, off, format, &abbrev_off);
       
       // rjf: read address size
       U8 addr_size_8 = 0;
@@ -228,12 +226,12 @@ dw2_read_abbrev(Arena *arena, String8 data, U64 off, DW2_AbbrevHeader *header_ou
       U64 attrib_start_off = off;
       U64 attrib_kind = 0;
       U64 attrib_form_kind = 0;
-      U64 implicit_const = 0;
+      S64 implicit_const = 0;
       off += str8_deserial_read_uleb128(data, off, &attrib_kind);
       off += str8_deserial_read_uleb128(data, off, &attrib_form_kind);
       if(attrib_form_kind == DW_FormKind_ImplicitConst)
       {
-        off += str8_deserial_read_uleb128(data, off, &implicit_const);
+        off += str8_deserial_read_sleb128(data, off, &implicit_const);
       }
       if(attrib_kind != 0 && attribs_out != 0)
       {
@@ -818,12 +816,12 @@ dw2_read_tag(Arena *arena, DW_Raw *raw, DW2_ParseCtx *ctx, String8 data, U64 off
       // rjf: read next attribute abbreviation from .debug_abbrev
       U64 attrib_kind = 0;
       U64 attrib_form_kind = 0;
-      U64 implicit_const = 0;
+      S64 implicit_const = 0;
       abbrev_read_off += str8_deserial_read_uleb128(abbrev_data, abbrev_read_off, &attrib_kind);
       abbrev_read_off += str8_deserial_read_uleb128(abbrev_data, abbrev_read_off, &attrib_form_kind);
       if(attrib_form_kind == DW_FormKind_ImplicitConst)
       {
-        abbrev_read_off += str8_deserial_read_uleb128(abbrev_data, abbrev_read_off, &implicit_const);
+        abbrev_read_off += str8_deserial_read_sleb128(abbrev_data, abbrev_read_off, &implicit_const);
       }
       
       // rjf: indirect form -> form kind is encoded in .debug_info (because why not)
@@ -1199,6 +1197,307 @@ dw2_read_line_table_header(Arena *arena, DW_Raw *raw, DW2_ParseCtx *ctx, String8
   U64 bytes_read = (off - start_off);
   scratch_end(scratch);
   return bytes_read;
+}
+
+internal B32
+dw2_line_vm_read_leb128(String8 data, U64 *off, B32 is_signed, U64 *out)
+{
+  U64 value = 0;
+  U64 cursor = *off;
+  for(U64 shift = 0; shift < 64 && cursor < data.size; shift += 7)
+  {
+    U8 byte = data.str[cursor++];
+    U8 val = byte & 0x7f;
+    if(shift == 63 && (is_signed ? (val != 0 && val != 0x7f) : val > 1))
+    {
+      return 0;
+    }
+    value |= (U64)val << shift;
+    if((byte & 0x80) == 0)
+    {
+      if(is_signed && shift < 57 && (byte & 0x40) != 0)
+      {
+        value |= max_U64 << (shift + 7);
+      }
+      *off = cursor;
+      *out = value;
+      return 1;
+    }
+  }
+  return 0;
+}
+
+internal DW2_LineVM
+dw2_line_vm_init(DW2_LineTableHeader *header)
+{
+  //- rjf: set up vm registers
+  DW2_LineVM vm = {0};
+  {
+    vm.regs.file_index = 1; // NOTE: DWARF v5 still specifies an initial file register of 1.
+    vm.regs.line = 1;
+    vm.regs.is_stmt = header->default_is_stmt;
+  }
+  return vm;
+}
+
+internal B32
+dw2_line_vm_step(DW2_LineTableHeader *header, String8 program, DW2_LineVM *vm)
+{
+  B32 emitted_row = vm->emit_row;
+  vm->emit_row = 0;
+  if(vm->error || vm->off == program.size)
+  {
+    return 0;
+  }
+  if(vm->off > program.size || header->opcode_base == 0 || header->line_range == 0 || header->max_ops_per_inst == 0)
+  {
+    vm->error = 1;
+    return 0;
+  }
+  DW2_LineVMRegs vm_regs = vm->regs;
+  if(vm->reset_regs)
+  {
+    vm_regs = dw2_line_vm_init(header).regs;
+  }
+  else if(emitted_row)
+  {
+    vm_regs.discriminator = 0;
+    vm_regs.basic_block = 0;
+    vm_regs.prologue_end = 0;
+    vm_regs.epilogue_begin = 0;
+  }
+  B32 emit_line = 0;
+  
+  //- rjf: read next opcode
+  U64 op_read_off = vm->off;
+  U8 opcode = program.str[op_read_off++];
+  vm->opcode = opcode;
+  vm->ext_opcode = 0;
+  
+  //- rjf: apply "special opcodes" (DWARF v5 6.2.5.1)
+  if(opcode >= header->opcode_base)
+  {
+    U32 adjusted_opcode = (U32)(opcode - header->opcode_base);
+    U32 op_advance = adjusted_opcode / header->line_range;
+    S64 line_advance = (S64)header->line_base + (S64)adjusted_opcode%(S64)header->line_range;
+    U64 addr_advance = header->min_inst_length * ((vm_regs.vliw_op_index + op_advance) / header->max_ops_per_inst);
+    vm_regs.address += addr_advance;
+    vm_regs.vliw_op_index = (vm_regs.vliw_op_index + op_advance) % header->max_ops_per_inst;
+    vm_regs.line += line_advance;
+    emit_line = 1;
+  }
+  
+  //- rjf: apply standard opcode
+  else
+  {
+    U64 op_advance = 0;
+    switch(opcode)
+    {
+      //- rjf: skip unknown opcode
+      default:
+      {
+        if(header->opcode_lengths == 0 || opcode - 1 >= header->opcode_lengths_count)
+        {
+          goto error;
+        }
+        for EachIndex(uleb_idx, header->opcode_lengths[opcode - 1])
+        {
+          U64 v = 0;
+          if(!dw2_line_vm_read_leb128(program, &op_read_off, 0, &v))
+          {
+            goto error;
+          }
+        }
+      }break;
+      
+      //- rjf: line emissions
+      case DW_StdOpcode_Copy:
+      {
+        emit_line = 1;
+      }break;
+      
+      //- rjf: PC advances
+      case DW_StdOpcode_AdvancePc:
+      {
+        if(!dw2_line_vm_read_leb128(program, &op_read_off, 0, &op_advance))
+        {
+          goto error;
+        }
+      }goto advance_pc;
+      case DW_StdOpcode_ConstAddPc:
+      {
+        op_advance = (0xffu - header->opcode_base) / header->line_range;
+      }goto advance_pc;
+      advance_pc:;
+      {
+        U64 op_index = vm_regs.vliw_op_index + op_advance;
+        vm_regs.address += header->min_inst_length * (op_index / header->max_ops_per_inst);
+        vm_regs.vliw_op_index = op_index % header->max_ops_per_inst;
+      }break;
+      
+      //- rjf: fixed PC advances
+      case DW_StdOpcode_FixedAdvancePc:
+      {
+        U16 fixed_advance = 0;
+        if(str8_deserial_read_struct(program, op_read_off, &fixed_advance) != sizeof(U16))
+        {
+          goto error;
+        }
+        op_read_off += sizeof(U16);
+        vm_regs.address += fixed_advance;
+        vm_regs.vliw_op_index = 0;
+      }break;
+      
+      //- rjf: line number advance
+      case DW_StdOpcode_AdvanceLine:
+      {
+        S64 advance = 0;
+        if(!dw2_line_vm_read_leb128(program, &op_read_off, 1, (U64 *)&advance))
+        {
+          goto error;
+        }
+        vm_regs.line += advance;
+      }break;
+      
+      //- rjf: set file
+      case DW_StdOpcode_SetFile:
+      {
+        if(!dw2_line_vm_read_leb128(program, &op_read_off, 0, &vm_regs.file_index))
+        {
+          goto error;
+        }
+      }break;
+      
+      //- rjf: set column
+      case DW_StdOpcode_SetColumn:
+      {
+        if(!dw2_line_vm_read_leb128(program, &op_read_off, 0, &vm_regs.column))
+        {
+          goto error;
+        }
+      }break;
+      
+      //- rjf: negate statment
+      case DW_StdOpcode_NegateStmt:
+      {
+        vm_regs.is_stmt = !vm_regs.is_stmt;
+      }break;
+      
+      //- rjf: flag sets
+      case DW_StdOpcode_SetBasicBlock:
+      {
+        vm_regs.basic_block = 1;
+      }break;
+      case DW_StdOpcode_SetPrologueEnd:
+      {
+        vm_regs.prologue_end = 1;
+      }break;
+      case DW_StdOpcode_SetEpilogueBegin:
+      {
+        vm_regs.epilogue_begin = 1;
+      }break;
+      
+      //- rjf: isa
+      case DW_StdOpcode_SetIsa:
+      {
+        if(!dw2_line_vm_read_leb128(program, &op_read_off, 0, &vm_regs.isa))
+        {
+          goto error;
+        }
+      }break;
+      
+      //- rjf: extended opcode
+      case DW_StdOpcode_ExtendedOpcode:
+      {
+        // rjf: read extended opcode size
+        U64 ext_opcode_size = 0;
+        if(!dw2_line_vm_read_leb128(program, &op_read_off, 0, &ext_opcode_size) ||
+           ext_opcode_size == 0 || ext_opcode_size > program.size - op_read_off)
+        {
+          goto error;
+        }
+        U64 ext_opl = op_read_off + ext_opcode_size;
+        
+        // rjf: read extended opcode
+        U8 ext_opcode = program.str[op_read_off++];
+        vm->ext_opcode = ext_opcode;
+        
+        // rjf: grab truncated data for just this extended opcode
+        String8 ext_op_data = str8_prefix(program, ext_opl);
+        
+        // rjf: do extended opcode
+        switch(ext_opcode)
+        {
+          default:
+          case DW_ExtOpcode_Undefined:
+          case DW_ExtOpcode_UserLo:
+          case DW_ExtOpcode_UserHi:
+          {}break;
+          case DW_ExtOpcode_EndSequence:
+          {
+            emit_line = 1;
+            vm_regs.end_sequence = 1;
+          }break;
+          case DW_ExtOpcode_SetAddress:
+          {
+            U64 addr = 0;
+            if(header->addr_size == 0 || header->addr_size > sizeof(addr) || header->segment_selector_size != 0 ||
+               header->addr_size > ext_opl - op_read_off)
+            {
+              goto error;
+            }
+            op_read_off += str8_deserial_read(ext_op_data, op_read_off, &addr, header->addr_size, header->addr_size);
+            vm_regs.address = addr;
+            vm_regs.vliw_op_index = 0;
+          }break;
+          case DW_ExtOpcode_DefineFile:
+          {
+            String8 file_name = {0};
+            U64 dir_idx = 0;
+            U64 modify_time = 0;
+            U64 file_size = 0;
+            U64 file_name_size = str8_deserial_read_cstr(ext_op_data, op_read_off, &file_name);
+            if(file_name_size == 0 || file_name_size > ext_opl - op_read_off)
+            {
+              goto error;
+            }
+            op_read_off += file_name_size;
+            if(!dw2_line_vm_read_leb128(ext_op_data, &op_read_off, 0, &dir_idx) ||
+               !dw2_line_vm_read_leb128(ext_op_data, &op_read_off, 0, &modify_time) ||
+               !dw2_line_vm_read_leb128(ext_op_data, &op_read_off, 0, &file_size))
+            {
+              goto error;
+            }
+            //
+            // TODO(rjf): this is a real problem, because at this point, we've already gathered & deduped
+            // all source files, but now we're in a situation where a per-lane line info parse can produce
+            // new source files, which may - of course - be duplicates of files defined in other unit line
+            // info.
+            //
+          }break;
+          case DW_ExtOpcode_SetDiscriminator:
+          {
+            if(!dw2_line_vm_read_leb128(ext_op_data, &op_read_off, 0, &vm_regs.discriminator))
+            {
+              goto error;
+            }
+          }break;
+        }
+        op_read_off = ext_opl;
+      }break;
+    }
+  }
+  
+  //- rjf: advance to next op
+  vm->off = op_read_off;
+  vm->regs = vm_regs;
+  vm->emit_row = emit_line;
+  vm->reset_regs = vm_regs.end_sequence;
+  return 1;
+  
+  error:;
+  vm->error = 1;
+  return 0;
 }
 
 ////////////////////////////////

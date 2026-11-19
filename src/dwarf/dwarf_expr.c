@@ -286,7 +286,7 @@ dw_eval(Arena *arena, DW_Format fmt, Arch arch, MemoryMap *memory_map, void *reg
         read_size = Min(read_size, sizeof(push_vals[0].u512));
         reg_rng.max = reg_rng.min + read_size;
         arch_reg_block_read_range(arch_info, regs, reg_rng, &push_vals[0].u512);
-        push_vals[0].u512.u64[0] += operands[0].s64;
+        push_vals[0].u512.u64[0] += operands[opcode == DW_ExprOp_BRegX ? 1 : 0].s64;
       }break;
       
       //- rjf: frame base register read
@@ -373,7 +373,7 @@ dw_eval(Arena *arena, DW_Format fmt, Arch arch, MemoryMap *memory_map, void *reg
     }
     
     //- rjf: at the end of the expression? -> set success, fill result
-    if(off == expr.size)
+    if(!need_a_break && !done && off == expr.size)
     {
       result.status = DW_EvalStatus_Good;
       if(state->top_val != 0)
