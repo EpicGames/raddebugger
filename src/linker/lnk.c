@@ -35,7 +35,9 @@
 #include "codeview/codeview_merge.h"
 #include "msf/msf.h"
 #include "msf/msf_parse.h"
+#include "msf/msf_write.h"
 #include "pdb/pdb.h"
+#include "pdb/pdb_parse.h"
 #include "msvc_crt/msvc_crt.h"
 #include "llvm/llvm.h"
 #include "dwarf/dwarf.h"
@@ -61,7 +63,9 @@
 #include "codeview/codeview_merge.c"
 #include "msf/msf.c"
 #include "msf/msf_parse.c"
+#include "msf/msf_write.c"
 #include "pdb/pdb.c"
+#include "pdb/pdb_parse.c"
 #include "msvc_crt/msvc_crt.c"
 #include "llvm/llvm.c"
 #include "dwarf/x64/dwarf_x64.c"
@@ -71,24 +75,18 @@
 #include "base_ext/base_blake3.h"
 #include "base_ext/base_blake3.c"
 
-// --- Code Base Extensions ----------------------------------------------------
-
-#include "pdb_ext/msf_builder.h"
-
 // --- PDB Extensions- ---------------------------------------------------------
 
 #include "pdb_ext/pdb.h"
 #include "pdb_ext/pdb_helpers.h"
 #include "pdb_ext/pdb_builder.h"
 
-#include "pdb_ext/msf_builder.c"
 #include "pdb_ext/pdb.c"
 #include "pdb_ext/pdb_helpers.c"
 #include "pdb_ext/pdb_builder.c"
 
 // --- RDI ---------------------------------------------------------------------
 
-#include "pdb/pdb_parse.h"
 #include "rdi/rdi_local.h"
 #include "rdi_make/rdi_make_local.h"
 #include "rdi_from_coff/rdi_from_coff.h"
@@ -96,7 +94,6 @@
 #include "rdi_from_pdb/rdi_from_pdb.h"
 #include "arch/arch_inc.h"
 
-#include "pdb/pdb_parse.c"
 #include "rdi/rdi_local.c"
 #include "rdi_make/rdi_make_local.c"
 #include "rdi_from_coff/rdi_from_coff.c"
