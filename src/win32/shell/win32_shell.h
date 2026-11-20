@@ -4,4 +4,9 @@
 #ifndef WIN32_SHELL_H
 #define WIN32_SHELL_H
 
+////////////////////////////////
+// Libraries
+
+#pragma comment(lib, "comdlg32")
+
 #endif // WIN32_SHELL_H

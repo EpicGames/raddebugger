@@ -13,10 +13,17 @@ rd_test__raddbg_path(Arena *arena, CmdLine *cmdline)
 }
 
 internal Process
-rd_test__open_debugger(TestCtx *ctx, String8 target_cmd_line)
+rd_test__open_debugger(Arena *arena, TestCtx *ctx, String8 target_cmd_line)
 {
-  Temp scratch = scratch_begin(0, 0);
+  Temp scratch = scratch_begin(&arena, 1);
   String8 raddbg_path = rd_test__raddbg_path(scratch.arena, ctx->cmdline);
+  if(!file_path_exists(raddbg_path))
+  {
+    String8 build_target = cmd_line_has_flag(ctx->cmdline, s("gui")) ? s("raddbg") : s("raddbg_non_graphical");
+    test_outf("Missing debugger executable: %S\nBuild it with `build.bat no_meta %S` before running debugger tests.\n", raddbg_path, build_target);
+    scratch_end(scratch);
+    return process_zero();
+  }
   String8 user_file_path = str8f(scratch.arena, "%S/test.raddbg_user", ctx->artifacts_path);
   delete_file_at_path(user_file_path);
   Process process = launch_cmd_linef("%S --gen_crash_dump --no_focus_on_stop --user:%S --logs:logs %S", raddbg_path, user_file_path, target_cmd_line);
@@ -58,9 +65,14 @@ rd_test__exemplar_test_finish(Arena *arena, TestCtx *ctx, String8List test_log_s
   write_data_to_file_path(test_log_current_path, test_log_current);
   
   // rjf: load test log exemplar
-  make_directory(ctx->exemplars_path);
   String8 exemplar_path = str8f(scratch.arena, "%S/exemplar_%S", ctx->exemplars_path, lower_from_str8(scratch.arena, string_from_operating_system(OperatingSystem_CURRENT)));
   String8 exemplar_data = data_from_file_path(scratch.arena, exemplar_path);
+  if(exemplar_data.size == 0)
+  {
+    test_outf("Missing or empty stepping exemplar: %S\nRestore the matching reference test data before running this test. Current output was saved to %S.\n", exemplar_path, test_log_current_path);
+    scratch_end(scratch);
+    TestCheck(exemplar_data.size != 0);
+  }
   String8List exemplar_data_lines = str8_split(scratch.arena, exemplar_data, (U8 *)"\n", 1, StringSplitFlag_KeepEmpties);
   String8List exemplar_data_lines_sanitized = {0};
   for EachNode(n, String8Node, exemplar_data_lines.first)
@@ -73,12 +85,6 @@ rd_test__exemplar_test_finish(Arena *arena, TestCtx *ctx, String8List test_log_s
     str8_list_push(scratch.arena, &exemplar_data_lines_sanitized, line_trimmed);
   }
   exemplar_data = str8_list_join(scratch.arena, &exemplar_data_lines_sanitized, &(StringJoin){.sep = s("\n"), .post = s("\n")});
-  
-  // rjf: if exemplar data is empty -> just save our output as the new exemplar
-  if(exemplar_data.size == 0)
-  {
-    copy_file_path(exemplar_path, test_log_current_path);
-  }
   
   // rjf: if we have exemplar data, then we need to check that it matches
   if(exemplar_data.size != 0)
@@ -120,7 +126,8 @@ rd_test__stepping_regressions(Arena *arena, TestCtx *ctx, String8 target_binary,
   else
   {
     // rjf: start debugger
-    Process debugger = rd_test__open_debugger(ctx, binary_path);
+    Process debugger = rd_test__open_debugger(arena, ctx, binary_path);
+    TestCheck(!process_match(debugger, process_zero()));
     U64 debugger_pid = pid_from_process(debugger);
     
     // rjf: step & gather info
@@ -239,7 +246,8 @@ rd_test__eval_regressions(Arena *arena, TestCtx *ctx, String8 target_binary, Str
   else
   {
     // rjf: start debugger
-    Process debugger = rd_test__open_debugger(ctx, binary_path);
+    Process debugger = rd_test__open_debugger(arena, ctx, binary_path);
+    TestCheck(!process_match(debugger, process_zero()));
     U64 debugger_pid = pid_from_process(debugger);
     
     // rjf: query state
