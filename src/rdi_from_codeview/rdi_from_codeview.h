@@ -230,6 +230,7 @@ internal B32 cv2r_rec_has_header(CV_Record *record, U64 size);
 internal CV2R_SeparatedCode *cv2r_separated_code_from_parent(CV2R_SeparatedCodeMap *map, U16 sec, U32 off);
 internal CV2R_SeparatedCodeMap cv2r_separated_code_map_from_sym(Arena *arena, CV_SymbolStream *sym, CV2R_Section *sections, U64 sections_count);
 internal B32 cv2r_inline_site_decoder_is_valid(CV_C13InlineSiteDecoder decoder, String8 binary_annots);
+internal B32 cv2r_leaf_stream_bind(CV_LeafStream stream, CV_TypeId first, CV_TypeId opl, CV2R_LeafStream *out);
 
 ////////////////////////////////
 //~ rjf: String Table Functions
