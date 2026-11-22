@@ -2408,7 +2408,7 @@ lnk_resolved_exports_from_config(Arena *arena, LNK_Config *config, LNK_SymbolTab
   return result;
 }
 
-force_inline int
+internal force_inline int
 lnk_imp_libs_kv_sort(void *raw_a, void *raw_b)
 {
   HashMapKeyValue *key_a = raw_a, *key_b = raw_b;

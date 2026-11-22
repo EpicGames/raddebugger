@@ -310,6 +310,7 @@ cfm_worker(void *raw_ctx)
         current_map = job.segment->map;
         state = ins_atomic_u32_eval(&job.segment->state);
       }
+#if 0
       String8 path = job.map->source_path.size ? job.map->source_path : str8_lit("<unnamed>");
       fprintf(stderr, "CFM decode failed: thread=%u worker=%llu file=\"%.*s\" map=%p segment=%llu/%llu current_map=%p current_segment=%llu state=%u refs=%llu raw_size=%llu segment_size=%u encoded_size=%llu dst=%p dst_size=%llu scratch=%p scratch_size=%llu needed_scratch=%llu sdk=%u\n",
               tid(), worker->id, str8_varg(path), (void *)job.map, segment_idx, job.map->compressor_info.v.segment_count,
@@ -317,6 +318,7 @@ cfm_worker(void *raw_ctx)
               job.map->compressor_info.v.segment_size, job.map->encoded.size, (void *)job.segment->write, dst_size,
               (void *)decode_scratch_ptr, decode_scratch_size, needed_decode_scratch_size, job.map->compressor_info.v.sdk_type);
       fflush(stderr);
+#endif
     }
     AssertAlways(is_decoded); // TODO: handle failed decodes
     ProfEnd();
