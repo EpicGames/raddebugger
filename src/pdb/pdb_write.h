@@ -469,3 +469,10 @@ internal PDB_TypeHashStreamInfo  pdb_type_hash_stream_build(TP_Context *tp, PDB_
 // Enum -> String
 
 internal String8 pdb_string_from_src_error(PDB_SrcError error);
+
+////////////////////////////////
+// Bit Vector
+
+internal U64 pdb_read_bit_vector_string(String8 data, U64 offset, U32Array *bits_out);
+internal B32 pdb_write_bit_vector(MSF_Context *msf, MSF_StreamNumber sn, B32 *flag_array, U64 flag_count);
+internal U64 pdb_get_bit_vector_size(U32 bucket_count);

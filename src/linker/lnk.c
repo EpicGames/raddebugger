@@ -38,6 +38,7 @@
 #include "msf/msf_write.h"
 #include "pdb/pdb.h"
 #include "pdb/pdb_parse.h"
+#include "pdb/pdb_write.h"
 #include "msvc_crt/msvc_crt.h"
 #include "llvm/llvm.h"
 #include "dwarf/dwarf.h"
@@ -66,6 +67,7 @@
 #include "msf/msf_write.c"
 #include "pdb/pdb.c"
 #include "pdb/pdb_parse.c"
+#include "pdb/pdb_write.c"
 #include "msvc_crt/msvc_crt.c"
 #include "llvm/llvm.c"
 #include "dwarf/x64/dwarf_x64.c"
@@ -74,16 +76,6 @@
 
 #include "base_ext/base_blake3.h"
 #include "base_ext/base_blake3.c"
-
-// --- PDB Extensions- ---------------------------------------------------------
-
-#include "pdb_ext/pdb.h"
-#include "pdb_ext/pdb_helpers.h"
-#include "pdb_ext/pdb_builder.h"
-
-#include "pdb_ext/pdb.c"
-#include "pdb_ext/pdb_helpers.c"
-#include "pdb_ext/pdb_builder.c"
 
 // --- RDI ---------------------------------------------------------------------
 

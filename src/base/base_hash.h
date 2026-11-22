@@ -45,4 +45,10 @@ internal MD5 md5_from_data(String8 data);
 internal SHA1 sha1_from_data(String8 data);
 internal SHA256 sha256_from_data(String8 data);
 
+////////////////////////////////
+// CRC
+
+internal U32 update_crc32(U32 crc, U8 *ptr, U64 size);
+internal U32 crc32_from_string(String8 string);
+
 #endif // BASE_HASH_H

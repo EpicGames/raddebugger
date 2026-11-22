@@ -2,6 +2,76 @@
 // Licensed under the MIT license (https://opensource.org/license/mit/)
 
 ////////////////////////////////
+// Bit Vector
+
+internal U64
+pdb_read_bit_vector_string(String8 data, U64 offset, U32Array *bits_out)
+{
+  U64 cursor = offset;
+  
+  U32 word_count = 0;
+  cursor += str8_deserial_read_struct(data, cursor, &word_count);
+  
+  U64 word_data_read_size = word_count * sizeof(U32);
+  String8 word_data = str8(0,0);
+  cursor += str8_deserial_read_block(data, cursor, word_data_read_size, &word_data);
+  
+  if (word_data.size == word_data_read_size) {
+    bits_out->count = word_count;
+    bits_out->v = (U32*)word_data.str;
+  } else {
+    bits_out->count = 0;
+    bits_out->v = 0;
+  }
+  
+  U64 read_size = cursor - offset;
+  return read_size;
+}
+
+internal B32
+pdb_write_bit_vector(MSF_Context *msf, MSF_StreamNumber sn, B32 *flag_array, U64 flag_count)
+{
+  B32 is_write_ok = 0;
+
+  U32 word_size = sizeof(U32);
+  U32 bits_per_word = MSF_BITS_PER_CHAR * word_size;
+  U32 word_count = (flag_count + MSF_BITS_PER_CHAR) / MSF_BITS_PER_CHAR;
+  
+  is_write_ok = msf_stream_write_struct(msf, sn, &word_count);
+  if (is_write_ok) {
+    for (U64 iword = 0, iflag = 0; iword < word_count; ++iword) {
+      U32 word = 0;
+      
+      for (U64 iflag_opl = Min(flag_count, iflag + MSF_BITS_PER_CHAR); iflag < iflag_opl; ++iflag) {
+        if (flag_array[iflag]) {
+          word |= 1 << (iflag % bits_per_word);
+        }
+      }
+      
+      is_write_ok = msf_stream_write_struct(msf, sn, &word);
+      if (!is_write_ok) {
+        break;
+      }
+    }
+  }
+
+  return is_write_ok;
+}
+
+internal U64
+pdb_get_bit_vector_size(U32 bucket_count)
+{
+  U32 word_size = sizeof(U32);
+  U32 word_count = (bucket_count + MSF_BITS_PER_CHAR) / MSF_BITS_PER_CHAR;
+  
+  U64 result = 0;
+  result += sizeof(word_count);
+  result += word_size * word_count;
+  
+  return result;
+}
+
+////////////////////////////////
 
 internal U64
 pdb_hash_table_compute_load_factor(U64 count)
@@ -2660,10 +2730,10 @@ typedef struct
   U64        digit_count;
   U64        shift;
   B32        is_sec_pass;
-} LNK_DbiScRadixPass;
+} PDB_DbiScRadixPass;
 
 internal U64
-lnk_dbi_sc_radix_digit(LNK_DbiScRadixPass *pass, PDB_DbiSC *sc)
+pdb_dbi_sc_radix_digit(PDB_DbiScRadixPass *pass, PDB_DbiSC *sc)
 {
   if (pass->is_sec_pass) {
     return sc->base.sec;
@@ -2676,42 +2746,42 @@ typedef struct
   PDB_DbiSC *src;
   PDB_DbiSC *dst;
   U64        count;
-} LNK_DbiScCopy;
+} PDB_DbiScCopy;
 
-THREAD_POOL_TASK_FUNC(lnk_dbi_sc_copy_task)
+THREAD_POOL_TASK_FUNC(pdb_dbi_sc_copy_task)
 {
-  LNK_DbiScCopy *copy = raw_task;
+  PDB_DbiScCopy *copy = raw_task;
   Rng1U64 range = tp_work_range(copy->count, tp->worker_count, task_id);
   MemoryCopy(copy->dst + range.min, copy->src + range.min, sizeof(copy->src[0]) * dim_1u64(range));
 }
 
-THREAD_POOL_TASK_FUNC(lnk_dbi_sc_radix_histo_task)
+THREAD_POOL_TASK_FUNC(pdb_dbi_sc_radix_histo_task)
 {
-  LNK_DbiScRadixPass *pass = raw_task;
+  PDB_DbiScRadixPass *pass = raw_task;
   U32     *count = pass->count_arr + task_id * pass->digit_count;
   Rng1U64  range = tp_work_range(pass->count, tp->worker_count, task_id);
   for EachInRange(i, range) {
-    count[lnk_dbi_sc_radix_digit(pass, &pass->src[i])] += 1;
+    count[pdb_dbi_sc_radix_digit(pass, &pass->src[i])] += 1;
   }
 }
 
-THREAD_POOL_TASK_FUNC(lnk_dbi_sc_radix_scatter_task)
+THREAD_POOL_TASK_FUNC(pdb_dbi_sc_radix_scatter_task)
 {
-  LNK_DbiScRadixPass *pass = raw_task;
+  PDB_DbiScRadixPass *pass = raw_task;
   U32     *count = pass->count_arr + task_id * pass->digit_count;
   Rng1U64  range = tp_work_range(pass->count, tp->worker_count, task_id);
   for EachInRange(i, range) {
     PDB_DbiSC *sc = &pass->src[i];
-    pass->dst[count[lnk_dbi_sc_radix_digit(pass, sc)]++] = *sc;
+    pass->dst[count[pdb_dbi_sc_radix_digit(pass, sc)]++] = *sc;
   }
 }
 
 internal void
-lnk_dbi_sc_radix_pass_parallel(TP_Context *tp, Arena *arena, U64 task_count, U64 count, PDB_DbiSC **src, PDB_DbiSC **dst, U64 digit_count, U64 shift, B32 is_sec_pass)
+pdb_dbi_sc_radix_pass_parallel(TP_Context *tp, Arena *arena, U64 task_count, U64 count, PDB_DbiSC **src, PDB_DbiSC **dst, U64 digit_count, U64 shift, B32 is_sec_pass)
 {
   Temp temp = temp_begin(arena);
 
-  LNK_DbiScRadixPass pass = {
+  PDB_DbiScRadixPass pass = {
     .src         = *src,
     .dst         = *dst,
     .count       = count,
@@ -2721,7 +2791,7 @@ lnk_dbi_sc_radix_pass_parallel(TP_Context *tp, Arena *arena, U64 task_count, U64
     .is_sec_pass = is_sec_pass,
   };
 
-  tp_for_parallel(tp, 0, task_count, lnk_dbi_sc_radix_histo_task, &pass);
+  tp_for_parallel(tp, 0, task_count, pdb_dbi_sc_radix_histo_task, &pass);
 
   U32 cursor = 0;
   for EachIndex(digit, digit_count) {
@@ -2733,14 +2803,14 @@ lnk_dbi_sc_radix_pass_parallel(TP_Context *tp, Arena *arena, U64 task_count, U64
     }
   }
 
-  tp_for_parallel(tp, 0, task_count, lnk_dbi_sc_radix_scatter_task, &pass);
+  tp_for_parallel(tp, 0, task_count, pdb_dbi_sc_radix_scatter_task, &pass);
   temp_end(temp);
 
   Swap(PDB_DbiSC *, *src, *dst);
 }
 
 internal void
-lnk_radix_sort_dbi_sc_array(TP_Context *tp, PDB_DbiSC *arr, U64 sc_count, U64 sect_count)
+pdb_radix_sort_dbi_sc_array(TP_Context *tp, PDB_DbiSC *arr, U64 sc_count, U64 sect_count)
 {
   ProfBeginFunction();
 
@@ -2751,14 +2821,14 @@ lnk_radix_sort_dbi_sc_array(TP_Context *tp, PDB_DbiSC *arr, U64 sc_count, U64 se
     PDB_DbiSC *dst        = push_array_no_zero(scratch.arena, PDB_DbiSC, sc_count);
     U64        task_count = tp->worker_count;
 
-    lnk_dbi_sc_radix_pass_parallel(tp, scratch.arena, task_count, sc_count, &src, &dst, 256, 0, 0);
-    lnk_dbi_sc_radix_pass_parallel(tp, scratch.arena, task_count, sc_count, &src, &dst, 256, 8, 0);
-    lnk_dbi_sc_radix_pass_parallel(tp, scratch.arena, task_count, sc_count, &src, &dst, 256, 16, 0);
-    lnk_dbi_sc_radix_pass_parallel(tp, scratch.arena, task_count, sc_count, &src, &dst, 256, 24, 0);
-    lnk_dbi_sc_radix_pass_parallel(tp, scratch.arena, task_count, sc_count, &src, &dst, sect_count, 0, 1);
+    pdb_dbi_sc_radix_pass_parallel(tp, scratch.arena, task_count, sc_count, &src, &dst, 256, 0, 0);
+    pdb_dbi_sc_radix_pass_parallel(tp, scratch.arena, task_count, sc_count, &src, &dst, 256, 8, 0);
+    pdb_dbi_sc_radix_pass_parallel(tp, scratch.arena, task_count, sc_count, &src, &dst, 256, 16, 0);
+    pdb_dbi_sc_radix_pass_parallel(tp, scratch.arena, task_count, sc_count, &src, &dst, 256, 24, 0);
+    pdb_dbi_sc_radix_pass_parallel(tp, scratch.arena, task_count, sc_count, &src, &dst, sect_count, 0, 1);
 
-    LNK_DbiScCopy copy = { .src = src, .dst = arr, .count = sc_count };
-    tp_for_parallel(tp, 0, task_count, lnk_dbi_sc_copy_task, &copy);
+    PDB_DbiScCopy copy = { .src = src, .dst = arr, .count = sc_count };
+    tp_for_parallel(tp, 0, task_count, pdb_dbi_sc_copy_task, &copy);
 
     scratch_end(scratch);
     ProfEnd();
@@ -2907,7 +2977,7 @@ dbi_build_sec_con(Arena *arena, TP_Context *tp, PDB_DbiContext *dbi)
   PDB_DbiSC *sc_array = dbi->sec_contribs.v;
 
   // sort section contribs so they are binary searchable
-  lnk_radix_sort_dbi_sc_array(tp, sc_array, dbi->sec_contribs.count, dbi->section_list.count + 1);
+  pdb_radix_sort_dbi_sc_array(tp, sc_array, dbi->sec_contribs.count, dbi->section_list.count + 1);
 
   // DBI contribution maps an address range to its module, so adjacent same-module runs can share one record
   ProfBegin("Coalesce sect contribs");

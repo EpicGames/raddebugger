@@ -6,5 +6,4 @@
 #include "base_arena.c"
 #include "base_arrays.c"
 #include "base_bit_array.c"
-#include "base_crc32.c"
 
