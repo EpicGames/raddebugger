@@ -5,6 +5,48 @@
 #define PDB_PARSE_H
 
 ////////////////////////////////
+//~ PDB Hash Table Types
+
+typedef struct PDB_HashTableBucket
+{
+  String8 key;
+  String8 value;
+  U32 key_offset;
+  U32 insert_idx;
+} PDB_HashTableBucket;
+
+typedef struct PDB_HashTable
+{
+  Arena *arena;
+  PDB_HashTableBucket *bucket_arr;
+  U32Array present_bits;
+  U32Array deleted_bits;
+  U32 max;
+  U32 count;
+} PDB_HashTable;
+
+typedef struct PDB_HashTableEntries
+{
+  PDB_HashTableBucket *v;
+  U32 count;
+  U32 max;
+  U32Array present_bits;
+  U32Array deleted_bits;
+  U64 read_bytes;
+} PDB_HashTableEntries;
+
+// Unpack callbacks return nonzero on failure.
+#define PDB_HASH_TABLE_UNPACK_FUNC(name) B32 name(void *ud, String8 local_data, String8 key_value_data, U64 *key_value_cursor, String8 *key_out, String8 *value_out)
+typedef PDB_HASH_TABLE_UNPACK_FUNC(PDB_HashTableUnpackFunc);
+
+typedef enum
+{
+  PDB_HashTableParseError_OK,
+  PDB_HashTableParseError_OUT_OF_BYTES,
+  PDB_HashTableParseError_CORRUPTED
+} PDB_HashTableParseError;
+
+////////////////////////////////
 //~ PDB Parser String Table Types
 
 typedef struct PDB_Strtbl
@@ -54,6 +96,15 @@ typedef struct PDB_InfoHeader
   U32 time;
   U32 age;
 } PDB_InfoHeader;
+
+typedef struct PDB_InfoParse
+{
+  PDB_InfoVersion version;
+  COFF_TimeStamp time_stamp;
+  U32 age;
+  Guid guid;
+  String8 extra_info;
+} PDB_InfoParse;
 
 ////////////////////////////////
 //~ PDB Parser DBI Types
@@ -129,6 +180,18 @@ typedef struct PDB_CompUnitContributionArray
 ////////////////////////////////
 //~ PDB Parser TPI/IPI Types
 
+typedef struct PDB_HashAdj
+{
+  U32 name_off;
+  CV_TypeId type_id;
+} PDB_HashAdj;
+
+typedef struct PDB_HashAdjArray
+{
+  U64 count;
+  PDB_HashAdj *v;
+} PDB_HashAdjArray;
+
 typedef struct PDB_TpiParsed
 {
   String8 data;
@@ -189,6 +252,24 @@ read_only global PDB_CompUnit pdb_comp_unit_nil = {0};
 
 ////////////////////////////////
 //~ PDB Parser Functions
+
+internal U64 pdb_read_bit_vector_string(String8 data, U64 offset, U32Array *bits_out);
+internal U64 pdb_hash_table_compute_load_factor(U64 count);
+internal void pdb_hash_table_release(PDB_HashTable *ht);
+internal U32 pdb_hash_table_hash(String8 key);
+internal B32 pdb_hash_table_get(PDB_HashTable *ht, String8 key, String8 *value_out);
+internal B32 pdb_hash_table_is_present(PDB_HashTable *ht, U32 k);
+internal B32 pdb_hash_table_is_deleted(PDB_HashTable *ht, U32 k);
+internal PDB_HashTableBucket **pdb_hash_table_get_present_buckets(Arena *arena, PDB_HashTable *ht);
+internal void pdb_hash_table_get_present_keys_and_values(Arena *arena, PDB_HashTable *ht, String8Array *keys_out, String8Array *values_out);
+internal PDB_HashTableParseError pdb_hash_table_entries_from_data(Arena *arena, String8 data, B32 has_local_data, PDB_HashTableUnpackFunc *unpack_func, void *unpack_ud, PDB_HashTableEntries *entries_out);
+internal PDB_HashTableParseError pdb_hash_table_from_data(PDB_HashTable *ht, String8 data, B32 has_local_data, PDB_HashTableUnpackFunc *unpack_func, void *unpack_ud, U64 *read_bytes_out);
+internal PDB_HashTableParseError pdb_named_stream_ht_from_data(PDB_HashTable *ht, String8 data, U64 *read_bytes_out);
+internal PDB_HASH_TABLE_UNPACK_FUNC(pdb_hash_adj_raw_ht_unpack);
+internal PDB_HashAdjArray pdb_hash_adj_array_from_data(Arena *arena, String8 data);
+internal void pdb_info_parse_from_data(String8 data, PDB_InfoParse *parse_out);
+internal B32 pdb_tpi_header_from_data(String8 data, PDB_TpiHeader *header_out);
+internal B32 pdb_extract_type_server_info(String8 raw_msf, MSF_RawStreamTable *st, MSF_StreamNumber sn, Rng1U64 *ti_range_out, Rng1U64 *leaf_range_out);
 
 internal PDB_Info*            pdb_info_from_data(Arena *arena, String8 pdb_info_data);
 internal PDB_NamedStreamTable*pdb_named_stream_table_from_info(Arena *arena, PDB_Info *info);

@@ -4,30 +4,6 @@
 ////////////////////////////////
 // Bit Vector
 
-internal U64
-pdb_read_bit_vector_string(String8 data, U64 offset, U32Array *bits_out)
-{
-  U64 cursor = offset;
-  
-  U32 word_count = 0;
-  cursor += str8_deserial_read_struct(data, cursor, &word_count);
-  
-  U64 word_data_read_size = word_count * sizeof(U32);
-  String8 word_data = str8(0,0);
-  cursor += str8_deserial_read_block(data, cursor, word_data_read_size, &word_data);
-  
-  if (word_data.size == word_data_read_size) {
-    bits_out->count = word_count;
-    bits_out->v = (U32*)word_data.str;
-  } else {
-    bits_out->count = 0;
-    bits_out->v = 0;
-  }
-  
-  U64 read_size = cursor - offset;
-  return read_size;
-}
-
 internal B32
 pdb_write_bit_vector(MSF_Context *msf, MSF_StreamNumber sn, B32 *flag_array, U64 flag_count)
 {
@@ -73,14 +49,6 @@ pdb_get_bit_vector_size(U32 bucket_count)
 
 ////////////////////////////////
 
-internal U64
-pdb_hash_table_compute_load_factor(U64 count)
-{
-  // PDB/include/map.h:cdrLoadMax()
-  U64 load_factor = count * 2/3 + 1;
-  return load_factor;
-}
-
 internal void
 pdb_hash_table_alloc(PDB_HashTable *ht, U32 max)
 {
@@ -92,129 +60,6 @@ pdb_hash_table_alloc(PDB_HashTable *ht, U32 max)
   ht->max          = max;
   ht->count        = 0;
   ProfEnd();
-}
-
-internal void
-pdb_hash_table_release(PDB_HashTable *ht)
-{
-  ProfBeginFunction();
-  arena_release(ht->arena);
-  MemoryZeroStruct(ht);
-  ProfEnd();
-}
-
-internal PDB_HashTableParseError
-pdb_hash_table_from_data(PDB_HashTable *ht,
-                         String8 data,
-                         B32 has_local_data,
-                         PDB_HashTableUnpackFunc *unpack_func,
-                         void *unpack_ud,
-                         U64 *read_bytes_out)
-{
-  ProfBeginFunction();
-  PDB_HashTableParseError error = PDB_HashTableParseError_OK;
-
-  U64 cursor = 0;
-  
-  U32      local_data_size = 0;
-  String8  local_data      = str8(0,0);
-  U32      count           = 0;
-  U32      max             = 0;
-  U32Array present_bits    = {0};
-  U32Array deleted_bits    = {0};
-
-  do {
-    error = PDB_HashTableParseError_OUT_OF_BYTES;
-
-    if (has_local_data) {
-      if (cursor + sizeof(local_data_size) > data.size) {
-        break;
-      }
-      cursor += str8_deserial_read_struct(data, cursor, &local_data_size);
-      if (cursor + local_data_size > data.size) {
-        break;
-      }
-      cursor += str8_deserial_read_block(data, cursor, local_data_size, &local_data);
-    }
-
-    if (cursor + sizeof(count) > data.size) {
-      break;
-    }
-    cursor += str8_deserial_read_struct(data, cursor, &count);
-    if (cursor + sizeof(max) > data.size) {
-      break;
-    }
-    cursor += str8_deserial_read_struct(data, cursor, &max);
-    cursor += pdb_read_bit_vector_string(data, cursor, &present_bits);
-    cursor += pdb_read_bit_vector_string(data, cursor, &deleted_bits);
-
-    error = PDB_HashTableParseError_OK;
-  } while(0);
-
-  if (error == PDB_HashTableParseError_OK) {
-    U64 load_factor = pdb_hash_table_compute_load_factor(max);
-    B32 is_count_ok = count < max;
-    B32 is_load_factor_ok = count < load_factor;
-    B32 is_present_bits_ok = present_bits.count <= AlignPow2(max, 32);
-    B32 is_deleted_bits_ok = deleted_bits.count <= AlignPow2(max, 32);
-    if (is_count_ok && is_load_factor_ok && is_present_bits_ok && is_deleted_bits_ok) {
-      Arena *arena = arena_alloc();
-      PDB_HashTableBucket *bucket_arr = push_array_no_zero(arena, PDB_HashTableBucket, max);
-      U32Array present_bits_new = bit_array_init32(arena, max);
-      U32Array deleted_bits_new = bit_array_init32(arena, max);
-      MemoryCopyTyped(&present_bits_new.v[0], &present_bits.v[0], present_bits.count);
-      MemoryCopyTyped(&deleted_bits_new.v[0], &deleted_bits.v[0], deleted_bits.count);
-
-      // unpack buckets
-      U64 read_count = 0;
-      for (U64 bucket_idx = 0; bucket_idx < max; bucket_idx += 1) {
-        if (bit_array_is_set32(present_bits_new, bucket_idx)) {
-          if (bit_array_is_set32(deleted_bits_new, bucket_idx)) {
-            error = PDB_HashTableParseError_CORRUPTED;
-            break;
-          }
-          if (read_count >= count) {
-            error = PDB_HashTableParseError_CORRUPTED;
-            break;
-          }
-
-          String8 key;
-          String8 value;
-          B32 has_unpack_failed = unpack_func(unpack_ud, local_data, data, &cursor, &key, &value);
-          if (has_unpack_failed) {
-            error = PDB_HashTableParseError_CORRUPTED;
-            break;
-          }
-          
-          bucket_arr[bucket_idx].key = key;
-          bucket_arr[bucket_idx].value = value;
-
-          read_count += 1;
-        }
-      }
-
-      if (error == PDB_HashTableParseError_OK) {
-        ht->arena        = arena;
-        ht->bucket_arr   = bucket_arr;
-        ht->present_bits = present_bits_new;
-        ht->deleted_bits = deleted_bits_new;
-        ht->count        = count;
-        ht->max          = max;
-
-        if (read_bytes_out) {
-          // TBH data format should tell parser upfront size of the hash table
-          *read_bytes_out = cursor;
-        }
-      } else {
-        arena_release(arena);
-      }
-    } else {
-      error = PDB_HashTableParseError_CORRUPTED;
-    }
-  }
-
-  ProfEnd();
-  return error;
 }
 
 internal int
@@ -280,12 +125,6 @@ pdb_hash_table_grow(PDB_HashTable *ht, U64 new_capacity)
   ProfEnd();
 }
 
-internal U32
-pdb_hash_table_hash(String8 key)
-{
-  return (U16)pdb_hash_v1(key);
-}
-
 internal PDB_HashTableBucket *
 pdb_hash_table_try_set(PDB_HashTable *ht, String8 key, String8 value)
 {
@@ -332,32 +171,6 @@ pdb_hash_table_set(PDB_HashTable *ht, String8 key, String8 value)
   ProfEnd();
 }
 
-internal B32
-pdb_hash_table_get(PDB_HashTable *ht, String8 key, String8 *value_out)
-{
-  ProfBeginFunction();
-  B32 is_get_ok = 0;
-  U32 best_ibucket = pdb_hash_table_hash(key) % ht->max;
-  U32 ibucket = best_ibucket;
-  do {
-    B32 is_present = pdb_hash_table_is_present(ht, ibucket);
-    if (is_present) {
-      PDB_HashTableBucket *bucket = &ht->bucket_arr[ibucket];
-      B32 is_match = str8_match(bucket->key, key, 0);
-      if (is_match) {
-        *value_out = bucket->value;
-        is_get_ok = 1;
-        break;
-      }
-    } else {
-      break;
-    }
-    ibucket = (ibucket + 1) % ht->max;
-  } while (ibucket != best_ibucket);
-  ProfEnd();
-  return is_get_ok;
-}
-
 internal void
 pdb_hash_table_delete(PDB_HashTable *ht, String8 key)
 {
@@ -382,90 +195,20 @@ pdb_hash_table_delete(PDB_HashTable *ht, String8 key)
   ProfEnd();
 }
 
-internal B32
-pdb_hash_table_is_present(PDB_HashTable *ht, U32 k)
-{
-  Assert(k < ht->max);
-  return bit_array_is_set32(ht->present_bits, k);
-}
-
-internal B32
-pdb_hash_table_is_deleted(PDB_HashTable *ht, U32 k)
-{
-  Assert(k < ht->max);
-  return bit_array_is_set32(ht->deleted_bits, k);
-}
-
-internal PDB_HashTableBucket **
-pdb_hash_table_get_present_buckets(Arena *arena, PDB_HashTable *ht)
-{
-  U64 result_count = 0;
-  PDB_HashTableBucket **result = push_array(arena, PDB_HashTableBucket *, ht->count);
-  for EachIndex(bucket_idx, ht->max) {
-    if (bit_array_is_set32(ht->present_bits, bucket_idx)) {
-      PDB_HashTableBucket *bucket = &ht->bucket_arr[bucket_idx];
-      Assert(result_count < ht->count);
-      result[result_count++] = bucket;
-    }
-  }
-  return result;
-}
-
-internal void
-pdb_hash_table_get_present_keys_and_values(Arena *arena, PDB_HashTable *ht, String8Array *keys_out, String8Array *values_out)
-{
-  *keys_out   = str8_array_reserve(arena, ht->count);
-  *values_out = str8_array_reserve(arena, ht->count);
-  for (U64 bucket_idx = 0; bucket_idx < ht->max; bucket_idx += 1) {
-    if (bit_array_is_set32(ht->present_bits, bucket_idx)) {
-      PDB_HashTableBucket *bucket = &ht->bucket_arr[bucket_idx];
-      Assert(keys_out->count < ht->count);
-      keys_out->v[keys_out->count++] = bucket->key;
-      values_out->v[values_out->count++] = bucket->value;
-    }
-  }
-}
-
 ////////////////////////////////
-
-internal
-PDB_HASH_TABLE_UNPACK_FUNC(pdb_named_stream_ht_unpack)
-{
-  Assert(!ud);
-
-  U32 key_data_offset = max_U32;
-  *key_value_cursor += str8_deserial_read_struct(key_value_data, *key_value_cursor, &key_data_offset);
-
-  U8 *cstr_ptr = local_data.str + key_data_offset;
-  U8 *cstr_opl = local_data.str + local_data.size;
-  String8 stream_name = str8_cstring_capped(cstr_ptr, cstr_opl);
-
-  // NOTE: stream number is U16 but in the reference they cast to U32
-  String8 stream_number = {0};
-  *key_value_cursor += str8_deserial_read_block(key_value_data, *key_value_cursor, sizeof(U32), &stream_number);
-
-  *key_out   = stream_name;
-  *value_out = stream_number;
-
-  return 0;
-}
 
 internal
 PDB_HASH_TABLE_UNPACK_FUNC(pdb_hash_adj_ht_unpack)
 {
   Assert(local_data.size == 0);
 
-  if (*key_value_cursor + sizeof(PDB_StringOffset) > key_value_data.size){
-    return 1;
-  }
-  PDB_StringOffset string_offset = 0;
-  *key_value_cursor += str8_deserial_read_struct(key_value_data, *key_value_cursor, &string_offset);
-
-  if (*key_value_cursor + sizeof(CV_TypeIndex) > key_value_data.size) {
-    return 1;
-  }
+  String8 raw_name_off = {0};
   String8 type_index = {0};
-  *key_value_cursor += str8_deserial_read_block(key_value_data, *key_value_cursor, sizeof(CV_TypeIndex), &type_index);
+  if (pdb_hash_adj_raw_ht_unpack(0, local_data, key_value_data, key_value_cursor, &raw_name_off, &type_index)) {
+    return 1;
+  }
+  U32 string_offset = 0;
+  MemoryCopy(&string_offset, raw_name_off.str, sizeof(string_offset));
 
   PDB_StringTable *strtab = (PDB_StringTable*)ud;
   String8 type_name = pdb_strtab_string_from_offset(strtab, string_offset);
@@ -485,7 +228,7 @@ PDB_HASH_TABLE_UNPACK_FUNC(pdb_src_header_block_ht_unpack)
   PDB_StringOffset path_offset = 0;
   *key_value_cursor += str8_deserial_read_struct(key_value_data, *key_value_cursor, &path_offset);
 
-  if (path_offset + sizeof(PDB_SrcHeaderBlockEntry) > key_value_data.size) {
+  if (*key_value_cursor + sizeof(PDB_SrcHeaderBlockEntry) > key_value_data.size) {
     return 1;
   }
   String8 src_header_block_entry = {0};
@@ -555,12 +298,6 @@ internal PDB_HashTableParseError
 pdb_src_header_block_ht_from_data(PDB_HashTable *ht, String8 data, PDB_StringTable *strtab, U64 *read_bytes_out)
 {
   return pdb_hash_table_from_data(ht, data, 0, pdb_src_header_block_ht_unpack, strtab, read_bytes_out);
-}
-
-internal PDB_HashTableParseError
-pdb_named_stream_ht_from_data(PDB_HashTable *ht, String8 data, U64 *read_bytes_out)
-{
-  return pdb_hash_table_from_data(ht, data, 1, pdb_named_stream_ht_unpack, 0, read_bytes_out);
 }
 
 internal String8
@@ -878,39 +615,6 @@ pdb_strtab_string_to_offset(PDB_StringTable *strtab, PDB_StringIndex stridx)
 }
 
 ////////////////////////////////
-
-internal B32
-pdb_extract_type_server_info(String8 raw_msf, MSF_RawStreamTable *st, MSF_StreamNumber sn, Rng1U64 *ti_range_out, Rng1U64 *leaf_range_out)
-{
-  Temp scratch = scratch_begin(0,0);
-  B32             is_ok        = 0;
-  String8         version_data = msf_data_from_stream_number_ex(scratch.arena, raw_msf, st, sn, r1u64(0, sizeof(PDB_TpiVersion)), 8);
-  PDB_TpiVersion *version      = str8_deserial_get_raw_ptr(version_data, 0, sizeof(*version));
-  if (version) {
-    switch (*version) {
-    case PDB_TpiVersion_IMPV80: {
-      String8  header_size_data = msf_data_from_stream_number_ex(scratch.arena, raw_msf, st, sn, r1u64(sizeof(*version), sizeof(*version) + sizeof(U32)), 8);
-      U32     *header_size      = str8_deserial_get_raw_ptr(header_size_data, 0, sizeof(*header_size));
-      if (header_size && *header_size >= sizeof(PDB_TpiVersion) + sizeof(U32)) {
-        String8        header_data = msf_data_from_stream_number_ex(scratch.arena, raw_msf, st, sn, r1u64(0, *header_size), 8);
-        PDB_TpiHeader *header      = str8_deserial_get_raw_ptr(header_data, 0, sizeof(*header));
-        if (*header_size + header->leaf_data_size <= st->streams[sn].size) {
-          *ti_range_out   = r1u64(header->ti_lo, header->ti_hi);
-          *leaf_range_out = r1u64(*header_size, *header_size + header->leaf_data_size);
-          is_ok = 1;
-        } else {
-          NotImplemented; // TODO: handle error
-        }
-      } else {
-        NotImplemented; // TODO: handle error
-      }
-    } break;
-    default: break;
-    }
-  }
-  scratch_end(scratch);
-  return is_ok;
-}
 
 internal PDB_TypeServer *
 pdb_type_server_alloc(U64 bucket_cap)
@@ -1401,41 +1105,6 @@ pdb_info_alloc(U32 age, COFF_TimeStamp time_stamp, Guid guid)
   pdb_hash_table_alloc(&info->src_header_block_ht, 8);
   ProfEnd();
   return info;
-}
-
-internal void
-pdb_info_parse_from_data(String8 data, PDB_InfoParse *parse_out)
-{
-  PDB_InfoVersion version = 0;
-  str8_deserial_read_struct(data, 0, &version);
-
-  switch (version) {
-  case PDB_InfoVersion_VC70: {
-    U64 cursor = 0;
-
-    // read header
-    PDB_InfoHeaderV70 header;
-    cursor += str8_deserial_read_struct(data, cursor, &header);
-
-    parse_out->version    = version;
-    parse_out->time_stamp = header.time_stamp;
-    parse_out->age        = header.age;
-    parse_out->guid       = header.guid;
-    parse_out->extra_info = str8_skip(data, cursor);
-  } break;
-  case PDB_InfoVersion_VC2:
-  case PDB_InfoVersion_VC4:
-  case PDB_InfoVersion_VC41:
-  case PDB_InfoVersion_VC50:
-  case PDB_InfoVersion_VC98:
-  case PDB_InfoVersion_VC70_DEP:
-  case PDB_InfoVersion_VC80:
-  case PDB_InfoVersion_VC110:
-  case PDB_InfoVersion_VC140: {
-      NotImplemented;
-  } break;
-  default: Assert(!"invalid info stream version"); break;
-  }
 }
 
 internal void

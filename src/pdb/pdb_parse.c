@@ -2,7 +2,383 @@
 // Licensed under the MIT license (https://opensource.org/license/mit/)
 
 ////////////////////////////////
+//~ PDB Hash Table Reading
+
+internal U64
+pdb_read_bit_vector_string(String8 data, U64 offset, U32Array *bits_out)
+{
+  MemoryZeroStruct(bits_out);
+  U32 word_count = 0;
+  if(offset > data.size || data.size - offset < sizeof(word_count))
+  {
+    return 0;
+  }
+  str8_deserial_read_struct(data, offset, &word_count);
+  U64 word_data_size = (U64)word_count*sizeof(U32);
+  if(word_data_size > data.size - offset - sizeof(word_count))
+  {
+    return 0;
+  }
+  bits_out->count = word_count;
+  bits_out->v = (U32 *)(data.str + offset + sizeof(word_count));
+  return sizeof(word_count) + word_data_size;
+}
+
+internal U64
+pdb_hash_table_compute_load_factor(U64 count)
+{
+  // PDB/include/map.h:cdrLoadMax()
+  return count*2/3 + 1;
+}
+
+internal void
+pdb_hash_table_release(PDB_HashTable *ht)
+{
+  ProfBeginFunction();
+  arena_release(ht->arena);
+  MemoryZeroStruct(ht);
+  ProfEnd();
+}
+
+internal U32
+pdb_hash_table_hash(String8 key)
+{
+  return (U16)pdb_hash_v1(key);
+}
+
+internal B32
+pdb_hash_table_get(PDB_HashTable *ht, String8 key, String8 *value_out)
+{
+  ProfBeginFunction();
+  B32 is_get_ok = 0;
+  U32 best_ibucket = pdb_hash_table_hash(key) % ht->max;
+  U32 ibucket = best_ibucket;
+  do {
+    B32 is_present = pdb_hash_table_is_present(ht, ibucket);
+    if (is_present) {
+      PDB_HashTableBucket *bucket = &ht->bucket_arr[ibucket];
+      B32 is_match = str8_match(bucket->key, key, 0);
+      if (is_match) {
+        *value_out = bucket->value;
+        is_get_ok = 1;
+        break;
+      }
+    } else {
+      break;
+    }
+    ibucket = (ibucket + 1) % ht->max;
+  } while (ibucket != best_ibucket);
+  ProfEnd();
+  return is_get_ok;
+}
+
+internal B32
+pdb_hash_table_is_present(PDB_HashTable *ht, U32 k)
+{
+  Assert(k < ht->max);
+  return bit_array_is_set32(ht->present_bits, k);
+}
+
+internal B32
+pdb_hash_table_is_deleted(PDB_HashTable *ht, U32 k)
+{
+  Assert(k < ht->max);
+  return bit_array_is_set32(ht->deleted_bits, k);
+}
+
+internal PDB_HashTableBucket **
+pdb_hash_table_get_present_buckets(Arena *arena, PDB_HashTable *ht)
+{
+  U64 result_count = 0;
+  PDB_HashTableBucket **result = push_array(arena, PDB_HashTableBucket *, ht->count);
+  for EachIndex(bucket_idx, ht->max) {
+    if (bit_array_is_set32(ht->present_bits, bucket_idx)) {
+      PDB_HashTableBucket *bucket = &ht->bucket_arr[bucket_idx];
+      Assert(result_count < ht->count);
+      result[result_count++] = bucket;
+    }
+  }
+  return result;
+}
+
+internal void
+pdb_hash_table_get_present_keys_and_values(Arena *arena, PDB_HashTable *ht, String8Array *keys_out, String8Array *values_out)
+{
+  *keys_out   = str8_array_reserve(arena, ht->count);
+  *values_out = str8_array_reserve(arena, ht->count);
+  for EachIndex(bucket_idx, ht->max) {
+    if (bit_array_is_set32(ht->present_bits, bucket_idx)) {
+      PDB_HashTableBucket *bucket = &ht->bucket_arr[bucket_idx];
+      Assert(keys_out->count < ht->count);
+      keys_out->v[keys_out->count++] = bucket->key;
+      values_out->v[values_out->count++] = bucket->value;
+    }
+  }
+}
+
+internal PDB_HashTableParseError
+pdb_hash_table_entries_from_data(Arena *arena, String8 data, B32 has_local_data,
+                                 PDB_HashTableUnpackFunc *unpack_func, void *unpack_ud,
+                                 PDB_HashTableEntries *entries_out)
+{
+  U64 cursor = 0;
+  String8 local_data = {0};
+  if(has_local_data)
+  {
+    U32 local_data_size = 0;
+    if(data.size < sizeof(local_data_size))
+    {
+      return PDB_HashTableParseError_OUT_OF_BYTES;
+    }
+    cursor += str8_deserial_read_struct(data, cursor, &local_data_size);
+    if(local_data_size > data.size - cursor)
+    {
+      return PDB_HashTableParseError_OUT_OF_BYTES;
+    }
+    cursor += str8_deserial_read_block(data, cursor, local_data_size, &local_data);
+  }
+
+  U32 count = 0;
+  U32 max = 0;
+  if(data.size - cursor < sizeof(count) + sizeof(max))
+  {
+    return PDB_HashTableParseError_OUT_OF_BYTES;
+  }
+  cursor += str8_deserial_read_struct(data, cursor, &count);
+  cursor += str8_deserial_read_struct(data, cursor, &max);
+  U32Array present_bits = {0};
+  U32Array deleted_bits = {0};
+  U64 present_size = pdb_read_bit_vector_string(data, cursor, &present_bits);
+  if(present_size == 0)
+  {
+    return PDB_HashTableParseError_OUT_OF_BYTES;
+  }
+  cursor += present_size;
+  U64 deleted_size = pdb_read_bit_vector_string(data, cursor, &deleted_bits);
+  if(deleted_size == 0)
+  {
+    return PDB_HashTableParseError_OUT_OF_BYTES;
+  }
+  cursor += deleted_size;
+
+  U64 word_count = ((U64)max + 31)/32;
+  if(count >= max || count >= pdb_hash_table_compute_load_factor(max) ||
+     present_bits.count > word_count || deleted_bits.count > word_count)
+  {
+    return PDB_HashTableParseError_CORRUPTED;
+  }
+
+  // validate all bitmap words before allocating or invoking callbacks
+  U64 present_count = 0;
+  for(U64 i = 0; i < Max(present_bits.count, deleted_bits.count); i += 1)
+  {
+    U32 present = 0;
+    U32 deleted = 0;
+    if(i < present_bits.count) { MemoryCopy(&present, present_bits.v + i, sizeof(present)); }
+    if(i < deleted_bits.count) { MemoryCopy(&deleted, deleted_bits.v + i, sizeof(deleted)); }
+    if((present & deleted) != 0 ||
+       (i + 1 == word_count && max%32 != 0 && ((present | deleted) >> (max%32)) != 0))
+    {
+      return PDB_HashTableParseError_CORRUPTED;
+    }
+    for(; present != 0; present &= present - 1) { present_count += 1; }
+  }
+  if(present_count != count)
+  {
+    return PDB_HashTableParseError_CORRUPTED;
+  }
+
+  // every successful unpack must consume at least one byte
+  if(count > data.size - cursor)
+  {
+    return PDB_HashTableParseError_OUT_OF_BYTES;
+  }
+
+  PDB_HashTableEntries result = {0};
+  result.max = max;
+  result.count = count;
+  result.present_bits = present_bits;
+  result.deleted_bits = deleted_bits;
+  if(count != 0) { result.v = push_array(arena, PDB_HashTableBucket, count); }
+
+  for(U32 i = 0; i < count; i += 1)
+  {
+    PDB_HashTableBucket *entry = &result.v[i];
+    U64 entry_start = cursor;
+    if(unpack_func(unpack_ud, local_data, data, &cursor, &entry->key, &entry->value) ||
+       cursor <= entry_start || cursor > data.size)
+    {
+      return PDB_HashTableParseError_CORRUPTED;
+    }
+    entry->insert_idx = i;
+  }
+
+  result.read_bytes = cursor;
+  *entries_out = result;
+  return PDB_HashTableParseError_OK;
+}
+
+internal PDB_HashTableParseError
+pdb_hash_table_from_data(PDB_HashTable *ht, String8 data, B32 has_local_data,
+                         PDB_HashTableUnpackFunc *unpack_func, void *unpack_ud,
+                         U64 *read_bytes_out)
+{
+  Temp scratch = scratch_begin(0, 0);
+  PDB_HashTableEntries entries = {0};
+  PDB_HashTableParseError error = pdb_hash_table_entries_from_data(scratch.arena, data, has_local_data,
+                                                                 unpack_func, unpack_ud, &entries);
+  if(error == PDB_HashTableParseError_OK)
+  {
+    U64 word_count = ((U64)entries.max + 31)/32;
+    U64 dense_size = (U64)entries.max*sizeof(PDB_HashTableBucket) + 2*word_count*sizeof(U32);
+
+    // limit this reader to 256 MiB so a tiny sparse serialization cannot force enormous allocation
+    if(dense_size > (256ull << 20))
+    {
+      error = PDB_HashTableParseError_CORRUPTED;
+    }
+    else
+    {
+      Arena *arena = arena_alloc();
+      PDB_HashTable result = {0};
+      result.arena = arena;
+      result.max = entries.max;
+      result.count = entries.count;
+      result.bucket_arr = push_array(arena, PDB_HashTableBucket, entries.max);
+      result.present_bits = bit_array_init32(arena, entries.max);
+      result.deleted_bits = bit_array_init32(arena, entries.max);
+      MemoryCopyTyped(result.present_bits.v, entries.present_bits.v, entries.present_bits.count);
+      MemoryCopyTyped(result.deleted_bits.v, entries.deleted_bits.v, entries.deleted_bits.count);
+
+      U32 entry_idx = 0;
+      for(U64 i = 0; i < entries.present_bits.count; i += 1)
+      {
+        U32 present = result.present_bits.v[i];
+        for(U32 bit = 0; present != 0; bit += 1, present >>= 1)
+        {
+          if(present & 1)
+          {
+            result.bucket_arr[i*32 + bit] = entries.v[entry_idx++];
+          }
+        }
+      }
+      *ht = result;
+      if(read_bytes_out != 0) { *read_bytes_out = entries.read_bytes; }
+    }
+  }
+
+  scratch_end(scratch);
+  return error;
+}
+
+internal
+PDB_HASH_TABLE_UNPACK_FUNC(pdb_hash_adj_raw_ht_unpack)
+{
+  U64 cursor = *key_value_cursor;
+  if(cursor > key_value_data.size || key_value_data.size - cursor < sizeof(U32) + sizeof(CV_TypeId))
+  {
+    return 1;
+  }
+  *key_out = str8(key_value_data.str + cursor, sizeof(U32));
+  *value_out = str8(key_value_data.str + cursor + sizeof(U32), sizeof(CV_TypeId));
+  *key_value_cursor = cursor + sizeof(U32) + sizeof(CV_TypeId);
+  return 0;
+}
+
+internal
+PDB_HASH_TABLE_UNPACK_FUNC(pdb_named_stream_ht_unpack)
+{
+  String8 raw_name_off = {0};
+  String8 stream_number = {0};
+  // both named streams and adjustments serialize two U32s per entry
+  if(pdb_hash_adj_raw_ht_unpack(0, local_data, key_value_data, key_value_cursor, &raw_name_off, &stream_number))
+  {
+    return 1;
+  }
+  U32 name_off = 0;
+  MemoryCopy(&name_off, raw_name_off.str, sizeof(name_off));
+  if(name_off >= local_data.size)
+  {
+    return 1;
+  }
+  String8 name = str8_cstring_capped(local_data.str + name_off, local_data.str + local_data.size);
+  if(name.size == local_data.size - name_off)
+  {
+    return 1;
+  }
+  *key_out = name;
+  *value_out = stream_number;
+  return 0;
+}
+
+internal PDB_HashTableParseError
+pdb_named_stream_ht_from_data(PDB_HashTable *ht, String8 data, U64 *read_bytes_out)
+{
+  return pdb_hash_table_from_data(ht, data, 1, pdb_named_stream_ht_unpack, 0, read_bytes_out);
+}
+
+internal PDB_HashAdjArray
+pdb_hash_adj_array_from_data(Arena *arena, String8 data)
+{
+  PDB_HashAdjArray result = {0};
+  Temp scratch = scratch_begin(&arena, 1);
+  PDB_HashTableEntries entries = {0};
+  if(pdb_hash_table_entries_from_data(scratch.arena, data, 0, pdb_hash_adj_raw_ht_unpack, 0, &entries) == PDB_HashTableParseError_OK)
+  {
+    if(entries.count != 0)
+    {
+      result.v = push_array_no_zero(arena, PDB_HashAdj, entries.count);
+
+      // entries are serialized in ascending bucket order
+      for EachIndex(i, entries.count)
+      {
+        PDB_HashAdj *adj = &result.v[result.count++];
+        MemoryCopy(&adj->name_off, entries.v[i].key.str, sizeof(adj->name_off));
+        MemoryCopy(&adj->type_id, entries.v[i].value.str, sizeof(adj->type_id));
+      }
+    }
+  }
+  scratch_end(scratch);
+  return result;
+}
+
+////////////////////////////////
 //~ PDB Parser Functions
+
+internal void
+pdb_info_parse_from_data(String8 data, PDB_InfoParse *parse_out)
+{
+  MemoryZeroStruct(parse_out);
+  PDB_InfoHeader header = {0};
+  if(data.size < sizeof(header)) { return; }
+  U64 cursor = str8_deserial_read_struct(data, 0, &header);
+  B32 has_guid = 0;
+  switch(header.version)
+  {
+    case PDB_InfoVersion_VC2:
+    case PDB_InfoVersion_VC4:
+    case PDB_InfoVersion_VC41:
+    case PDB_InfoVersion_VC50:
+    case PDB_InfoVersion_VC98: break;
+    case PDB_InfoVersion_VC70_DEP:
+    case PDB_InfoVersion_VC70:
+    case PDB_InfoVersion_VC80:
+    case PDB_InfoVersion_VC110:
+    case PDB_InfoVersion_VC140: has_guid = 1; break;
+    default: return;
+  }
+  Guid guid = {0};
+  if(has_guid)
+  {
+    if(data.size - cursor < sizeof(guid)) { return; }
+    cursor += str8_deserial_read_struct(data, cursor, &guid);
+  }
+  parse_out->version = header.version;
+  parse_out->time_stamp = header.time;
+  parse_out->age = header.age;
+  parse_out->guid = guid;
+  parse_out->extra_info = str8_skip(data, cursor);
+}
 
 internal PDB_Info*
 pdb_info_from_data(Arena *arena, String8 data)
@@ -10,119 +386,41 @@ pdb_info_from_data(Arena *arena, String8 data)
   ProfBegin("pdb_info_from_data");
   PDB_Info *result = push_array(arena, PDB_Info, 1);
   
-  // get header
-  PDB_InfoHeader *header = 0;
-  if(data.size >= sizeof(*header))
+  PDB_InfoParse info = {0};
+  pdb_info_parse_from_data(data, &info);
+  if(info.version != 0)
   {
-    header = (PDB_InfoHeader *)data.str;
-  }
-  
-  // rjf: parse info given header
-  if(header != 0)
-  {
-    // read guid
-    Guid *auth_guid = 0;
-    U32 after_auth_guid_off = sizeof(*header);
-    switch (header->version){
-      case PDB_InfoVersion_VC70_DEP:
-      case PDB_InfoVersion_VC70:
-      case PDB_InfoVersion_VC80:
-      case PDB_InfoVersion_VC110:
-      case PDB_InfoVersion_VC140:
+    result->auth_guid = info.guid;
+    Temp scratch = scratch_begin(&arena, 1);
+    PDB_HashTableEntries entries = {0};
+    if(pdb_hash_table_entries_from_data(scratch.arena, info.extra_info, 1, pdb_named_stream_ht_unpack, 0, &entries) == PDB_HashTableParseError_OK)
+    {
+      for(U64 i = 0; i < entries.count; i += 1)
       {
-        auth_guid = (Guid*)(data.str + after_auth_guid_off);
-        after_auth_guid_off = sizeof(*header) + sizeof(*auth_guid);
-      }break;
-      
-      default:
-      {}break;
-    }
-    
-    if (header->version != 0){
-      // table layout: names
-      U32 names_len_off = after_auth_guid_off;
-      U32 names_len = 0;
-      if (names_len_off + 4 <= data.size){
-        names_len = *(U32*)(data.str + names_len_off);
+        PDB_HashTableBucket *entry = &entries.v[i];
+        U32 sn = 0;
+        MemoryCopy(&sn, entry->value.str, sizeof(sn));
+        PDB_InfoNode *node = push_array(arena, PDB_InfoNode, 1);
+        SLLQueuePush(result->first, result->last, node);
+        node->string = entry->key;
+        node->sn = (MSF_StreamNumber)sn;
       }
-      
-      U32 names_base_off = names_len_off + 4;
-      U32 names_base_opl = names_base_off + names_len;
-      
-      // table layout: hash table
-      U32 hash_table_count_off = names_base_opl;
-      U32 hash_table_max_off = hash_table_count_off + 4;
-      
-      U32 hash_table_count = 0;
-      U32 hash_table_max = 0;
-      if (hash_table_max_off + 4 <= data.size){
-        hash_table_count = *(U32*)(data.str + hash_table_count_off);
-        hash_table_max = *(U32*)(data.str + hash_table_max_off);
-      }
-      
-      // table layout: words
-      U32 num_present_words_off = hash_table_max_off + 4;
-      U32 num_present_words = 0;
-      if (hash_table_max_off + 4 <= data.size){
-        num_present_words = *(U32*)(data.str + num_present_words_off);
-      }
-      U32 present_words_array_off = num_present_words_off + 4;
-      
-      U32 num_deleted_words_off = present_words_array_off + num_present_words*sizeof(U32);
-      U32 num_deleted_words = 0;
-      if (num_deleted_words_off + 4 <= data.size){
-        num_deleted_words = *(U32*)(data.str + num_deleted_words_off);
-      }
-      U32 deleted_words_array_off = num_deleted_words_off + 4;
-      
-      // table layout: epilogue
-      U32 epilogue_base_off = deleted_words_array_off + num_deleted_words*sizeof(U32);
-      
-      if (epilogue_base_off <= data.size){
-        U64 record_off = epilogue_base_off;
-        
-        // read table
-        if (hash_table_count > 0) {
-          PDB_InfoNode *first = 0;
-          PDB_InfoNode *last = 0;
-          
-          for (U32 i = 0; i < hash_table_count; i += 1, record_off += 8){
-            U32 *record = (U32*)(data.str + record_off);
-            U32 relative_name_off = record[0];
-            MSF_StreamNumber sn = (MSF_StreamNumber)record[1];
-            
-            U32 name_off = names_base_off + relative_name_off;
-            String8 name = str8_cstring_capped((char*)(data.str + name_off),
-                                               (char*)(data.str + names_base_opl));
-            
-            // push info node
-            PDB_InfoNode *node = push_array(arena, PDB_InfoNode, 1);
-            SLLQueuePush(first, last, node);
-            node->string = name;
-            node->sn = sn;
-          }
-          
-          result = push_array(arena, PDB_Info, 1);
-          result->first = first;
-          result->last = last;
-          result->auth_guid = *auth_guid;
+
+      U64 record_off = entries.read_bytes;
+      for(; record_off + sizeof(PDB_FeatureSig) <= info.extra_info.size;)
+      {
+        PDB_FeatureSig sig = 0;
+        record_off += str8_deserial_read_struct(info.extra_info, record_off, &sig);
+        switch(sig)
+        {
+          case PDB_FeatureSig_NULL: break;
+          case PDB_FeatureSig_VC140:              result->features |= PDB_FeatureFlag_HAS_ID_STREAM;    break;
+          case PDB_FeatureSig_NO_TYPE_MERGE:      result->features |= PDB_FeatureFlag_NO_TYPE_MERGE;    break;
+          case PDB_FeatureSig_MINIMAL_DEBUG_INFO: result->features |= PDB_FeatureFlag_MINIMAL_DBG_INFO; break;
         }
-        
-        // read PDB features
-        PDB_FeatureFlags features = 0;
-        for (; record_off + sizeof(PDB_FeatureSig) <= data.size; ) {
-          PDB_FeatureSig sig = 0;
-          record_off += str8_deserial_read_struct(data, record_off, &sig);
-          switch (sig) {
-            case PDB_FeatureSig_NULL: break;
-            case PDB_FeatureSig_VC140:              features |= PDB_FeatureFlag_HAS_ID_STREAM;    break;
-            case PDB_FeatureSig_NO_TYPE_MERGE:      features |= PDB_FeatureFlag_NO_TYPE_MERGE;    break;
-            case PDB_FeatureSig_MINIMAL_DEBUG_INFO: features |= PDB_FeatureFlag_MINIMAL_DBG_INFO; break;
-          }
-        }
-        result->features = features;
       }
     }
+    scratch_end(scratch);
   }
   
   ProfEnd();
@@ -280,21 +578,58 @@ pdb_dbi_from_data(Arena *arena, String8 data)
   return result;
 }
 
+internal B32
+pdb_tpi_header_from_data(String8 data, PDB_TpiHeader *header_out)
+{
+  MemoryZeroStruct(header_out);
+  PDB_TpiHeader header = {0};
+  if(data.size < sizeof(header)) { return 0; }
+  str8_deserial_read_struct(data, 0, &header);
+  if(header.version != PDB_TpiVersion_IMPV80 || header.header_size < sizeof(header))
+  {
+    return 0;
+  }
+  *header_out = header;
+  return 1;
+}
+
+internal B32
+pdb_extract_type_server_info(String8 raw_msf, MSF_RawStreamTable *st, MSF_StreamNumber sn,
+                             Rng1U64 *ti_range_out, Rng1U64 *leaf_range_out)
+{
+  B32 is_ok = 0;
+  if(sn < st->stream_count)
+  {
+    Temp scratch = scratch_begin(0, 0);
+    // Read only the fixed header, not the potentially large leaf stream.
+    String8 data = msf_data_from_stream_number_ex(scratch.arena, raw_msf, st, sn,
+                                                 r1u64(0, sizeof(PDB_TpiHeader)), 8);
+    PDB_TpiHeader header = {0};
+    if(pdb_tpi_header_from_data(data, &header))
+    {
+      U64 leaf_opl = (U64)header.header_size + header.leaf_data_size;
+      if(leaf_opl <= st->streams[sn].size)
+      {
+        *ti_range_out = r1u64(header.ti_lo, header.ti_hi);
+        *leaf_range_out = r1u64(header.header_size, leaf_opl);
+        is_ok = 1;
+      }
+    }
+    scratch_end(scratch);
+  }
+  return is_ok;
+}
+
 internal PDB_TpiParsed *
 pdb_tpi_from_data(Arena *arena, String8 data)
 {
   ProfBeginFunction();
   PDB_TpiParsed *result = push_array(arena, PDB_TpiParsed, 1);
   
-  // rjf: extract header
-  PDB_TpiHeader *header = 0;
-  if (sizeof(*header) <= data.size){
-    header = (PDB_TpiHeader*)data.str;
-  }
-  
-  // rjf: parse
-  if(header != 0 && header->version == PDB_TpiVersion_IMPV80)
+  PDB_TpiHeader decoded_header = {0};
+  if(pdb_tpi_header_from_data(data, &decoded_header))
   {
+    PDB_TpiHeader *header = &decoded_header;
     U64 leaf_first_raw = header->header_size;
     U64 leaf_first     = ClampTop(leaf_first_raw, data.size);
     U64 leaf_opl_raw   = leaf_first + header->leaf_data_size;
@@ -379,36 +714,17 @@ pdb_tpi_hash_from_data(Arena *arena, PDB_Strtbl *strtbl, PDB_TpiParsed *tpi, Str
     // the chains
     if(tpi->hash_adj_size != 0)
     {
-      // NOTE(rjf): this table is laid out in the following format:
-      //
-      // pair_count: U32 -> # of name_index/type_index pairs
-      // slot_count: U32 -> # of slots in this hash table
-      // present_bit_array_count: U32 -> count for next array
-      // present_bit_array: U32[present_bit_array_count] -> 1 bit per slot, "is present"
-      // deleted_bit_array_count: U32 -> count for next array
-      // deleted_bit_array: U32[deleted_bit_array_count] -> 1 bit per slot, "is deleted"
-      // (U32, U32)[pair_count] -> array of name_index/type_index pairs
-      //
-      U8 *adjs = data.str + tpi->hash_adj_off;
-      U8 *adjs_opl = adjs + tpi->hash_adj_size;
-      U8 *adjs_cursor = adjs;
-      U32 pair_count = *(U32 *)adjs_cursor;
-      adjs_cursor += sizeof(U32);
-      U32 slot_count = *(U32 *)adjs_cursor;
-      adjs_cursor += sizeof(U32);
-      U32 present_bit_array_count = *(U32 *)adjs_cursor; // skip present_bit_array
-      adjs_cursor += sizeof(U32);
-      adjs_cursor += present_bit_array_count*sizeof(U32);
-      U32 deleted_bit_array_count = *(U32 *)adjs_cursor; // skip deleted_bit_array
-      adjs_cursor += sizeof(U32);
-      adjs_cursor += deleted_bit_array_count*sizeof(U32);
-      U32 adjs_stride = sizeof(U32)*2;
-      U32 pair_idx = 0;
-      for(;adjs_cursor < adjs_opl && pair_idx < pair_count;
-          adjs_cursor += adjs_stride, pair_idx += 1)
+      Temp scratch = scratch_begin(&arena, 1);
+      PDB_HashAdjArray adjs = {0};
+      if((U64)tpi->hash_adj_off + tpi->hash_adj_size <= data.size)
       {
-        U32 name_off = ((U32 *)adjs_cursor)[0];
-        CV_TypeId type_id = ((CV_TypeId *)adjs_cursor)[1];
+        String8 adj_data = str8(data.str + tpi->hash_adj_off, tpi->hash_adj_size);
+        adjs = pdb_hash_adj_array_from_data(scratch.arena, adj_data);
+      }
+      for(U64 pair_idx = 0; pair_idx < adjs.count; pair_idx += 1)
+      {
+        U32 name_off = adjs.v[pair_idx].name_off;
+        CV_TypeId type_id = adjs.v[pair_idx].type_id;
         String8 string = pdb_strtbl_string_from_off(strtbl, name_off);
         U32 hash = pdb_hash_v1(string);
         U32 bucket_idx = ((bucket_mask != 0) ? hash&bucket_mask : hash%bucket_count);
@@ -438,6 +754,7 @@ pdb_tpi_hash_from_data(Arena *arena, PDB_Strtbl *strtbl, PDB_TpiParsed *tpi, Str
           }
         }
       }
+      scratch_end(scratch);
     }
     
     // fill result

@@ -61,36 +61,16 @@ p2r_cv2r_tpi_hash_from_data(Arena *arena, PDB_Strtbl *strtbl, PDB_TpiParsed *tpi
     // the chains
     if(tpi->hash_adj_size != 0)
     {
-      // NOTE(rjf): this table is laid out in the following format:
-      //
-      // pair_count: U32 -> # of name_index/type_index pairs
-      // slot_count: U32 -> # of slots in this hash table
-      // present_bit_array_count: U32 -> count for next array
-      // present_bit_array: U32[present_bit_array_count] -> 1 bit per slot, "is present"
-      // deleted_bit_array_count: U32 -> count for next array
-      // deleted_bit_array: U32[deleted_bit_array_count] -> 1 bit per slot, "is deleted"
-      // (U32, U32)[pair_count] -> array of name_index/type_index pairs
-      //
-      U8 *adjs = data.str + tpi->hash_adj_off;
-      U8 *adjs_opl = adjs + tpi->hash_adj_size;
-      U8 *adjs_cursor = adjs;
-      U32 pair_count = *(U32 *)adjs_cursor;
-      adjs_cursor += sizeof(U32);
-      U32 slot_count = *(U32 *)adjs_cursor;
-      adjs_cursor += sizeof(U32);
-      U32 present_bit_array_count = *(U32 *)adjs_cursor; // skip present_bit_array
-      adjs_cursor += sizeof(U32);
-      adjs_cursor += present_bit_array_count*sizeof(U32);
-      U32 deleted_bit_array_count = *(U32 *)adjs_cursor; // skip deleted_bit_array
-      adjs_cursor += sizeof(U32);
-      adjs_cursor += deleted_bit_array_count*sizeof(U32);
-      U32 adjs_stride = sizeof(U32)*2;
-      U32 pair_idx = 0;
-      for(;adjs_cursor < adjs_opl && pair_idx < pair_count;
-          adjs_cursor += adjs_stride, pair_idx += 1)
+      Temp scratch = scratch_begin(&arena, 1);
+      PDB_HashAdjArray adjs = {0};
+      if(tpi->hash_adj_off <= data.size && tpi->hash_adj_size <= data.size - tpi->hash_adj_off)
       {
-        U32 name_off = ((U32 *)adjs_cursor)[0];
-        CV_TypeId type_id = ((CV_TypeId *)adjs_cursor)[1];
+        adjs = pdb_hash_adj_array_from_data(scratch.arena, str8(data.str + tpi->hash_adj_off, tpi->hash_adj_size));
+      }
+      for EachIndex(pair_idx, adjs.count)
+      {
+        U32 name_off = adjs.v[pair_idx].name_off;
+        CV_TypeId type_id = adjs.v[pair_idx].type_id;
         String8 string = pdb_strtbl_string_from_off(strtbl, name_off);
         U32 hash = pdb_hash_v1(string);
         U32 bucket_idx = ((bucket_mask != 0) ? hash&bucket_mask : hash%bucket_count);
@@ -120,8 +100,9 @@ p2r_cv2r_tpi_hash_from_data(Arena *arena, PDB_Strtbl *strtbl, PDB_TpiParsed *tpi
           }
         }
       }
+      scratch_end(scratch);
     }
-    
+
     // fill result
     result->data = data;
     result->buckets = buckets;
