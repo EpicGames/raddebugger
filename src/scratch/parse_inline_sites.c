@@ -24,23 +24,6 @@
 
 ////////////////////////////////
 
-#include "linker/base_ext/base_blake3.h"
-#include "linker/base_ext/base_blake3.c"
-#include "third_party/md5/md5.c"
-#include "third_party/md5/md5.h"
-#include "third_party/xxHash/xxhash.c"
-#include "third_party/xxHash/xxhash.h"
-
-#include "linker/base_ext/base_inc.h"
-#include "linker/hash_table.h"
-#include "linker/thread_pool/thread_pool.h"
-#include "linker/codeview_ext/codeview.h"
-
-#include "linker/base_ext/base_inc.c"
-#include "linker/hash_table.c"
-#include "linker/thread_pool/thread_pool.c"
-#include "linker/codeview_ext/codeview.c"
-
 internal void
 print_inline_binary_annotations(String8 binary_annots)
 {
@@ -243,8 +226,16 @@ entry_point(CmdLine *cmdl)
   // find IPI
   String8        ipi_data        = msf_data_from_stream(msf, PDB_FixedStream_Ipi);
   PDB_TpiParsed *ipi             = pdb_tpi_from_data(arena, ipi_data);
+  if (!ipi) {
+    fprintf(stderr, "ERROR: unable to parse IPI\n");
+    return;
+  }
   String8        ipi_leaf_data   = pdb_leaf_data_from_tpi(ipi);
-  CV_LeafParsed *ipi_leaf_parsed = cv_leaf_from_data(arena, ipi_leaf_data, ipi->itype_first);
+  CV_LeafStream ipi_leaf_stream = {0};
+  if (!cv_leaf_stream_from_data_checked(arena, ipi_leaf_data, CV_LeafAlign, &ipi_leaf_stream)) {
+    fprintf(stderr, "ERROR: unable to parse IPI leaves\n");
+    return;
+  }
   
   // find sections
   MSF_StreamNumber        section_stream = dbi->dbg_streams[PDB_DbiStream_SECTION_HEADER];
@@ -290,10 +281,14 @@ entry_point(CmdLine *cmdl)
     String8       c13_data      = pdb_data_from_unit_range(msf, comp_unit, PDB_DbiCompUnitRange_C13);
     
     // parse $$
-    CV_DebugS debug_s = cv_debug_s_from_data_c13(arena, c13_data);
+    CV_C13Stream debug_s = {0};
+    if (!cv_c13_stream_from_data_c13_checked(arena, c13_data, &debug_s)) {
+      fprintf(stderr, "incomplete C13 stream for compilation unit %llu\n", comp_unit_idx);
+      continue;
+    }
     
     // find $$FILE_CKSMS
-    String8 file_chksms = cv_file_chksms_from_debug_s(debug_s);
+    String8 file_chksms = cv_c13_stream_file_chksms(&debug_s);
     
     // parse $$INLINEE_LINES 
     CV_C13InlineeLinesParsedList inlinee_lines_parsed = cv_c13_inlinee_lines_from_sub_sections(arena, &debug_s);
@@ -302,9 +297,9 @@ entry_point(CmdLine *cmdl)
     U64           c13_lines_count = 0;
     CV_LineArray *c13_lines       = 0;
     {
-      CV_DebugS_Iter lines = cv_debug_s_iter_init(&debug_s);
+      CV_C13StreamIter lines = cv_c13_stream_iter_init(&debug_s);
       
-      while (cv_debug_s_iter_next_kind(&lines, CV_C13SubSectionKind_Lines)) {
+      while (cv_c13_stream_iter_next_kind(&lines, CV_C13SubSectionKind_Lines)) {
         Temp temp = temp_begin(arena);
         CV_C13LinesHeaderList parsed_list = cv_c13_lines_from_sub_sections(temp.arena, lines.data, rng_1u64(0, lines.data.size));
         c13_lines_count += parsed_list.count;
@@ -314,8 +309,8 @@ entry_point(CmdLine *cmdl)
       c13_lines = push_array_no_zero(arena, CV_LineArray, c13_lines_count);
       
       U64 c13_lines_idx = 0;
-      lines = cv_debug_s_iter_init(&debug_s);
-      while (cv_debug_s_iter_next_kind(&lines, CV_C13SubSectionKind_Lines)) {
+      lines = cv_c13_stream_iter_init(&debug_s);
+      while (cv_c13_stream_iter_next_kind(&lines, CV_C13SubSectionKind_Lines)) {
         String8               raw_lines   = lines.data;
         CV_C13LinesHeaderList parsed_list = cv_c13_lines_from_sub_sections(arena, raw_lines, rng_1u64(0, raw_lines.size));
         
@@ -371,18 +366,23 @@ entry_point(CmdLine *cmdl)
         CV_SymInlineSite            *inline_site         = rec_raw;
         String8                      binary_annots       = str8_skip(symbol.data, sizeof(*inline_site));
         CV_C13InlineeLinesParsed    *inlinee_parsed      = cv_c13_inlinee_lines_accel_find(inlinee_lines_accel, inline_site->inlinee);
-        CV_InlineBinaryAnnotsParsed  binary_annots_parse = cv_c13_parse_inline_binary_annots(arena, parent_voff, inlinee_parsed, binary_annots);
+        CV_InlineBinaryAnnotsParsed  binary_annots_parse = {0};
+        if (inlinee_parsed) {
+          binary_annots_parse = cv_c13_parse_inline_binary_annots(arena, parent_voff, inlinee_parsed, binary_annots, (U64Array){0});
+        }
         
         
         String8 inlinee_name = str8_lit("???");
-        if (ipi->itype_first <= inline_site->inlinee && inline_site->inlinee < ipi->itype_opl) {
-          CV_RecRange inlinee_rec = ipi_leaf_parsed->leaf_ranges.ranges[inline_site->inlinee - ipi->itype_first];
-          void *leaf_raw = ipi_leaf_data.str + inlinee_rec.off + sizeof(CV_LeafKind);
-          void *leaf_opl = ipi_leaf_data.str + inlinee_rec.off + sizeof(CV_LeafKind) + inlinee_rec.hdr.size;
-          if (inlinee_rec.hdr.kind == CV_LeafKind_MFUNC_ID) {
+        CV_Leaf inlinee_leaf = {0};
+        if (ipi->itype_first <= inline_site->inlinee && inline_site->inlinee < ipi->itype_opl &&
+            (U64)(inline_site->inlinee - ipi->itype_first) < ipi_leaf_stream.count &&
+            cv_leaf_stream_get_leaf(&ipi_leaf_stream, inline_site->inlinee - ipi->itype_first, &inlinee_leaf)) {
+          void *leaf_raw = inlinee_leaf.data.str;
+          void *leaf_opl = inlinee_leaf.data.str + inlinee_leaf.data.size;
+          if (inlinee_leaf.kind == CV_LeafKind_MFUNC_ID) {
             CV_LeafMFuncId *mfunc_id = leaf_raw;
             inlinee_name = str8_cstring_capped(mfunc_id + 1, leaf_opl);
-          } else if (inlinee_rec.hdr.kind == CV_LeafKind_FUNC_ID) {
+          } else if (inlinee_leaf.kind == CV_LeafKind_FUNC_ID) {
             CV_LeafFuncId *func_id = leaf_raw;
             inlinee_name = str8_cstring_capped(func_id + 1, leaf_opl);
           }
@@ -413,10 +413,10 @@ entry_point(CmdLine *cmdl)
         for (U64 lines_idx = 0; lines_idx < binary_annots_parse.lines_count; lines_idx += 1) {
           CV_LineArray lines = binary_annots_parse.lines[lines_idx];
           
-          CV_C13Checksum checksum = {0};
-          str8_deserial_read_struct(file_chksms, lines.file_off, &checksum);
-          
-          String8 file_name = pdb_strtbl_string_from_off(strtbl, checksum.name_off);
+          CV_C13FileInfo file;
+          String8 strings = str8_substr(strtbl_data, rng_1u64(strtbl->strblock_min, strtbl->strblock_max));
+          if(!cv_c13_file_info_from_checksum(file_chksms, strings, lines.file_off, &file)) { continue; }
+          String8 file_name = file.name;
           
           fprintf(stdout, "\t\t%.*s\n", str8_varg(file_name));
           for (U64 line_idx = 0; line_idx < lines.line_count; ++line_idx) {

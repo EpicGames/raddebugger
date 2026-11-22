@@ -15,7 +15,10 @@
 // --- Code Base ---------------------------------------------------------------
 
 #include "base/base_inc.h"
+#include "base_ext/base_inc.h"
 #include "hash_table.h"
+#include "thread_pool/thread_pool.h"
+#include "base_ext/base_radix_sort.h"
 #include "compression/compression_inc.h"
 #include "coff/coff.h"
 #include "coff/coff_parse.h"
@@ -28,6 +31,8 @@
 #include "pe/pe_make_debug_dir.h"
 #include "codeview/codeview.h"
 #include "codeview/codeview_parse.h"
+#include "codeview/codeview_write.h"
+#include "codeview/codeview_merge.h"
 #include "msf/msf.h"
 #include "msf/msf_parse.h"
 #include "pdb/pdb.h"
@@ -37,7 +42,10 @@
 #include "dwarf/x64/dwarf_x64.h"
 
 #include "base/base_inc.c"
+#include "base_ext/base_inc.c"
 #include "hash_table.c"
+#include "thread_pool/thread_pool.c"
+#include "base_ext/base_radix_sort.c"
 #include "compression/compression_inc.c"
 #include "coff/coff.c"
 #include "coff/coff_parse.c"
@@ -49,6 +57,8 @@
 #include "pe/pe_make_debug_dir.c"
 #include "codeview/codeview.c"
 #include "codeview/codeview_parse.c"
+#include "codeview/codeview_write.c"
+#include "codeview/codeview_merge.c"
 #include "msf/msf.c"
 #include "msf/msf_parse.c"
 #include "pdb/pdb.c"
@@ -63,16 +73,7 @@
 
 // --- Code Base Extensions ----------------------------------------------------
 
-#include "base_ext/base_inc.h"
-#include "thread_pool/thread_pool.h"
-#include "base_ext/base_radix_sort.h"
-#include "codeview_ext/codeview.h"
 #include "pdb_ext/msf_builder.h"
-
-#include "base_ext/base_inc.c"
-#include "thread_pool/thread_pool.c"
-#include "base_ext/base_radix_sort.c"
-#include "codeview_ext/codeview.c"
 
 // --- PDB Extensions- ---------------------------------------------------------
 
@@ -7178,7 +7179,7 @@ THREAD_POOL_TASK_FUNC(lnk_serialize_rrt_type_data_task)
 
   // compute size of each source per task
   for EachIndex(ti_source, CV_TypeIndexSource_COUNT) {
-    Rng1U64 leaf_range = tp_work_range(cv_types->count[ti_source], tp->worker_count, task_id);
+    Rng1U64 leaf_range = tp_work_range(cv_types->cv.count[ti_source], tp->worker_count, task_id);
     for EachInRange(i, leaf_range) {
       CV_LeafHeader *leaf      = (CV_LeafHeader *)lnk_raw_type_from_index(cv_types, ti_source, i).str;
       String8        leaf_data = str8((U8 *)(leaf + 1), leaf->size - sizeof(leaf->kind));
@@ -7233,7 +7234,7 @@ THREAD_POOL_TASK_FUNC(lnk_serialize_rrt_type_data_task)
   U64 type_data_max = task->type_data_out->size;
   for EachIndex(ti_source, CV_TypeIndexSource_COUNT) {
     U64     cursor     = source_task_offsets[ti_source*tp->worker_count + task_id];
-    Rng1U64 leaf_range = tp_work_range(cv_types->count[ti_source], tp->worker_count, task_id);
+    Rng1U64 leaf_range = tp_work_range(cv_types->cv.count[ti_source], tp->worker_count, task_id);
     for EachInRange(i, leaf_range) {
       CV_LeafHeader *leaf       = (CV_LeafHeader *)lnk_raw_type_from_index(cv_types, ti_source, i).str;
       String8        leaf_data  = str8((U8 *)(leaf + 1), leaf->size - sizeof(leaf->kind));
@@ -7299,9 +7300,9 @@ lnk_run_type_server(LNK_Config *config)
   objs = lnk_debug_filter_objs(scratch.arena, objs, objs_count, &objs_count);
 
   // parse & merge types
-  LNK_CodeViewInput cv       = lnk_make_code_view_input(tp, arena, config, objs_count, objs, (LNK_RRT_Array){0});
+  LNK_CodeViewInput cv = lnk_make_code_view_input(tp, arena, config, objs_count, objs, (LNK_RRT_Array){0});
   Temp types_temp = temp_begin(arena->v[0]);
-  LNK_MergedTypes cv_types = lnk_merge_types(tp, types_temp.arena, &cv, LNK_MergeTypeFlag_BuildObjTiMap | LNK_MergeTypeFlag_ExportHashes);
+  LNK_MergedTypes cv_types = lnk_merge_types(tp, types_temp.arena, &cv, CV_MergeTypeFlag_BuildSourceTiMap | CV_MergeTypeFlag_ExportHashes);
 
   U64Array include_objs = {0};
   {
@@ -7338,11 +7339,11 @@ lnk_run_type_server(LNK_Config *config)
 
     // pack type index ranges
     for EachIndex(i, CV_TypeIndexSource_COUNT) {
-      rrt.ti_ranges[i] = r1u64(cv_types.min_type_indices[i], cv_types.min_type_indices[i] + cv_types.count[i]);
+      rrt.ti_ranges[i] = r1u64(cv_types.cv.min_type_indices[i], cv_types.cv.min_type_indices[i] + cv_types.cv.count[i]);
     }
 
     // copy pointers to type hashes
-    MemoryCopyArray(rrt.type_hashes_unpacked, cv_types.hashes);
+    MemoryCopyArray(rrt.type_hashes_unpacked, cv_types.cv.hashes);
   }
 
   rrt.obj_count = include_objs.count;
@@ -7352,7 +7353,7 @@ lnk_run_type_server(LNK_Config *config)
   for EachIndex(i, include_objs.count) {
     U64        obj_idx = include_objs.v[i];
     CV_DebugT *debug_t = &cv.debug_t_arr[obj_idx];
-    rrt.obj_leaf_counts[i] = debug_t->count;
+    rrt.obj_leaf_counts[i] = debug_t->leaf_stream.count;
   }
 
   // copy per object type index ranges
@@ -7385,7 +7386,7 @@ lnk_run_type_server(LNK_Config *config)
   rrt.obj_ti_maps = push_array(scratch.arena, CV_TypeIndex *, include_objs.count);
   for EachIndex(i, include_objs.count) {
     U64 obj_idx = include_objs.v[i];
-    rrt.obj_ti_maps[i] = cv_types.obj_ti_maps[obj_idx];
+    rrt.obj_ti_maps[i] = cv_types.cv.source_ti_maps[obj_idx];
   }
 
   // obj idx -> RRT obj idx hash map
@@ -7783,8 +7784,6 @@ lnk_fast_exit_run_child(U32 *exit_code_out)
       limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
       SetInformationJobObject(job, JobObjectExtendedLimitInformation, &limits, sizeof(limits));
     }
-
-    if ( ! CreateProcessW(exe_path, cmd_line_copy, 0, 0, TRUE, job ? CREATE_SUSPENDED : 0, 0, 0, &startup_info, &process)) { break; }
     if (job) {
       // nested jobs need Windows 8+; without one the child simply outlives a killed parent
       AssignProcessToJobObject(job, process.hProcess);

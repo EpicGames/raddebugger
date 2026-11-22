@@ -835,7 +835,7 @@ pdb_leaf_data_from_tpi(PDB_TpiParsed *tpi){
 }
 
 internal CV_TypeIdArray
-pdb_tpi_itypes_from_name(Arena *arena, PDB_TpiHashParsed *tpi_hash, CV_LeafParsed *leaf, String8 name, B32 compare_unique_name, U32 output_cap)
+pdb_tpi_itypes_from_name(Arena *arena, PDB_TpiHashParsed *tpi_hash, CV_LeafStream *leaf, CV_TypeId itype_first, String8 name, B32 compare_unique_name, U32 output_cap)
 {
   CV_TypeIdArray result = {0};
   if(tpi_hash->bucket_count != 0)
@@ -845,8 +845,6 @@ pdb_tpi_itypes_from_name(Arena *arena, PDB_TpiHashParsed *tpi_hash, CV_LeafParse
                       hash&tpi_hash->bucket_mask :
                       hash%tpi_hash->bucket_count);
     
-    CV_TypeId itype_first = leaf->itype_first;
-    CV_TypeId itype_opl = leaf->itype_opl;
     String8 data = leaf->data;
     
     Temp scratch = scratch_begin(&arena, 1);
@@ -869,13 +867,17 @@ pdb_tpi_itypes_from_name(Arena *arena, PDB_TpiHashParsed *tpi_hash, CV_LeafParse
         String8 extracted_name = {0};
         
         CV_TypeId itype = *itype_ptr;
-        if (itype_first <= itype && itype < itype_opl){
-          CV_RecRange *range = &leaf->leaf_ranges.ranges[itype - leaf->itype_first];
-          if (range->off + range->hdr.size <= data.size){
+        if (itype_first <= itype && (U64)(itype - itype_first) < leaf->count){
+          CV_RecRange  range_value = cv_leaf_stream_rec_range(leaf, itype - itype_first);
+          CV_RecRange *range       = &range_value;
+
+          if(range->hdr.size < 2) { continue; }
+
+          if (range->off + range->hdr.size <= data.size) {
             U8 *first = data.str + range->off + 2;
             U64 cap = range->hdr.size - 2;
             
-            switch (range->hdr.kind){
+            switch (range->hdr.kind) {
               default:break;
               
               case CV_LeafKind_CLASS:
@@ -887,7 +889,7 @@ pdb_tpi_itypes_from_name(Arena *arena, PDB_TpiHashParsed *tpi_hash, CV_LeafParse
                   if (!(lf_struct->props & CV_TypeProp_FwdRef)){
                     // size
                     U8 *numeric_ptr = (U8*)(lf_struct + 1);
-                    CV_NumericParsed size = cv_numeric_from_data_range(numeric_ptr, first + cap);
+                    CV_Numeric size = cv_numeric_from_data_range(numeric_ptr, first + cap);
                     
                     // name
                     U8 *name_ptr = numeric_ptr + size.encoded_size;
@@ -917,7 +919,7 @@ pdb_tpi_itypes_from_name(Arena *arena, PDB_TpiHashParsed *tpi_hash, CV_LeafParse
                   if (!(lf_struct->props & CV_TypeProp_FwdRef)){
                     // size
                     U8 *numeric_ptr = (U8*)(lf_struct + 1);
-                    CV_NumericParsed size = cv_numeric_from_data_range(numeric_ptr, first + cap);
+                    CV_Numeric size = cv_numeric_from_data_range(numeric_ptr, first + cap);
                     
                     // name
                     U8 *name_ptr = numeric_ptr + size.encoded_size;
@@ -946,7 +948,7 @@ pdb_tpi_itypes_from_name(Arena *arena, PDB_TpiHashParsed *tpi_hash, CV_LeafParse
                   if (!(lf_union->props & CV_TypeProp_FwdRef)){
                     // size
                     U8 *numeric_ptr = (U8*)(lf_union + 1);
-                    CV_NumericParsed size = cv_numeric_from_data_range(numeric_ptr, first + cap);
+                    CV_Numeric size = cv_numeric_from_data_range(numeric_ptr, first + cap);
                     
                     // name
                     U8 *name_ptr = numeric_ptr + size.encoded_size;
@@ -1020,7 +1022,7 @@ pdb_tpi_itypes_from_name(Arena *arena, PDB_TpiHashParsed *tpi_hash, CV_LeafParse
         *itype_ptr = node->itype;
       }
     }
-    result.itypes = itypes;
+    result.v = itypes;
     result.count = count;
     
     scratch_end(scratch);
@@ -1029,14 +1031,14 @@ pdb_tpi_itypes_from_name(Arena *arena, PDB_TpiHashParsed *tpi_hash, CV_LeafParse
 }
 
 internal CV_TypeId
-pdb_tpi_first_itype_from_name(PDB_TpiHashParsed *tpi_hash, CV_LeafParsed *tpi_leaf, String8 name, B32 compare_unique_name)
+pdb_tpi_first_itype_from_name(PDB_TpiHashParsed *tpi_hash, CV_LeafStream *tpi_leaf, CV_TypeId itype_first, String8 name, B32 compare_unique_name)
 {
   Temp scratch = scratch_begin(0, 0);
-  CV_TypeIdArray array = pdb_tpi_itypes_from_name(scratch.arena, tpi_hash, tpi_leaf, name, compare_unique_name, 1);
+  CV_TypeIdArray array = pdb_tpi_itypes_from_name(scratch.arena, tpi_hash, tpi_leaf, itype_first, name, compare_unique_name, 1);
   CV_TypeId result = 0;
   if(array.count > 0)
   {
-    result = array.itypes[0];
+    result = array.v[0];
   }
   scratch_end(scratch);
   return(result);

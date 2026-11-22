@@ -430,10 +430,17 @@ THREAD_POOL_TASK_FUNC(lnk_obj_initer)
         String8 name = str8_cstring_capped(sect_header->name, sect_header->name+sizeof(sect_header->name));
         if (str8_match(name, str8_lit(".debug$S"), 0)) {
           Temp temp = temp_begin(scratch.arena);
-          String8        debug_s_data = str8_substr(input->data, rng_1u64(sect_header->foff, sect_header->foff+sect_header->fsize));
-          CV_DebugS      debug_s      = cv_debug_s_from_data(temp.arena, debug_s_data);
-          CV_DebugS_Iter symbols      = cv_debug_s_iter_init(&debug_s);
-          while (cv_debug_s_iter_next_kind(&symbols, CV_C13SubSectionKind_Symbols)) {
+          
+          String8   debug_s_data = str8_substr(input->data, rng_1u64(sect_header->foff, sect_header->foff+sect_header->fsize));
+          CV_DebugS debug_s      = {0};
+          if ( ! cv_c13_stream_from_data_checked(temp.arena, debug_s_data, &debug_s)) {
+            lnk_error(LNK_Error_IllData, "incomplete or invalid .debug$S section");
+            temp_end(temp);
+            continue;
+          }
+
+          for (CV_C13StreamIter symbols = cv_c13_stream_iter_init(&debug_s);
+               cv_c13_stream_iter_next_kind(&symbols, CV_C13SubSectionKind_Symbols); ) {
             for (U64 cursor = 0, count = 0; cursor < symbols.data.size && count < 2; count += 1) {
               CV_SymbolHeader symbol_header;
               TryReadBreak(str8_deserial_read_struct(symbols.data, cursor, &symbol_header), cursor);
@@ -446,6 +453,7 @@ THREAD_POOL_TASK_FUNC(lnk_obj_initer)
               cursor  = AlignPow2(cursor, CV_SymbolAlign);
             }
           }
+
           temp_end(temp);
         }
       }
@@ -1289,9 +1297,10 @@ lnk_debug_s_from_obj(Arena *arena, LNK_Obj *obj)
   CV_DebugS debug_s = {0};
   for EachNode(node, String8Node, raw_debug_s.first) {
     CV_DebugS ds;
-    if (cv_debug_s_from_data_checked(arena, node->string, &ds)) {
-      CV_DebugS_Stats stats = cv_debug_s_stats(&ds);
-      cv_debug_s_concat_in_place(&debug_s, &ds);
+    if (cv_c13_stream_from_data_checked(arena, node->string, &ds)) {
+      cv_c13_stream_concat_in_place(&debug_s, &ds);
+    } else if (node->string.size) {
+      lnk_error_obj(LNK_Error_IllData, obj, "incomplete or invalid .debug$S section");
     }
   }
 
@@ -1370,9 +1379,9 @@ lnk_line_map_from_obj(Arena *arena, LNK_Obj *obj)
   //
   // estimate requried line table block capacity
   //
-  U64            line_table_blocks_cap = 0;
-  CV_DebugS_Iter lines                 = cv_debug_s_iter_init(&debug_s);
-  while (cv_debug_s_iter_next_kind(&lines, CV_C13SubSectionKind_Lines)) {
+  U64              line_table_blocks_cap = 0;
+  CV_C13StreamIter lines                 = cv_c13_stream_iter_init(&debug_s);
+  while (cv_c13_stream_iter_next_kind(&lines, CV_C13SubSectionKind_Lines)) {
     Temp temp = temp_begin(scratch.arena);
     CV_C13LinesHeaderList parsed_list = cv_c13_lines_from_sub_sections(temp.arena, lines.data, rng_1u64(0, lines.data.size));
     line_table_blocks_cap += parsed_list.count;
@@ -1381,13 +1390,13 @@ lnk_line_map_from_obj(Arena *arena, LNK_Obj *obj)
 
   LNK_ObjLineMap *map = push_array(arena, LNK_ObjLineMap, 1);
   map->arena             = arena;
-  map->debug_checksums   = cv_file_chksms_from_debug_s(&debug_s);
-  map->debug_strings     = cv_string_table_from_debug_s(&debug_s);
+  map->debug_checksums   = cv_c13_stream_file_chksms(&debug_s);
+  map->debug_strings     = cv_c13_stream_string_table(&debug_s);
   map->line_table_blocks = push_array(arena, LNK_LineTableBlock, line_table_blocks_cap);
   map->tables            = push_array(arena, LNK_LineTable, line_table_blocks_cap);
 
-  lines = cv_debug_s_iter_init(&debug_s);
-  while (cv_debug_s_iter_next_kind(&lines, CV_C13SubSectionKind_Lines)) {
+  lines = cv_c13_stream_iter_init(&debug_s);
+  while (cv_c13_stream_iter_next_kind(&lines, CV_C13SubSectionKind_Lines)) {
     Temp temp = temp_begin(scratch.arena);
     String8               raw_lines   = lines.data;
     CV_C13LinesHeaderList parsed_list = cv_c13_lines_from_sub_sections(temp.arena, raw_lines, rng_1u64(0, raw_lines.size));
@@ -1452,23 +1461,16 @@ lnk_line_map_from_obj(Arena *arena, LNK_Obj *obj)
   HashMap inlinee_hm = {0};
   if (obj->coff.debug_t_section_number) {
     String8      raw_debug_t = lnk_obj_section_data_from_number(obj, obj->coff.debug_t_section_number);
-    CV_Signature debug_t_sig = cv_signature_from_debug_s(raw_debug_t);
+    CV_Signature debug_t_sig = cv_c13_stream_signature_from_data(raw_debug_t);
     if (debug_t_sig == CV_Signature_C13) {
       CV_DebugT debug_t = cv_debug_t_from_data(scratch.arena, str8_skip(raw_debug_t, sizeof(CV_Signature)), CV_LeafAlign);
 
       CV_TypeIndex ti_base = CV_MinComplexTypeIndex;
-      if (cv_debug_t_is_pch(&debug_t)) {
-        CV_Leaf        precomp_leaf = cv_debug_t_get_leaf(&debug_t, 0);
-        CV_PrecompInfo precomp      = cv_precomp_info_from_leaf(precomp_leaf);
-
-        // discard LF_PRECOMP
-        debug_t.offsets += 1;
-        debug_t.count   -= 1;
-
-        ti_base = precomp.start_index + precomp.leaf_count;
+      if (debug_t.has_pch) {
+        ti_base = debug_t.precomp.start_index + debug_t.precomp.leaf_count;
       }
 
-      for EachIndex(leaf_idx, debug_t.count) {
+      for EachIndex(leaf_idx, debug_t.leaf_stream.count) {
         CV_Leaf leaf;
         if ( ! cv_debug_t_get_leaf_checked(&debug_t, leaf_idx, &leaf)) {
           lnk_error_obj(LNK_Warning_IllData, obj, "found a corrupted leaf (No. 0x%llx) in .debug$T; no inline site annotations", leaf_idx);
@@ -1507,11 +1509,12 @@ lnk_line_map_from_obj(Arena *arena, LNK_Obj *obj)
   } LNK_SeparatedCode;
   HashMap        separated_code_hm = {0};
   U64            inline_site_cap = 0;
-  CV_DebugS_Iter symbols         = cv_debug_s_iter_init(&debug_s);
-  while (cv_debug_s_iter_next_kind(&symbols, CV_C13SubSectionKind_Symbols)) {
+  CV_C13StreamIter symbols       = cv_c13_stream_iter_init(&debug_s);
+  while (cv_c13_stream_iter_next_kind(&symbols, CV_C13SubSectionKind_Symbols)) {
     for (U64 cursor = 0, bytes_read; cursor < symbols.data.size; cursor += bytes_read) {
       CV_Symbol symbol     = {0};
-      if ( ! cv_read_symbol_checked(str8_skip(symbols.data, cursor), 0, CV_SymbolAlign, &symbol, &bytes_read)) {
+      bytes_read = cv_read_symbol(str8_skip(symbols.data, cursor), 0, CV_SymbolAlign, &symbol);
+      if (bytes_read == 0) {
         lnk_error_obj(LNK_Warning_IllData, obj, ".debug$S contains an invalid symbol at offset 0x%llx; skipping inline source locations", cursor);
         goto done;
       }
@@ -1573,8 +1576,8 @@ lnk_line_map_from_obj(Arena *arena, LNK_Obj *obj)
   };
   LNK_InlineRangeNode *range_first = 0, *range_last = 0;
   map->inline_sites = push_array(arena, LNK_InlineSite, inline_site_cap);
-  symbols = cv_debug_s_iter_init(&debug_s);
-  while (cv_debug_s_iter_next_kind(&symbols, CV_C13SubSectionKind_Symbols)) {
+  symbols = cv_c13_stream_iter_init(&debug_s);
+  while (cv_c13_stream_iter_next_kind(&symbols, CV_C13SubSectionKind_Symbols)) {
     U32  proc_section            = 0;
     U32  proc_offset             = 0;
     U64Array separated_code_voffs = {0};
@@ -1584,8 +1587,8 @@ lnk_line_map_from_obj(Arena *arena, LNK_Obj *obj)
     LNK_InlineScope *scope_stack = 0;
     for (U64 cursor = 0; cursor < symbols.data.size;) {
       CV_Symbol symbol = {0};
-      U64 bytes_read = 0;
-      if ( ! cv_read_symbol_checked(str8_skip(symbols.data, cursor), 0, CV_SymbolAlign, &symbol, &bytes_read)) { break; }
+      U64 bytes_read = cv_read_symbol(str8_skip(symbols.data, cursor), 0, CV_SymbolAlign, &symbol);
+      if (bytes_read == 0) { break; }
       cursor += bytes_read;
 
       // save all scope state, including skipped inline sites; END must restore
@@ -1724,7 +1727,7 @@ lnk_line_map_from_obj(Arena *arena, LNK_Obj *obj)
               inline_site->lines = push_array_no_zero(arena, CV_Line, inline_site->line_count);
               U64 line_idx = 0;
               for EachNode(line, LNK_InlineLineNode, line_first) { inline_site->lines[line_idx++] = line->v; }
-              radsort(inline_site->lines, inline_site->line_count, cv_c13_voff_map_is_before);
+              quick_sort(inline_site->lines, inline_site->line_count, sizeof(CV_Line), cv_c13_voff_map_compar);
             }
           }
         }

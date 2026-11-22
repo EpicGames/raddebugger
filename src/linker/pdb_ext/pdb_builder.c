@@ -2580,12 +2580,7 @@ dbi_build_file_info(Arena *arena, TP_Context *tp, PDB_DbiModuleList mod_list, CV
   Temp scratch = scratch_begin(&arena, 1);
   PDB_DbiBuildFileInfoTask task = dbi_prepare_file_info(arena, mod_list, string_ht);
   tp_for_parallel(tp, 0, task.mod_count, dbi_build_file_info_assign_file_offsets_task, &task);
-  CV_PackStringHashTableTask pack = {
-    .buffer = task.string_buffer.str,
-    .bucket_cap = string_ht.bucket_cap,
-    .buckets = string_ht.buckets,
-  };
-  tp_for_parallel(tp, 0, tp->worker_count, cv_pack_string_hash_table_task, &pack);
+  cv_pack_string_hash_table_into(tp, string_ht, task.string_buffer);
   scratch_end(scratch);
   return task.data;
 }

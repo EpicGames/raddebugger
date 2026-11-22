@@ -13,8 +13,9 @@ struct CV2R_CompUnit
   String8 obj_name;
   String8 group_name;
   RDIM_Rng1U64ChunkList ranges;
-  CV_SymParsed *sym;
-  CV_C13Parsed *c13;
+  CV_SymbolStream *sym;
+  CV_C13Stream *c13;
+  String8 *c13_external_strings;
 };
 
 typedef struct CV2R_Section CV2R_Section;
@@ -27,6 +28,15 @@ struct CV2R_Section
   U64 foff;
   U64 fsize;
 };
+
+typedef struct CV2R_C13Info
+{
+  CV_C13LinesParsedNode *lines_first;
+  CV_C13LinesParsedNode *lines_last;
+  CV_InlineeLinesAccel *inlinees;
+  String8 checksums;
+  String8 strings;
+} CV2R_C13Info;
 
 typedef struct CV2R_StringTable CV2R_StringTable;
 struct CV2R_StringTable
@@ -64,6 +74,13 @@ struct CV2R_CompUnitContribution
   U64 voff_opl;
 };
 
+typedef struct CV2R_LeafStream
+{
+  CV_LeafStream stream;
+  CV_TypeId itype_first;
+  CV_TypeId itype_opl;
+} CV2R_LeafStream;
+
 typedef struct CV2R_ConvertParams CV2R_ConvertParams;
 struct CV2R_ConvertParams
 {
@@ -78,8 +95,8 @@ struct CV2R_ConvertParams
   U64 sections_count;
   CV2R_Section *sections;
   CV2R_StringTable *strtbl;
-  CV_LeafParsed *tpi_leaf;
-  CV_LeafParsed *ipi_leaf;
+  CV2R_LeafStream *tpi_leaf;
+  CV2R_LeafStream *ipi_leaf;
   CV2R_TPIHash *tpi_hash;
   CV2R_TPIHash *ipi_hash;
   
@@ -209,9 +226,9 @@ internal U64 cv2r_end_of_cplusplus_container_name(String8 str);
 internal U64 cv2r_hash_from_voff(U64 voff);
 internal int cv2r_namespace_node_is_before(void *raw_a, void *raw_b);
 internal U64 cv2r_voff_from_soff(CV2R_Section *sections, U64 sections_count, U64 sec_idx, U64 soff);
-internal B32 cv2r_rec_has_header(CV_RecIter *iter, U64 size);
+internal B32 cv2r_rec_has_header(CV_Record *record, U64 size);
 internal CV2R_SeparatedCode *cv2r_separated_code_from_parent(CV2R_SeparatedCodeMap *map, U16 sec, U32 off);
-internal CV2R_SeparatedCodeMap cv2r_separated_code_map_from_sym(Arena *arena, CV_SymParsed *sym, CV2R_Section *sections, U64 sections_count);
+internal CV2R_SeparatedCodeMap cv2r_separated_code_map_from_sym(Arena *arena, CV_SymbolStream *sym, CV2R_Section *sections, U64 sections_count);
 internal B32 cv2r_inline_site_decoder_is_valid(CV_C13InlineSiteDecoder decoder, String8 binary_annots);
 
 ////////////////////////////////
@@ -228,8 +245,8 @@ internal CV2R_CompUnitContribution *cv2r_comp_unit_contribution_from_voff__binar
 //~ rjf: TPI Hash Table Functions
 
 internal U32 cv2r_tpi_hash_from_data(String8 string);
-internal CV_TypeIdArray cv2r_itypes_from_name(Arena *arena, CV2R_TPIHash *tpi_hash, CV_LeafParsed *leaf, String8 name, B32 compare_unique_name, U32 output_cap);
-internal CV_TypeId cv2r_first_itype_from_name(CV2R_TPIHash *tpi_hash, CV_LeafParsed *tpi_leaf, String8 name, B32 compare_unique_name);
+internal CV_TypeIdArray cv2r_itypes_from_name(Arena *arena, CV2R_TPIHash *tpi_hash, CV2R_LeafStream *leaf, String8 name, B32 compare_unique_name, U32 output_cap);
+internal CV_TypeId cv2r_first_itype_from_name(CV2R_TPIHash *tpi_hash, CV2R_LeafStream *tpi_leaf, String8 name, B32 compare_unique_name);
 
 ////////////////////////////////
 //~ rjf: CodeView => RDI Canonical Conversions

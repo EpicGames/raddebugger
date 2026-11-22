@@ -12,9 +12,12 @@
 #include "coff/coff_parse.h"
 #include "codeview/codeview.h"
 #include "codeview/codeview_parse.h"
+#include "codeview/codeview_write.h"
 #include "base_ext/base_inc.h"
 #include "thread_pool/thread_pool.h"
-#include "codeview_ext/codeview.h"
+#include "base_ext/base_radix_sort.h"
+#include "base_ext/base_blake3.h"
+#include "codeview/codeview_merge.h"
 #include "linker/radcobj.h"
 
 #include "base/base_inc.c"
@@ -22,10 +25,12 @@
 #include "coff/coff_parse.c"
 #include "codeview/codeview.c"
 #include "codeview/codeview_parse.c"
+#include "codeview/codeview_write.c"
 #include "base_ext/base_inc.c"
 #include "base_ext/base_blake3.c"
 #include "thread_pool/thread_pool.c"
-#include "codeview_ext/codeview.c"
+#include "base_ext/base_radix_sort.c"
+#include "codeview/codeview_merge.c"
 
 #if OS_WINDOWS
 internal BOOL CALLBACK

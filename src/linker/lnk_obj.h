@@ -76,6 +76,7 @@ typedef struct LNK_Obj
   // @type_server
   Rng1U64       ti_range;
   CV_TypeIndex *ti_map;
+  U64           ti_map_count;
   Rng1U64       pch_ti_range;
   U64           pch_obj_idx;
 } LNK_Obj;

@@ -26,13 +26,13 @@ lnk_make_debug_s(Arena *arena, String8List symbols)
 
   CV_DebugS debug_s = {0};
   if (symbols.total_size) {
-    String8 data = cv_debug_s_alloc_subsection(scratch.arena, &debug_s, CV_C13SubSectionKind_Symbols, symbols.total_size);
+    String8 data = cv_c13_stream_alloc_subsection(scratch.arena, &debug_s, CV_C13SubSectionKind_Symbols, symbols.total_size);
     U64 cursor = 0;
     for EachNode(n, String8Node, symbols.first) {
       cursor += str8_write(data, cursor, n->string);
     }
   }
-  String8List debug_s_data_list = cv_data_from_debug_s_c13(scratch.arena, &debug_s, 1);
+  String8List debug_s_data_list = cv_c13_stream_data(scratch.arena, &debug_s, 1);
   String8     debug_s_data      = str8_list_join(arena, &debug_s_data_list, 0);
 
   if (symbols.total_size > 0) {

@@ -100,10 +100,10 @@ typedef struct LNK_DebugSIndex
 internal B32
 lnk_obj_codec_debug_s_index(LNK_Obj *obj, LNK_DebugSIndex *out)
 {
-  StaticAssert(sizeof(CV_DebugS_Subsection) == sizeof(RADCOBJ_DebugSSubsection), debug_s_subsection_size);
-  StaticAssert(OffsetOf(CV_DebugS_Subsection, kind) == OffsetOf(RADCOBJ_DebugSSubsection, kind), debug_s_kind_offset);
-  StaticAssert(OffsetOf(CV_DebugS_Subsection, data_offset) == OffsetOf(RADCOBJ_DebugSSubsection, data_offset), debug_s_data_offset);
-  StaticAssert(OffsetOf(CV_DebugS_Subsection, data_size) == OffsetOf(RADCOBJ_DebugSSubsection, data_size), debug_s_size_offset);
+  StaticAssert(sizeof(CV_C13StreamSubsection) == sizeof(RADCOBJ_DebugSSubsection), debug_s_subsection_size);
+  StaticAssert(OffsetOf(CV_C13StreamSubsection, kind) == OffsetOf(RADCOBJ_DebugSSubsection, kind), debug_s_kind_offset);
+  StaticAssert(OffsetOf(CV_C13StreamSubsection, data_offset) == OffsetOf(RADCOBJ_DebugSSubsection, data_offset), debug_s_data_offset);
+  StaticAssert(OffsetOf(CV_C13StreamSubsection, data_size) == OffsetOf(RADCOBJ_DebugSSubsection, data_size), debug_s_size_offset);
 
   MemoryZeroStruct(out);
   
@@ -139,9 +139,9 @@ lnk_obj_codec_debug_s_index(LNK_Obj *obj, LNK_DebugSIndex *out)
 }
 
 internal B32
-lnk_obj_codec_debug_s_block(LNK_DebugSIndex *index, U32 section_number, U64 block_size, CV_DebugS_BlockIndex *out)
+lnk_obj_codec_debug_s_block(LNK_DebugSIndex *index, U32 section_number, U64 block_size, CV_C13StreamBlockIndex *out)
 {
-  *out = (CV_DebugS_BlockIndex){ max_U32, 0 };
+  *out = (CV_C13StreamBlockIndex){ max_U32, 0 };
 
   // the selected section list and encoded section table are both ordered
   while (index->section_cursor < index->section_count) {
@@ -158,7 +158,7 @@ lnk_obj_codec_debug_s_block(LNK_DebugSIndex *index, U32 section_number, U64 bloc
       continue;
     }
   
-    U64 count = index->subsections.size / sizeof(CV_DebugS_Subsection);
+    U64 count = index->subsections.size / sizeof(CV_C13StreamSubsection);
     if (section.subsection_base_idx > count || section.subsection_count > count - section.subsection_base_idx) {
       return 0;
     }
@@ -168,7 +168,7 @@ lnk_obj_codec_debug_s_block(LNK_DebugSIndex *index, U32 section_number, U64 bloc
     U64 cursor = 0;
     if (section.subsection_count) {
       U64                  last_idx = (U64)section.subsection_base_idx + section.subsection_count - 1;
-      CV_DebugS_Subsection last;
+      CV_C13StreamSubsection last;
       MemoryCopy(&last, index->subsections.str + last_idx * sizeof(last), sizeof(last));
 
       cursor = (U64)last.data_offset + last.data_size;
@@ -178,11 +178,11 @@ lnk_obj_codec_debug_s_block(LNK_DebugSIndex *index, U32 section_number, U64 bloc
       cursor = Min(AlignPow2(cursor, CV_C13SubSectionAlign), block_size);
     }
 
-    // a complete index may leave trailing bytes, but not another whole header
-    if (block_size - cursor >= sizeof(CV_C13SubSectionHeader)) {
+    // Only missing final alignment padding is allowed, never a partial header.
+    if (cursor != block_size) {
       return 0;
     }
-    *out = (CV_DebugS_BlockIndex){ section.subsection_base_idx, section.subsection_count };
+    *out = (CV_C13StreamBlockIndex){ section.subsection_base_idx, section.subsection_count };
     
     return 1;
   }

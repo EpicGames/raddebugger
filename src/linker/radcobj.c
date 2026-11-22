@@ -310,7 +310,7 @@ radcobj_encode(const RADCOBJ_Compressor *cmp, uint32_t segment_size, const void 
             header->foff <= raw_obj.size &&
             header->fsize <= raw_obj.size - header->foff) {
           String8 section_data = str8_substr(raw_obj, r1u64s(header->foff, header->fsize));
-          if (cv_signature_from_debug_s(section_data) == CV_Signature_C13) {
+          if (cv_c13_stream_signature_from_data(section_data) == CV_Signature_C13) {
             String8          data             = str8_skip(section_data, sizeof(CV_Signature));
             U64              cursor           = 0;
             U64              subsection_count = 0;
@@ -324,6 +324,7 @@ radcobj_encode(const RADCOBJ_Compressor *cmp, uint32_t segment_size, const void 
               subsection_count += 1;
               cursor = subsection.next_offset;
             }
+            malformed |= cursor != data.size;
 
             // do not cache a malformed prefix: the linker's normal parser must still diagnose the section
             if ( ! malformed) {
@@ -391,7 +392,7 @@ radcobj_encode(const RADCOBJ_Compressor *cmp, uint32_t segment_size, const void 
         }
 
         String8 data = str8_substr(raw_obj, r1u64s(header->foff, header->fsize));
-        if (cv_signature_from_debug_s(data) != CV_Signature_C13) { continue; }
+        if (cv_c13_stream_signature_from_data(data) != CV_Signature_C13) { continue; }
 
         if (types.arena == NULL) {
 #if RADCOBJ_LIB && OS_WINDOWS
@@ -406,7 +407,7 @@ radcobj_encode(const RADCOBJ_Compressor *cmp, uint32_t segment_size, const void 
           goto exit;
         }
 
-        if (types.debug[k].count > max_U32 / sizeof(U32)) {
+        if (types.debug[k].leaf_stream.count > max_U32 / sizeof(U32)) {
           error = "type offsets exceed the format size limit";
           goto exit;
         }
@@ -423,7 +424,7 @@ radcobj_encode(const RADCOBJ_Compressor *cmp, uint32_t segment_size, const void 
     if (types.present[i]) {
       metadata_end = AlignPow2(metadata_end, 8);
 
-      U64 offsets_size = types.debug[i].count * sizeof(U32);
+      U64 offsets_size = types.debug[i].leaf_stream.count * sizeof(U32);
       if (metadata_end > max_U32 - sizeof(RADCOBJ_TypesHeader) || offsets_size > max_U32 - metadata_end - sizeof(RADCOBJ_TypesHeader)) {
         error = "type metadata exceeds the format size limit";
         goto exit;
@@ -521,9 +522,9 @@ radcobj_encode(const RADCOBJ_Compressor *cmp, uint32_t segment_size, const void 
   for EachElement(i, types.debug) {
     if (types.present[i]) {
       CV_DebugT *debug = &types.debug[i];
-      RADCOBJ_TypesHeader type_header = { {debug->source_counts[CV_TypeIndexSource_TPI], debug->source_counts[CV_TypeIndexSource_IPI]}, debug->count };
+      RADCOBJ_TypesHeader type_header = { {debug->source_counts[CV_TypeIndexSource_TPI], debug->source_counts[CV_TypeIndexSource_IPI]}, debug->leaf_stream.count };
       MemoryCopy(output + header.dirs[RADCOBJ_DirectoryKind_DebugT_Header + i].offset, &type_header, sizeof(type_header));
-      MemoryCopy(output + header.dirs[RADCOBJ_DirectoryKind_DebugT_LeafOffsets + i].offset, debug->offsets, debug->count * sizeof(U32));
+      MemoryCopy(output + header.dirs[RADCOBJ_DirectoryKind_DebugT_LeafOffsets + i].offset, debug->leaf_stream.offsets, debug->leaf_stream.count * sizeof(U32));
       if (debug->ipi_bits.v) {
         RADCOBJ_Directory bitmap = header.dirs[RADCOBJ_DirectoryKind_DebugT_IpiBits + i];
         MemoryCopy(output + bitmap.offset, debug->ipi_bits.v, bitmap.size);

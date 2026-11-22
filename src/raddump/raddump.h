@@ -195,7 +195,7 @@ internal void cv_print_lvar_addr_gap  (Arena *arena, String8List *out, String8 i
 internal void cv_print_lvar_attr      (Arena *arena, String8List *out, String8 indent, CV_LocalVarAttr attr);
 internal void cv_print_symbol         (Arena *arena, String8List *out, String8 indent, CV_Arch arch, CV_TypeIndex min_itype, CV_SymKind type, String8 raw_symbol);
 internal U64  cv_print_leaf           (Arena *arena, String8List *out, String8 indent, CV_TypeIndex min_itype, CV_LeafKind kind, String8 raw_leaf);
-internal void cv_print_debug_t        (Arena *arena, String8List *out, String8 indent, CV_DebugT debug_t);
+internal void cv_print_leaf_stream    (Arena *arena, String8List *out, String8 indent, CV_LeafStream *stream, CV_TypeIndex itype_first);
 internal void cv_print_symbols_c13    (Arena *arena, String8List *out, String8 indent, CV_Arch arch, String8 raw_data);
 internal void cv_print_lines_c13      (Arena *arena, String8List *out, String8 indent, String8 raw_lines);
 internal void cv_print_file_checksums (Arena *arena, String8List *out, String8 indent, String8 raw_chksums);
@@ -226,4 +226,3 @@ internal void pe_print_base_relocs          (Arena *arena, String8List *out, Str
 internal void pe_print                      (Arena *arena, String8List *out, String8 indent, String8 raw_data, RD_Option opts, RDI_Parsed *rdi);
 
 #endif // RADDUMP_H
-

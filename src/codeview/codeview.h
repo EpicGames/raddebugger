@@ -2713,6 +2713,83 @@ struct CV_C13InlineeSourceLineHeader
 #pragma pack(pop)
 
 ////////////////////////////////
+//~ Leaf and Symbol Record Types
+
+typedef union CV_LeafHeader
+{
+  struct {
+    CV_LeafSize size;
+    CV_LeafKind kind;
+  };
+  U32 v;
+} CV_LeafHeader;
+
+typedef union CV_SymbolHeader
+{
+  struct {
+    CV_SymSize size;
+    CV_SymKind kind;
+  };
+  U32 v;
+} CV_SymbolHeader;
+
+typedef struct CV_Leaf
+{
+  CV_LeafKind kind;
+  String8     data;
+} CV_Leaf;
+
+typedef struct CV_Symbol
+{
+  CV_SymKind kind;
+  U64        offset;
+  String8    data;
+} CV_Symbol;
+
+typedef struct CV_ObjInfo
+{
+  U32     sig;
+  String8 name;
+} CV_ObjInfo;
+
+typedef struct CV_TypeServerInfo
+{
+  String8 name;
+  Guid    sig;
+  U32     age;
+} CV_TypeServerInfo;
+
+typedef struct CV_TypeServerInfoNode CV_TypeServerInfoNode;
+struct CV_TypeServerInfoNode
+{
+  CV_TypeServerInfoNode *next;
+  CV_TypeServerInfo      data;
+};
+
+typedef struct CV_TypeServerInfoList
+{
+  CV_TypeServerInfoNode *first;
+  CV_TypeServerInfoNode *last;
+  U64                    count;
+} CV_TypeServerInfoList;
+
+typedef struct CV_PrecompInfo
+{
+  CV_TypeIndex start_index;
+  U32          sig;
+  U32          leaf_count;
+  String8      obj_name;
+} CV_PrecompInfo;
+
+typedef struct CV_UDTInfo
+{
+  String8      name;
+  String8      unique_name;
+  CV_TypeProps props;
+} CV_UDTInfo;
+
+
+////////////////////////////////
 //~ Type Index Helper
 
 enum CV_TypeIndexSource
@@ -2756,7 +2833,42 @@ internal B32                   cv_is_reg_sp(CV_Arch arch, CV_Reg reg);
 internal CV_EncodedFramePtrReg cv_pick_fp_encoding(CV_SymFrameproc *frameproc, B32 is_local_param);
 internal CV_Reg                cv_decode_fp_reg(CV_Arch arch, CV_EncodedFramePtrReg encoded_reg);
 internal U32                   cv_map_encoded_base_pointer(CV_Arch arch, U32 encoded_frame_reg);
+internal Rng1U64List           cv_make_defined_range_list_from_gaps(Arena *arena, Rng1U64 defrange, CV_LvarAddrGap *gaps, U64 gap_count);
 
+// symbol & leaf classification
+internal B32 cv_is_udt_name_anon(String8 name);
+internal B32 cv_is_global_symbol(CV_SymKind kind);
+internal B32 cv_is_typedef(CV_SymKind kind);
+internal B32 cv_is_scope_symbol(CV_SymKind kind);
+internal B32 cv_is_end_symbol(CV_SymKind kind);
+internal B32 cv_is_udt(CV_LeafKind kind);
+internal B32 cv_is_leaf_type_server(CV_LeafKind kind);
+internal B32 cv_is_leaf_pch(CV_LeafKind kind);
+internal B32 cv_is_gproc(CV_Symbol symbol);
+internal B32 cv_is_lproc(CV_Symbol symbol);
+internal B32 cv_is_obj_info(CV_Symbol symbol);
+internal CV_TypeIndexSource cv_type_index_source_from_leaf_kind(CV_LeafKind leaf_kind);
+
+internal U64     cv_name_offset_from_symbol(CV_SymKind kind, String8 data);
+internal String8 cv_name_from_symbol(CV_SymKind kind, String8 data);
+
+internal B32 cv_type_server_info_from_leaf(CV_Leaf leaf, CV_TypeServerInfo *out);
+internal B32 cv_precomp_info_from_leaf(CV_Leaf leaf, CV_PrecompInfo *out);
+internal CV_ObjInfo cv_obj_info_from_symbol(CV_Symbol symbol);
+internal CV_UDTInfo cv_get_udt_info(CV_LeafKind kind, String8 data);
+internal String8    cv_name_from_udt_info(CV_UDTInfo udt_info);
+
+// type index info
+internal CV_TypeIndexInfo *   cv_symbol_type_index_info_push(Arena *arena, CV_TypeIndexInfoList *list, CV_TypeIndexSource source, U64 offset);
+internal B32                  cv_get_symbol_type_index_offsets(Arena *arena, CV_SymKind kind, String8 data, CV_TypeIndexInfoList *list_out);
+internal B32                  cv_get_leaf_type_index_offsets(Arena *arena, CV_LeafKind leaf_kind, String8 data, CV_TypeIndexInfoList *list_out);
+internal CV_TypeIndexInfoList cv_get_inlinee_type_index_offsets(Arena *arena, String8 raw_data);
+internal String8Array         cv_get_data_around_type_indices(Arena *arena, CV_TypeIndexInfoList ti_list, String8 data);
+
+// inline site annotation
+internal U64 cv_decode_inline_annot_u32(String8 data, U64 offset, U32 *out_value);
+internal U64 cv_decode_inline_annot_s32(String8 data, U64 offset, S32 *out_value);
+internal S32 cv_inline_annot_signed_from_unsigned_operand(U32 value);
 
 ////////////////////////////////
 //~ rjf: Enum -> String

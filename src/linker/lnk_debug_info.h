@@ -91,7 +91,6 @@ typedef struct
   LNK_TypeServerArray  ts_arr;
   B32                 *is_type_server_discarded; // [ts_arr.count]
   CV_TypeIndex         min_type_indices[CV_TypeIndexSource_COUNT];
-
 } LNK_CodeViewInput;
 
 typedef struct
@@ -115,97 +114,23 @@ typedef struct
 ////////////////////////////////
 // Type Merging
 
-// must be power of two
-#define LNK_LEAF_HT_MIN_CAP 16
-
-typedef U64 LNK_LeafRef;
-typedef struct { U64 count; LNK_LeafRef *v; } LNK_LeafRefArray;
-
-#define LNK_LEAF_REF_NULL max_U64
-
-typedef struct
+typedef struct LNK_MergedTypes
 {
-  Arena       *arena;
-  U64          cap;
-  U64          count;
-  U64          initial_cap;
-  U64          grow_count;
-  LNK_LeafRef *bucket_arr;
-} LNK_LeafHashTable;
-
-typedef struct
-{
-  U32 obj_idx;
-  U64 cursor;
-  U64 opl;
-} LNK_LeafDedupWork;
-
-typedef struct
-{
-  U64           cap;
-  CV_TypeIndex *ti_arr;
-  CV_TypeIndex  min_ti;
-  LNK_LeafRef  *leaf_refs; // borrowed representatives, indexed by final TI
-} LNK_AssignedTiHash;
-
-typedef enum
-{
-  LNK_MergeTypeFlag_BuildObjTiMap = (1 << 0),
-  LNK_MergeTypeFlag_ExportHashes  = (1 << 2),
-} LNK_MergeTypeFlags;
-
-typedef struct
-{
-  CV_TypeIndex  min_type_indices[CV_TypeIndexSource_COUNT];
-  U64           count           [CV_TypeIndexSource_COUNT];
-
-  LNK_CodeViewInput  *input;
-  LNK_AssignedTiHash  assigned_ti_arr[CV_TypeIndexSource_COUNT];
-  LNK_LeafRefArray    leaf_refs[CV_TypeIndexSource_COUNT];
-
-  // @type_server
-  CV_TypeIndex **obj_ti_maps;
-  U64           *hashes[CV_TypeIndexSource_COUNT];
+  LNK_CodeViewInput *input;
+  CV_MergedTypes     cv;
 } LNK_MergedTypes;
-
-typedef struct
-{
-  LNK_CodeViewInput  *input;
-  LNK_LeafHashTable   leaf_ht_arr[CV_TypeIndexSource_COUNT];
-  LNK_AssignedTiHash  assigned_ti_arr[CV_TypeIndexSource_COUNT];
-  CV_TypeIndexSource  ti_source;
-  U32Array            indices;
-  U64                 range_item_count;
-
-  // extract present buckets
-  U64 *counts [CV_TypeIndexSource_COUNT];
-  U64 *offsets[CV_TypeIndexSource_COUNT];
-
-  CV_TypeIndex     min_type_indices    [CV_TypeIndexSource_COUNT];
-  LNK_LeafRefArray unique_leaf_refs_arr[CV_TypeIndexSource_COUNT];
-
-  U64          *obj_ti_map_counts;
-  U64          *obj_ti_map_offsets;
-  CV_TypeIndex *obj_ti_batch;
-
-  LNK_LeafDedupWork *dedup_work;
-  B32                skip_dedup; // seed deduped RRT; also skip discarded-leaf filtering
-  U32                grow_mask;
-
-  LNK_MergedTypes result;
-} LNK_MergeTypes;
 
 ////////////////////////////////
 // PDB
 
 typedef enum
 {
-  LNK_PDB_BuilderFlag_All         = ~0,
-  LNK_PDB_BuilderFlag_Tpi         = (1<<0),
-  LNK_PDB_BuilderFlag_Ipi         = (1<<1),
-  LNK_PDB_BuilderFlag_Modules     = (1<<2),
-  LNK_PDB_BuilderFlag_SC          = (1<<4),
-  LNK_PDB_BuilderFlag_NATVIS      = (1<<5),
+  LNK_PDB_BuilderFlag_All     = ~0,
+  LNK_PDB_BuilderFlag_Tpi     = (1<<0),
+  LNK_PDB_BuilderFlag_Ipi     = (1<<1),
+  LNK_PDB_BuilderFlag_Modules = (1<<2),
+  LNK_PDB_BuilderFlag_SC      = (1<<4),
+  LNK_PDB_BuilderFlag_NATVIS  = (1<<5),
 } LNK_PDB_BuilderFlags;
 
 typedef struct
@@ -291,13 +216,7 @@ internal B32         lnk_rrt_from_string     (Arena *arena, String8 rrt_data, St
 // CodeView
 
 internal LNK_CodeViewInput lnk_make_code_view_input(TP_Context *tp, TP_Arena *tp_arena, LNK_Config *config, U64 objs_count, LNK_Obj **objs, LNK_RRT_Array rrt_input);
-
-internal int             lnk_leaf_ref_compare       (LNK_LeafRef a, LNK_LeafRef b);
-internal B32             lnk_match_leaf_ref         (LNK_CodeViewInput *input, LNK_LeafRef a, LNK_LeafRef b);
-internal U64             lnk_hash_cv_leaf           (LNK_CodeViewInput *input, LNK_LeafRef leaf_ref, CV_TypeIndexInfoList ti_info_list, B32 discard_cycles);
-internal void            lnk_hash_cv_leaf_deep      (Arena *arena, LNK_CodeViewInput *input, LNK_LeafRef leaf_ref, CV_TypeIndexInfoList ti_info_list);
-internal CV_TypeIndex    lnk_assigned_ti_hash_search(LNK_AssignedTiHash *ht, LNK_CodeViewInput *input, LNK_LeafRef leaf_ref);
-internal LNK_MergedTypes lnk_merge_types            (TP_Context *tp, Arena *arena, LNK_CodeViewInput *input, LNK_MergeTypeFlags merge_flags);
+internal LNK_MergedTypes   lnk_merge_types(TP_Context *tp, Arena *arena, LNK_CodeViewInput *input, CV_MergeTypeFlags merge_flags);
 
 ////////////////////////////////
 // PDB

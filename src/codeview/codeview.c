@@ -131,6 +131,896 @@ cv_map_encoded_base_pointer(CV_Arch arch, U32 encoded_frame_reg)
   return r;
 }
 
+internal Rng1U64List
+cv_make_defined_range_list_from_gaps(Arena *arena, Rng1U64 defrange, CV_LvarAddrGap *gaps, U64 gap_count)
+{
+  Rng1U64List result = {0};
+
+  if (gap_count == 0) {
+    // no gaps, push whole range
+    rng1u64_list_push(arena, &result, defrange);
+  } else {
+    U64 cursor = defrange.min;
+    for (U64 gap_idx = 0; gap_idx < gap_count; ++gap_idx) {
+      // make range
+      Rng1U64 range = rng_1u64(cursor, cursor + gaps[gap_idx].off);
+      rng1u64_list_push(arena, &result, range);
+
+      // advance
+      cursor = defrange.min + gaps[gap_idx].off + gaps[gap_idx].len;
+    }
+
+
+    // emit range past last gap
+    if (gap_count > 0) {
+      CV_LvarAddrGap  last_gap             = gaps[gap_count - 1];
+      U64             last_range_byte_size = dim_1u64(defrange) - (last_gap.off + last_gap.len);
+      if (last_range_byte_size) {
+        Rng1U64 last_range = rng_1u64(defrange.min + last_gap.off + last_gap.len, defrange.max);
+        rng1u64_list_push(arena, &result, last_range);
+      }
+    }
+  }
+
+  return result;
+}
+
+internal B32
+cv_is_udt_name_anon(String8 name)
+{
+  // corresponds to fUDTAnon from dbi/tm.cpp:817
+  B32 is_anon = str8_match_lit("<unnamed-tag>",   name, 0) ||
+                str8_match_lit("__unnamed",       name, 0) ||
+                str8_match_lit("::<unnamed-tag>", name, StringMatchFlag_RightSideSloppy) ||
+                str8_match_lit("::__unnamed",     name, StringMatchFlag_RightSideSloppy);
+  return is_anon;
+}
+
+internal B32
+cv_is_udt(CV_LeafKind kind)
+{
+  B32 is_udt = kind == CV_LeafKind_CLASS            ||
+               kind == CV_LeafKind_STRUCTURE        ||
+               kind == CV_LeafKind_CLASS2           ||
+               kind == CV_LeafKind_STRUCT2          ||
+               kind == CV_LeafKind_INTERFACE        ||
+               kind == CV_LeafKind_UNION            ||
+               kind == CV_LeafKind_ENUM             ||
+               kind == CV_LeafKind_UDT_MOD_SRC_LINE ||
+               kind == CV_LeafKind_UDT_SRC_LINE     ||
+               kind == CV_LeafKind_ALIAS;
+  return is_udt;
+}
+
+internal B32
+cv_is_global_symbol(CV_SymKind kind)
+{
+  B32 is_global_symbol = kind == CV_SymKind_CONSTANT      ||
+                         kind == CV_SymKind_GDATA16       ||
+                         kind == CV_SymKind_GDATA32_16t   ||
+                         kind == CV_SymKind_GDATA32_ST    ||
+                         kind == CV_SymKind_GDATA32       ||
+                         kind == CV_SymKind_GTHREAD32_16t ||
+                         kind == CV_SymKind_GTHREAD32_ST  ||
+                         kind == CV_SymKind_GTHREAD32;
+  return is_global_symbol;
+}
+
+internal B32
+cv_is_typedef(CV_SymKind kind)
+{
+  B32 is_typedef = kind == CV_SymKind_UDT_16t ||
+                   kind == CV_SymKind_UDT_ST  ||
+                   kind == CV_SymKind_UDT;
+  return is_typedef;
+}
+
+internal B32
+cv_is_scope_symbol(CV_SymKind kind)
+{
+  B32 is_scope = kind == CV_SymKind_GPROC32     ||
+                 kind == CV_SymKind_LPROC32     ||
+                 kind == CV_SymKind_BLOCK32     ||
+                 kind == CV_SymKind_THUNK32     ||
+                 kind == CV_SymKind_INLINESITE  ||
+                 kind == CV_SymKind_INLINESITE2 ||
+                 kind == CV_SymKind_WITH32      ||
+                 kind == CV_SymKind_SEPCODE     ||
+                 kind == CV_SymKind_GPROC32_ID  ||
+                 kind == CV_SymKind_LPROC32_ID;
+  return is_scope;
+}
+
+internal B32
+cv_is_end_symbol(CV_SymKind kind)
+{
+  B32 is_end = kind == CV_SymKind_END         ||
+               kind == CV_SymKind_PROC_ID_END ||
+               kind == CV_SymKind_INLINESITE_END;
+  return is_end;
+}
+
+internal B32
+cv_is_leaf_type_server(CV_LeafKind kind)
+{
+  B32 is_type_server = kind == CV_LeafKind_TYPESERVER  ||
+                       kind == CV_LeafKind_TYPESERVER2 ||
+                       kind == CV_LeafKind_TYPESERVER_ST;
+  return is_type_server;
+}
+
+internal B32
+cv_is_leaf_pch(CV_LeafKind kind)
+{
+  B32 is_pch = kind == CV_LeafKind_PRECOMP    ||
+               kind == CV_LeafKind_PRECOMP_ST ||
+               kind == CV_LeafKind_PRECOMP_16t;
+  return is_pch;
+}
+
+internal B32
+cv_is_gproc(CV_Symbol symbol)
+{
+  return symbol.kind == CV_SymKind_GPROC32        ||
+         symbol.kind == CV_SymKind_GPROCMIPS      ||
+         symbol.kind == CV_SymKind_GPROCIA64      ||
+         symbol.kind == CV_SymKind_GPROC32_ID     ||
+         symbol.kind == CV_SymKind_GPROCMIPS_ID   ||
+         symbol.kind == CV_SymKind_GPROCIA64_ID   ||
+         symbol.kind == CV_SymKind_GPROC16        ||
+         symbol.kind == CV_SymKind_GPROC32_16t    ||
+         symbol.kind == CV_SymKind_GPROCMIPS_16t  ||
+         symbol.kind == CV_SymKind_GPROC32_ST     ||
+         symbol.kind == CV_SymKind_GPROCMIPS_ST   ||
+         symbol.kind == CV_SymKind_GPROCIA64_ST;
+}
+
+internal B32
+cv_is_lproc(CV_Symbol symbol)
+{
+  return symbol.kind == CV_SymKind_LPROC32        ||
+         symbol.kind == CV_SymKind_LPROCMIPS      ||
+         symbol.kind == CV_SymKind_LPROCIA64      ||
+         symbol.kind == CV_SymKind_LPROC32_ID     ||
+         symbol.kind == CV_SymKind_LPROCMIPS_ID   ||
+         symbol.kind == CV_SymKind_LPROCIA64_ID   ||
+         symbol.kind == CV_SymKind_LPROC32_DPC    ||
+         symbol.kind == CV_SymKind_LPROC32_DPC_ID ||
+         symbol.kind == CV_SymKind_LPROC16        ||
+         symbol.kind == CV_SymKind_LPROC32_16t    ||
+         symbol.kind == CV_SymKind_LPROCMIPS_16t  ||
+         symbol.kind == CV_SymKind_LPROC32_ST     ||
+         symbol.kind == CV_SymKind_LPROCMIPS_ST   ||
+         symbol.kind == CV_SymKind_LPROCIA64_ST;
+}
+
+internal B32
+cv_is_obj_info(CV_Symbol symbol)
+{
+  return symbol.kind == CV_SymKind_OBJNAME;
+}
+
+
+internal CV_TypeIndexSource
+cv_type_index_source_from_leaf_kind(CV_LeafKind leaf_kind)
+{
+  CV_TypeIndexSource source;
+  if (leaf_kind == CV_LeafKind_FUNC_ID      ||
+      leaf_kind == CV_LeafKind_MFUNC_ID     ||
+      leaf_kind == CV_LeafKind_BUILDINFO    ||
+      leaf_kind == CV_LeafKind_SUBSTR_LIST  ||
+      leaf_kind == CV_LeafKind_STRING_ID    ||
+      leaf_kind == CV_LeafKind_UDT_SRC_LINE ||
+      leaf_kind == CV_LeafKind_UDT_MOD_SRC_LINE) {
+    source = CV_TypeIndexSource_IPI;
+  } else if (leaf_kind == CV_LeafKind_NOTYPE) {
+    source = CV_TypeIndexSource_NULL;
+  } else {
+    source = CV_TypeIndexSource_TPI;
+  }
+  return source;
+}
+
+internal B32
+cv_type_server_info_from_leaf(CV_Leaf leaf, CV_TypeServerInfo *out)
+{
+  MemoryZeroStruct(out);
+  CV_TypeServerInfo result = {0};
+  U64 name_offset = 0;
+  switch (leaf.kind) {
+  case CV_LeafKind_TYPESERVER: {
+    CV_LeafTypeServer ts;
+    if (leaf.data.size < sizeof(ts)) { return 0; }
+    MemoryCopy(&ts, leaf.data.str, sizeof(ts));
+    result.sig.data1 = ts.sig;
+    result.age = ts.age;
+    name_offset = sizeof(ts);
+  } break;
+  case CV_LeafKind_TYPESERVER2: {
+    CV_LeafTypeServer2 ts;
+    if (leaf.data.size < sizeof(ts)) { return 0; }
+    MemoryCopy(&ts, leaf.data.str, sizeof(ts));
+    MemoryCopy(&result.sig, &ts.sig70, sizeof(ts.sig70));
+    result.age = ts.age;
+    name_offset = sizeof(ts);
+  } break;
+  default: return 0;
+  }
+
+  if (name_offset >= leaf.data.size) { return 0; }
+
+  result.name = str8_cstring_capped(leaf.data.str + name_offset, leaf.data.str + leaf.data.size);
+  if (result.name.size == leaf.data.size - name_offset) { return 0; }
+
+  *out = result;
+  return 1;
+}
+
+internal B32
+cv_precomp_info_from_leaf(CV_Leaf leaf, CV_PrecompInfo *out)
+{
+  MemoryZeroStruct(out);
+  if (leaf.kind != CV_LeafKind_PRECOMP || leaf.data.size <= sizeof(CV_LeafPreComp)) { return 0; }
+
+  CV_LeafPreComp precomp;
+  MemoryCopy(&precomp, leaf.data.str, sizeof(precomp));
+
+  CV_PrecompInfo result = {0};
+  result.start_index = precomp.start_index;
+  result.sig = precomp.sig;
+  result.leaf_count = precomp.count;
+  result.obj_name = str8_cstring_capped(leaf.data.str + sizeof(precomp), leaf.data.str + leaf.data.size);
+  if (result.obj_name.size == leaf.data.size - sizeof(precomp)) { return 0; }
+
+  *out = result;
+  return 1;
+}
+
+internal CV_UDTInfo
+cv_get_udt_info(CV_LeafKind kind, String8 data)
+{
+  CV_UDTInfo info     = {0};
+  U64        cursor   = 0;
+  B32        has_size = 0;
+
+  if (cv_header_struct_size_from_leaf_kind(kind) > data.size) {
+    return info;
+  }
+
+  switch (kind) {
+  case CV_LeafKind_CLASS:
+  case CV_LeafKind_STRUCTURE:
+  case CV_LeafKind_INTERFACE: {
+    CV_LeafStruct udt;
+    cursor += str8_deserial_read_struct(data, cursor, &udt);
+    info.props = udt.props;
+    has_size   = 1;
+  } break;
+
+  case CV_LeafKind_CLASS2:
+  case CV_LeafKind_STRUCT2: {
+    CV_LeafStruct2 udt;
+    cursor += str8_deserial_read_struct(data, cursor, &udt);
+    info.props = udt.props;
+    has_size   = 1;
+  } break;
+
+  case CV_LeafKind_UNION: {
+    CV_LeafUnion udt;
+    cursor += str8_deserial_read_struct(data, cursor, &udt);
+    info.props = udt.props;
+    has_size   = 1;
+  } break;
+
+  case CV_LeafKind_ENUM: {
+    CV_LeafEnum udt;
+    cursor += str8_deserial_read_struct(data, cursor, &udt);
+    info.props = udt.props;
+  } break;
+
+  // dbi/tpi.cpp:1332
+  case CV_LeafKind_UDT_SRC_LINE: {
+    CV_LeafUDTSrcLine *src_line = str8_deserial_get_raw_ptr(data, 0, sizeof(CV_LeafUDTSrcLine));
+    if (src_line) { info.name = str8_struct(&src_line->udt_itype); }
+    return info;
+  } break;
+  case CV_LeafKind_UDT_MOD_SRC_LINE: {
+    CV_LeafUDTModSrcLine *mod_src_line = str8_deserial_get_raw_ptr(data, 0, sizeof(CV_LeafUDTModSrcLine));
+    if (mod_src_line) { info.name = str8_struct(&mod_src_line->udt_itype); }
+    return info;
+  } break;
+
+  case CV_LeafKind_ALIAS: {
+    cursor = sizeof(CV_LeafAlias);
+  } break;
+
+  default: {
+    return info;
+  } break;
+  }
+
+  if (has_size) {
+    CV_Numeric size;
+    U64 consumed = cv_read_numeric(data, cursor, &size);
+    if (consumed == 0) { return (CV_UDTInfo){0}; }
+    cursor += consumed;
+  }
+
+  if (cursor >= data.size) {
+    return (CV_UDTInfo){0};
+  }
+
+  U64 consumed = str8_deserial_read_cstr(data, cursor, &info.name);
+  if (consumed > data.size - cursor) {
+    return (CV_UDTInfo){0};
+  }
+
+  cursor += consumed;
+
+  if (info.props & CV_TypeProp_HasUniqueName) {
+    if (cursor >= data.size) {
+      return (CV_UDTInfo){0};
+    }
+
+    consumed = str8_deserial_read_cstr(data, cursor, &info.unique_name);
+
+    if (consumed > data.size - cursor) {
+      return (CV_UDTInfo){0};
+    }
+  }
+
+  return info;
+}
+
+internal String8
+cv_name_from_udt_info(CV_UDTInfo udt_info)
+{
+  if (udt_info.props & CV_TypeProp_HasUniqueName) {
+    return udt_info.unique_name;
+  }
+  return udt_info.name;
+}
+
+internal CV_ObjInfo
+cv_obj_info_from_symbol(CV_Symbol symbol)
+{
+  CV_ObjInfo result = {0};
+  if(symbol.kind == CV_SymKind_OBJNAME && symbol.data.size >= sizeof(CV_SymObjName))
+  {
+    CV_SymObjName obj;
+    MemoryCopy(&obj, symbol.data.str, sizeof(obj));
+    result.sig = obj.sig;
+    str8_deserial_read_cstr(symbol.data, sizeof(obj), &result.name);
+  }
+  return result;
+}
+
+internal U64
+cv_name_offset_from_symbol(CV_SymKind kind, String8 data)
+{
+  U64 offset = data.size;
+  switch (kind) {
+  case CV_SymKind_COMPILE:    offset = sizeof(CV_SymCompile); break;
+  case CV_SymKind_OBJNAME:    offset = sizeof(CV_SymObjName); break;
+  case CV_SymKind_BLOCK32:    offset = sizeof(CV_SymBlock32); break;
+  case CV_SymKind_FILESTATIC: offset = sizeof(CV_SymFileStatic); break;
+  case CV_SymKind_THUNK32: {
+    offset = sizeof(CV_SymThunk32);
+  } break;
+  case CV_SymKind_LABEL32: {
+    offset = sizeof(CV_SymLabel32);
+  } break;
+  case CV_SymKind_REGISTER: {
+    offset = sizeof(CV_SymRegister);
+  } break;
+  case CV_SymKind_CONSTANT: {
+    offset = sizeof(CV_SymConstant);
+    CV_Numeric size;
+    U64 numeric_size = cv_read_numeric(data, offset, &size);
+    offset = numeric_size ? offset + numeric_size : data.size;
+  } break;
+  case CV_SymKind_UDT: {
+    offset = sizeof(CV_SymUDT);
+  } break;
+  case CV_SymKind_BPREL32: {
+    offset = sizeof(CV_SymBPRel32);
+  } break;
+  case CV_SymKind_LDATA32:
+  case CV_SymKind_GDATA32: {
+    offset = sizeof(CV_SymData32);
+  } break;
+  case CV_SymKind_PUB32: {
+    offset = sizeof(CV_SymPub32);
+  } break;
+  case CV_SymKind_LPROC32:
+  case CV_SymKind_GPROC32:
+  case CV_SymKind_LPROC32_ID:
+  case CV_SymKind_GPROC32_ID: {
+    offset = sizeof(CV_SymProc32);
+  } break;
+  case CV_SymKind_REGREL32: {
+    offset = sizeof(CV_SymRegrel32);
+  } break;
+  case CV_SymKind_LTHREAD32:
+  case CV_SymKind_GTHREAD32: {
+    offset = sizeof(CV_SymData32);
+  } break;
+  case CV_SymKind_COMPILE2: offset = sizeof(CV_SymCompile2); break;
+  case CV_SymKind_COMPILE3: offset = sizeof(CV_SymCompile3); break;
+  case CV_SymKind_LOCALSLOT: {
+    offset = sizeof(CV_SymSlot);
+  } break;
+  case CV_SymKind_PROCREF:
+  case CV_SymKind_LPROCREF:
+  case CV_SymKind_DATAREF: {
+    offset = sizeof(CV_SymRef2);
+  } break;
+  case CV_SymKind_TRAMPOLINE: break;
+  case CV_SymKind_LOCAL: {
+    offset = sizeof(CV_SymLocal);
+  } break;
+  }
+  return Min(offset, data.size);
+}
+
+internal String8
+cv_name_from_symbol(CV_SymKind kind, String8 data)
+{
+  U64 buf_off = cv_name_offset_from_symbol(kind, data);
+  if (buf_off >= data.size) { return str8_zero(); }
+
+  U8     *buf_ptr = data.str + buf_off;
+  U8     *buf_opl = data.str + data.size;
+  String8 name    = str8_cstring_capped(buf_ptr, buf_opl);
+
+  return name;
+}
+
+internal CV_TypeIndexInfo *
+cv_symbol_type_index_info_push(Arena *arena, CV_TypeIndexInfoList *list, CV_TypeIndexSource source, U64 offset)
+{
+  CV_TypeIndexInfo *info = push_array_no_zero(arena, CV_TypeIndexInfo, 1);
+  info->next             = 0;
+  info->offset           = offset;
+  info->source           = source;
+
+  SLLQueuePush(list->first, list->last, info);
+  list->count += 1;
+
+  return info;
+}
+
+internal B32
+cv_get_symbol_type_index_offsets(Arena *arena, CV_SymKind kind, String8 data, CV_TypeIndexInfoList *list_out)
+{
+  MemoryZeroStruct(list_out);
+
+  CV_TypeIndexSource source = CV_TypeIndexSource_TPI;
+  U64 offset = 0;
+  U64 count  = 1;
+  switch (kind) {
+  case CV_SymKind_BUILDINFO: {
+    source = CV_TypeIndexSource_IPI;
+    offset = OffsetOf(CV_SymBuildInfo, id);
+  } break;
+  case CV_SymKind_GDATA32:
+  case CV_SymKind_LDATA32: {
+    offset = OffsetOf(CV_SymData32, itype);
+  } break;
+  case CV_SymKind_LPROC32_ID:
+  case CV_SymKind_GPROC32_ID:
+  case CV_SymKind_LPROC32_DPC_ID: {
+    source = CV_TypeIndexSource_IPI;
+    offset = OffsetOf(CV_SymProc32, itype);
+  } break;
+  case CV_SymKind_GPROC32:
+  case CV_SymKind_LPROC32:
+  case CV_SymKind_LPROC32_DPC: {
+    offset = OffsetOf(CV_SymProc32, itype);
+  } break;
+  case CV_SymKind_UDT: {
+    offset = OffsetOf(CV_SymUDT, itype);
+  } break;
+  case CV_SymKind_GTHREAD32:
+  case CV_SymKind_LTHREAD32: {
+    offset = OffsetOf(CV_SymThread32, itype);
+  } break;
+  case CV_SymKind_FILESTATIC: {
+    offset = OffsetOf(CV_SymFileStatic, itype);
+  } break;
+  case CV_SymKind_LOCAL: {
+    offset = OffsetOf(CV_SymLocal, itype);
+  } break;
+  case CV_SymKind_REGREL32: {
+    offset = OffsetOf(CV_SymRegrel32, itype);
+  } break;
+  case CV_SymKind_BPREL32: {
+    offset = OffsetOf(CV_SymBPRel32, itype);
+  } break;
+  case CV_SymKind_REGISTER: {
+    offset = OffsetOf(CV_SymRegister, itype);
+  } break;
+  case CV_SymKind_CONSTANT: {
+    offset = OffsetOf(CV_SymConstant, itype);
+  } break;
+  case CV_SymKind_CALLSITEINFO: {
+    offset = OffsetOf(CV_SymCallSiteInfo, itype);
+  } break;
+  case CV_SymKind_CALLERS:
+  case CV_SymKind_CALLEES:
+  case CV_SymKind_INLINEES: {
+    CV_SymFunctionList func_list;
+    if (data.size < sizeof(func_list)) { return 0; }
+    MemoryCopy(&func_list, data.str, sizeof(func_list));
+    source = CV_TypeIndexSource_IPI;
+    offset = sizeof(func_list);
+    count = func_list.count;
+  } break;
+  case CV_SymKind_INLINESITE: {
+    source = CV_TypeIndexSource_IPI;
+    offset = OffsetOf(CV_SymInlineSite, inlinee);
+  } break;
+  case CV_SymKind_INLINESITE2: {
+    source = CV_TypeIndexSource_IPI;
+    offset = OffsetOf(CV_SymInlineSite2, inlinee);
+  } break;
+  case CV_SymKind_HEAPALLOCSITE: {
+    offset = OffsetOf(CV_SymHeapAllocSite, itype);
+  } break;
+  default: count = 0; break;
+  }
+
+  if (offset > data.size || count > (data.size - offset) / sizeof(CV_TypeIndex)) {
+    return 0;
+  }
+
+  CV_TypeIndexInfoList list = {0};
+  for EachIndex(i, count) {
+    cv_symbol_type_index_info_push(arena, &list, source, offset + i * sizeof(CV_TypeIndex));
+  }
+
+  *list_out = list;
+  return 1;
+}
+
+internal B32
+cv_get_leaf_type_index_offsets(Arena *arena, CV_LeafKind leaf_kind, String8 data, CV_TypeIndexInfoList *list_out)
+{
+  MemoryZeroStruct(list_out);
+#define push_type_index(source, offset) do {                                         \
+  if ((offset) + sizeof(CV_TypeIndex) > data.size) { return 0; }                     \
+  cv_symbol_type_index_info_push(arena, &list, CV_TypeIndexSource_##source, offset); \
+} while (0)
+
+#define skip_cstr(cursor) do {                                  \
+  String8 name;                                                 \
+  U64 name_size = str8_deserial_read_cstr(data, cursor, &name); \
+  if (name_size == 0) { return 0; }                             \
+  if (cursor + name_size > data.size) { return 0; }             \
+  cursor += name_size;                                          \
+} while (0)
+
+#define skip_numeric(cursor) do {                          \
+  CV_Numeric size;                                   \
+  U64 numeric_size = cv_read_numeric(data, cursor, &size); \
+  if (numeric_size == 0) { return 0; }                     \
+  cursor += numeric_size;                                  \
+} while (0)
+
+  CV_TypeIndexInfoList list = {0};
+  switch (leaf_kind) {
+  case CV_LeafKind_NOTYPE:
+  case CV_LeafKind_VTSHAPE:
+  case CV_LeafKind_LABEL:
+  case CV_LeafKind_NULL:
+  case CV_LeafKind_NOTTRAN: {
+    // no type indices
+  } break;
+  case CV_LeafKind_MODIFIER: {
+    push_type_index(TPI, OffsetOf(CV_LeafModifier, itype));
+  } break;
+  case CV_LeafKind_POINTER: {
+    if (sizeof(CV_LeafPointer) > data.size) {
+      return 0;
+    }
+
+    push_type_index(TPI, OffsetOf(CV_LeafPointer, itype));
+
+    CV_LeafPointer *ptr      = (CV_LeafPointer *)data.str;
+    CV_PointerKind  ptr_kind = CV_PointerAttribs_Extract_Kind(ptr->attribs);
+
+    if (ptr_kind == CV_PointerKind_BaseType) {
+      // TODO: add CV_LeafPointerBaseType
+      push_type_index(TPI, sizeof(CV_LeafPointer) + 0);
+    } else {
+      CV_PointerMode ptr_mode = CV_PointerAttribs_Extract_Mode(ptr->attribs);
+      if (ptr_mode == CV_PointerMode_PtrMem || ptr_mode == CV_PointerMode_PtrMethod) {
+        // TODO: add type for the CvLeafPointerMember to syms_cv.mc
+        push_type_index(TPI, sizeof(CV_LeafPointer) + 0);
+      }
+    }
+  } break;
+  case CV_LeafKind_ARRAY: {
+    push_type_index(TPI, OffsetOf(CV_LeafArray, entry_itype));
+    push_type_index(TPI, OffsetOf(CV_LeafArray, index_itype));
+  } break;
+  case CV_LeafKind_CLASS:
+  case CV_LeafKind_STRUCTURE:
+  case CV_LeafKind_INTERFACE: {
+    push_type_index(TPI, OffsetOf(CV_LeafStruct, field_itype));
+    push_type_index(TPI, OffsetOf(CV_LeafStruct, derived_itype));
+    push_type_index(TPI, OffsetOf(CV_LeafStruct, vshape_itype));
+  } break;
+  case CV_LeafKind_CLASS2:
+  case CV_LeafKind_STRUCT2: {
+    push_type_index(TPI, OffsetOf(CV_LeafStruct2, field_itype));
+    push_type_index(TPI, OffsetOf(CV_LeafStruct2, derived_itype));
+    push_type_index(TPI, OffsetOf(CV_LeafStruct2, vshape_itype));
+  } break;
+  case CV_LeafKind_UNION: {
+    push_type_index(TPI, OffsetOf(CV_LeafUnion, field_itype));
+  } break;
+  case CV_LeafKind_ALIAS: {
+    push_type_index(TPI, OffsetOf(CV_LeafAlias, itype));
+  } break;
+  case CV_LeafKind_FUNC_ID: {
+    push_type_index(IPI, OffsetOf(CV_LeafFuncId, scope_string_id));
+    push_type_index(TPI, OffsetOf(CV_LeafFuncId, itype));
+  } break;
+  case CV_LeafKind_MFUNC_ID: {
+    push_type_index(TPI, OffsetOf(CV_LeafMFuncId, owner_itype));
+    push_type_index(TPI, OffsetOf(CV_LeafMFuncId, itype));
+  } break;
+  case CV_LeafKind_STRING_ID: {
+    push_type_index(IPI, OffsetOf(CV_LeafStringId, substr_list_id));
+  } break;
+  case CV_LeafKind_UDT_SRC_LINE: {
+    push_type_index(TPI, OffsetOf(CV_LeafUDTSrcLine, udt_itype));
+    push_type_index(IPI, OffsetOf(CV_LeafUDTSrcLine, src_string_id));
+  } break;
+  case CV_LeafKind_UDT_MOD_SRC_LINE: {
+    push_type_index(TPI, OffsetOf(CV_LeafUDTModSrcLine, udt_itype));
+    push_type_index(IPI, OffsetOf(CV_LeafUDTModSrcLine, src_string_id));
+  } break;
+  case CV_LeafKind_BUILDINFO: {
+    if (data.size < sizeof(CV_LeafBuildInfo)) { return 0; }
+    CV_LeafBuildInfo *build_info = (CV_LeafBuildInfo *)data.str;
+    if (build_info->count > (data.size - sizeof(CV_LeafBuildInfo)) / sizeof(CV_ItemId)) { return 0; }
+    for EachIndex(i, build_info->count) {
+      push_type_index(IPI, sizeof(CV_LeafBuildInfo) + i * sizeof(CV_ItemId));
+    }
+  } break;
+  case CV_LeafKind_ENUM: {
+    push_type_index(TPI, OffsetOf(CV_LeafEnum, base_itype));
+    push_type_index(TPI, OffsetOf(CV_LeafEnum, field_itype));
+  } break;
+  case CV_LeafKind_PROCEDURE: {
+    push_type_index(TPI, OffsetOf(CV_LeafProcedure, ret_itype));
+    push_type_index(TPI, OffsetOf(CV_LeafProcedure, arg_itype));
+  } break;
+  case CV_LeafKind_MFUNCTION: {
+    push_type_index(TPI, OffsetOf(CV_LeafMFunction, ret_itype));
+    push_type_index(TPI, OffsetOf(CV_LeafMFunction, class_itype));
+    push_type_index(TPI, OffsetOf(CV_LeafMFunction, this_itype));
+    push_type_index(TPI, OffsetOf(CV_LeafMFunction, arg_itype));
+  } break;
+  case CV_LeafKind_VFTABLE: {
+    push_type_index(TPI, OffsetOf(CV_LeafVFTable, owner_itype));
+    push_type_index(TPI, OffsetOf(CV_LeafVFTable, base_table_itype));
+  } break;
+  case CV_LeafKind_VFTPATH: {
+    if (sizeof(CV_LeafVFPath) > data.size) { return 0; }
+
+    CV_LeafVFPath *vfpath = (CV_LeafVFPath *)data.str;
+    if (sizeof(CV_LeafVFPath) + vfpath->count * sizeof(CV_TypeId) > data.size) { return 0; }
+
+    for EachIndex(i, vfpath->count) {
+      push_type_index(TPI, sizeof(CV_LeafVFPath) + i * sizeof(CV_TypeId));
+    }
+  } break;
+  case CV_LeafKind_TYPESERVER:
+  case CV_LeafKind_TYPESERVER2:
+  case CV_LeafKind_TYPESERVER_ST: {
+    // no type indices
+  } break;
+  case CV_LeafKind_SKIP: {
+    push_type_index(TPI, OffsetOf(CV_LeafSkip, itype));
+  } break;
+  case CV_LeafKind_SUBSTR_LIST: {
+    if (sizeof(CV_LeafArgList) > data.size) { return 0; }
+
+    CV_LeafArgList *arg_list = (CV_LeafArgList *)data.str;
+    if (sizeof(CV_LeafArgList) + sizeof(CV_TypeIndex) * arg_list->count > data.size) { return 0; }
+
+    for EachIndex(i, arg_list->count) {
+      push_type_index(IPI, sizeof(CV_LeafArgList) + i * sizeof(CV_TypeIndex));
+    }
+  } break;
+  case CV_LeafKind_ARGLIST: {
+    if (sizeof(CV_LeafArgList) > data.size) { return 0; }
+
+    CV_LeafArgList *arg_list = (CV_LeafArgList *)data.str;
+    if (sizeof(CV_LeafArgList) + sizeof(CV_TypeIndex) * arg_list->count > data.size) { return 0; }
+
+    for EachIndex(i, arg_list->count) {
+      push_type_index(TPI, sizeof(CV_LeafArgList) + i * sizeof(CV_TypeIndex));
+    }
+  } break;
+  case CV_LeafKind_LIST:
+  case CV_LeafKind_FIELDLIST: {
+    CV_FieldIter field = {0};
+    while (cv_field_next(data, &field)) {
+      for (U32 i = 0; i < field.type_offset_count; i += 1) {
+        push_type_index(TPI, field.type_offsets[i]);
+      }
+    }
+    if (field.malformed) { return 0; }
+  } break;
+  case CV_LeafKind_METHOD: {
+    push_type_index(TPI, OffsetOf(CV_LeafMethod, list_itype));
+  } break;
+  case CV_LeafKind_METHODLIST: {
+    CV_FieldIter method = {0};
+    while (cv_method_next(data, &method)) {
+      push_type_index(TPI, method.type_offsets[0]);
+    }
+    if (method.malformed) { return 0; }
+  } break;
+  case CV_LeafKind_ONEMETHOD: {
+    push_type_index(TPI, OffsetOf(CV_LeafOneMethod, itype));
+  } break;
+  case CV_LeafKind_BITFIELD: {
+    push_type_index(TPI, OffsetOf(CV_LeafBitField, itype));
+  } break;
+  case CV_LeafKind_PRECOMP:
+  case CV_LeafKind_REFSYM: {
+    // no type indices
+  } break;
+  case CV_LeafKind_INDEX: {
+    push_type_index(TPI, OffsetOf(CV_LeafIndex, itype));
+  } break;
+  case CV_LeafKind_MEMBER: {
+    push_type_index(TPI, OffsetOf(CV_LeafMember, itype));
+  } break;
+  case CV_LeafKind_VFUNCTAB: {
+    push_type_index(TPI, OffsetOf(CV_LeafVFuncTab, itype));
+  } break;
+  case CV_LeafKind_VFUNCOFF: {
+    push_type_index(TPI, OffsetOf(CV_LeafVFuncOff, itype));
+  } break;
+  case CV_LeafKind_NESTTYPE: {
+    push_type_index(TPI, OffsetOf(CV_LeafNestType, itype));
+  } break;
+  case CV_LeafKind_NESTTYPEEX: {
+    push_type_index(TPI, OffsetOf(CV_LeafNestTypeEx, itype));
+  } break;
+  case CV_LeafKind_ENDPRECOMP: {} break;
+
+  default: return 0;
+  }
+
+  *list_out = list;
+#undef push_type_index
+#undef skip_cstr
+#undef skip_numeric
+  return 1;
+}
+
+internal CV_TypeIndexInfoList
+cv_get_inlinee_type_index_offsets(Arena *arena, String8 raw_data)
+{
+  CV_TypeIndexInfoList list = {0};
+  for (CV_C13InlineeIter it = cv_c13_inlinee_iter_init(raw_data); cv_c13_inlinee_iter_next(&it);) {
+    cv_symbol_type_index_info_push(arena, &list, CV_TypeIndexSource_IPI, it.record_offset + OffsetOf(CV_C13InlineeSourceLineHeader, inlinee));
+  }
+  return list;
+}
+
+internal String8Array
+cv_get_data_around_type_indices(Arena *arena, CV_TypeIndexInfoList ti_list, String8 data)
+{
+  String8Array result;
+  if (ti_list.count > 0) {
+    result.count = ti_list.count + 1;
+    result.v     = push_array_no_zero(arena, String8, result.count);
+
+    U64 cursor = 0;
+    U64 ti_idx = 0;
+
+    for (CV_TypeIndexInfo *ti_info = ti_list.first; ti_info != 0; ti_info = ti_info->next, ++ti_idx) {
+      result.v[ti_idx].size = ti_info->offset - cursor;
+      result.v[ti_idx].str  = data.str + cursor;
+      cursor = ti_info->offset + sizeof(CV_TypeIndex);
+    }
+
+    result.v[result.count - 1].size = data.size - cursor;
+    result.v[result.count - 1].str  = data.str + cursor;
+  } else {
+    result.count = 1;
+    result.v     = push_array_no_zero(arena, String8, 1);
+    result.v[0]  = data;
+  }
+  return result;
+}
+
+internal U64
+cv_decode_inline_annot_u32(String8 data, U64 offset, U32 *out_value)
+{
+  // validate the complete compressed integer before consuming any bytes
+  if (offset >= data.size) { return 0; }
+
+  U8  first        = data.str[offset];
+  U64 encoded_size = first < 0x80 ? 1 : first < 0xc0 ? 2 : first < 0xe0 ? 4 : 0;
+  if (encoded_size == 0 || encoded_size > data.size - offset) { return 0; }
+
+  U64 cursor = offset;
+
+  // read header
+  U8 header = 0;
+  cursor += str8_deserial_read_struct(data, cursor, &header);
+
+  // decode value
+  U32 value = 0;
+  {
+    // 1 byte
+    if ((header & 0x80) == 0) {
+      value = header;
+    } else if ((header & 0xC0) == 0x80 && cursor + 1 <= data.size) {
+      // 2 bytes
+      U8 second_byte;
+      cursor += str8_deserial_read_struct(data, cursor, &second_byte);
+      value = ((header & 0x3F) << 8) | second_byte;
+    } else if ((header & 0xE0) == 0xC0 && cursor + 3 <= data.size) {
+      // 4 bytes
+      U8 second_byte, third_byte, fourth_byte;
+      cursor += str8_deserial_read_struct(data, cursor, &second_byte);
+      cursor += str8_deserial_read_struct(data, cursor, &third_byte);
+      cursor += str8_deserial_read_struct(data, cursor, &fourth_byte);
+      value = (((U32)header & 0x1F) << 24) | ((U32)second_byte << 16) | ((U32)third_byte << 8) | (U32)fourth_byte;
+    } else if ((header & 0xE0) == 0xE0) {
+      // bad encode
+      value = max_U32;
+    }
+  }
+
+  // output results
+  if (out_value) {
+    *out_value = value;
+  }
+
+  U64 read_size = cursor - offset;
+  return read_size;
+}
+
+internal U64
+cv_decode_inline_annot_s32(String8 data, U64 offset, S32 *out_value)
+{
+  U32 value     = 0;
+  U64 read_size = cv_decode_inline_annot_u32(data, offset, &value);
+  if (read_size == 0) { return 0; }
+
+  if (value & 1) {
+    value = -(value >> 1);
+  } else {
+    value = value >> 1;
+  }
+
+  *out_value = (S32)value;
+  return read_size;
+}
+
+internal S32
+cv_inline_annot_signed_from_unsigned_operand(U32 value)
+{
+  if (value & 1) {
+    value = -(value >> 1);
+  } else {
+    value = value >> 1;
+  }
+  S32 result = (S32)value;
+  return result;
+}
+
 ////////////////////////////////
 //~ rjf: Enum -> String
 
@@ -1085,5 +1975,4 @@ cv_final_symbol_kind(CV_SymKind kind)
   }
   return kind;
 }
-
 

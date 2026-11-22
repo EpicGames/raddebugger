@@ -2,7 +2,7 @@
 // Licensed under the MIT license (https://opensource.org/license/mit/)
 
 internal String8
-cv_string_from_numeric(Arena *arena, CV_NumericParsed num)
+cv_string_from_numeric(Arena *arena, CV_Numeric num)
 {
   String8 result = str8_zero();
   switch (num.kind) {

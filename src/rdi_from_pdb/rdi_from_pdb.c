@@ -277,9 +277,11 @@ p2r_convert2(Arena *arena, P2R_ConvertParams *params)
   //- rjf: hash EXE, parse TPI/IPI hash/leaf & global symbol stream & comp units
   //
   CV2R_TPIHash *tpi_hash = 0;
-  CV_LeafParsed *tpi_leaf = 0;
+  CV2R_LeafStream *tpi_leaf = 0;
   CV2R_TPIHash *ipi_hash = 0;
-  CV_LeafParsed *ipi_leaf = 0;
+  CV2R_LeafStream *ipi_leaf = 0;
+  U64 tpi_leaf_ok = 0;
+  U64 ipi_leaf_ok = 0;
   PDB_CompUnitArray *comp_units = 0;
   PDB_CompUnitContributionArray *comp_unit_contributions = 0;
   ProfScope("hash EXE, parse TPI/IPI hash/leaf & global symbol stream & comp units")
@@ -296,7 +298,10 @@ p2r_convert2(Arena *arena, P2R_ConvertParams *params)
     if(lane_idx() == lane_from_task_idx(1)) ProfScope("parse TPI leaf")
     {
       String8 leaf_data = pdb_leaf_data_from_tpi(tpi);
-      tpi_leaf = cv_leaf_from_data(scratch.arena, leaf_data, tpi->itype_first);
+      tpi_leaf = push_array(scratch.arena, CV2R_LeafStream, 1);
+      CV_LeafStream stream;
+      tpi_leaf_ok = (cv_leaf_stream_from_data_checked(scratch.arena, leaf_data, 1, &stream) &&
+                     cv2r_leaf_stream_bind(stream, tpi->itype_first, tpi->itype_opl, tpi_leaf));
     }
     if(lane_idx() == lane_from_task_idx(2)) ProfScope("parse IPI hash")
     {
@@ -310,7 +315,10 @@ p2r_convert2(Arena *arena, P2R_ConvertParams *params)
     if(lane_idx() == lane_from_task_idx(3)) ProfScope("parse IPI leaf")
     {
       String8 leaf_data = pdb_leaf_data_from_tpi(ipi);
-      ipi_leaf = cv_leaf_from_data(scratch.arena, leaf_data, ipi->itype_first);
+      ipi_leaf = push_array(scratch.arena, CV2R_LeafStream, 1);
+      CV_LeafStream stream;
+      ipi_leaf_ok = (cv_leaf_stream_from_data_checked(scratch.arena, leaf_data, 1, &stream) &&
+                     cv2r_leaf_stream_bind(stream, ipi->itype_first, ipi->itype_opl, ipi_leaf));
     }
     if(lane_idx() == lane_from_task_idx(4)) ProfScope("parse compilation units")
     {
@@ -330,6 +338,16 @@ p2r_convert2(Arena *arena, P2R_ConvertParams *params)
   lane_sync_u64(&ipi_leaf, lane_from_task_idx(3));
   lane_sync_u64(&comp_units, lane_from_task_idx(4));
   lane_sync_u64(&comp_unit_contributions, lane_from_task_idx(5));
+  lane_sync_u64(&tpi_leaf_ok, lane_from_task_idx(1));
+  lane_sync_u64(&ipi_leaf_ok, lane_from_task_idx(3));
+
+  if(!tpi_leaf_ok || !ipi_leaf_ok)
+  {
+    if(lane_idx() == 0)
+    {
+      log_user_error(str8_lit("Failed to retrieve PDB TPI/IPI streams."));
+    }
+  }
   
   //////////////////////////////////////////////////////////////
   //- rjf: bucket compilation unit contributions
@@ -354,8 +372,9 @@ p2r_convert2(Arena *arena, P2R_ConvertParams *params)
   //- rjf: parse all syms & c13 line info streams
   //
   U64 all_syms_count = 0;
-  CV_SymParsed **all_syms = 0;
-  CV_C13Parsed **all_c13s = 0;
+  CV_SymbolStream **all_syms = 0;
+  CV_C13Stream **all_c13s = 0;
+  U64 *c13_error_count = 0;
   ProfScope("parse all syms & c13 line info streams")
   {
     //- rjf: setup outputs
@@ -363,13 +382,15 @@ p2r_convert2(Arena *arena, P2R_ConvertParams *params)
     if(lane_idx() == 0)
     {
       all_syms_count = comp_units->count+1; // +1 for global symbol stream from DBI
-      all_syms = push_array(scratch.arena, CV_SymParsed *, all_syms_count);
-      all_c13s = push_array(scratch.arena, CV_C13Parsed *, all_syms_count);
+      all_syms = push_array(scratch.arena, CV_SymbolStream *, all_syms_count);
+      all_c13s = push_array(scratch.arena, CV_C13Stream *, all_syms_count);
+      c13_error_count = push_array(scratch.arena, U64, 1);
       task_counter = push_array(scratch.arena, U64, 1);
     }
     lane_sync_u64(&all_syms_count, 0);
     lane_sync_u64(&all_syms, 0);
     lane_sync_u64(&all_c13s, 0);
+    lane_sync_u64(&c13_error_count, 0);
     
     //- rjf: wide fill
     {
@@ -387,13 +408,16 @@ p2r_convert2(Arena *arena, P2R_ConvertParams *params)
           PDB_CompUnit *unit = comp_units->units[task_idx-1];
           String8 unit_sym_data = pdb_data_from_unit_range(msf, unit, PDB_DbiCompUnitRange_Symbols);
           String8 unit_c13_data = pdb_data_from_unit_range(msf, unit, PDB_DbiCompUnitRange_C13);
-          all_syms[task_idx] = cv_sym_from_data(arena, unit_sym_data, 4);
-          all_c13s[task_idx] = cv_c13_parsed_from_data(arena, unit_c13_data, raw_strtbl, coff_sections);
+          all_syms[task_idx] = cv_symbol_stream_from_data(arena, unit_sym_data, 4);
+          all_c13s[task_idx] = push_array(arena, CV_C13Stream, 1);
+          if (!cv_c13_stream_from_data_c13_checked(arena, unit_c13_data, all_c13s[task_idx])) {
+            ins_atomic_u64_inc_eval(c13_error_count);
+          }
         }
         else
         {
           String8 global_sym_data = msf_data_from_stream(msf, dbi->sym_sn);
-          all_syms[task_idx] = cv_sym_from_data(arena, global_sym_data, 4);
+          all_syms[task_idx] = cv_symbol_stream_from_data(arena, global_sym_data, 4);
         }
       }
     }
@@ -403,6 +427,13 @@ p2r_convert2(Arena *arena, P2R_ConvertParams *params)
   //////////////////////////////////////////////////////////////
   //- rjf: produce cv2r units from pdb's units
   //
+  if (*c13_error_count != 0) {
+    if (lane_idx() == 0) { log_user_error(str8_lit("Incomplete PDB C13 subsection header or payload.")); }
+    lane_sync();
+    scratch_end(scratch);
+    RDIM_BakeParams result = {0};
+    return result;
+  }
   U64 cv2r_comp_units_count = comp_units->count + 1; // +1 for global info stream
   CV2R_CompUnit *cv2r_comp_units = 0;
   {
@@ -427,6 +458,8 @@ p2r_convert2(Arena *arena, P2R_ConvertParams *params)
       cv2r_comp_units[idx].ranges = unit_ranges[idx];
       cv2r_comp_units[idx].sym = all_syms[idx];
       cv2r_comp_units[idx].c13 = all_c13s[idx];
+      cv2r_comp_units[idx].c13_external_strings = push_array(scratch.arena, String8, 1);
+      *cv2r_comp_units[idx].c13_external_strings = raw_strtbl;
     }
     lane_sync();
   }

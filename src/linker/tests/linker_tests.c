@@ -7906,7 +7906,7 @@ TEST(merge_duplicate_types)
   T_Ok(type_count == 5);
   
   CV_DebugT debug_t = cv_debug_t_from_data(arena, pdb_leaf_data_from_tpi(tpi), 4);
-  T_Ok(debug_t.count == type_count);
+  T_Ok(debug_t.leaf_stream.count == type_count);
 
   {
     CV_Leaf ptr_leaf  = cv_debug_t_get_leaf(&debug_t, 0);
@@ -7970,9 +7970,9 @@ TEST(cyclic_type)
   // make .debug$S with S_GPROC32 'foo'
   CV_DebugS debug_s = {0};
   String8 foo_proc = cv_make_symbol(arena, CV_SymKind_GPROC32, cv_make_proc32(arena, (CV_SymProc32){ .itype = 0x1001 }, str8_lit("foo")));
-  String8 symbols = cv_debug_s_alloc_subsection(arena, &debug_s, CV_C13SubSectionKind_Symbols, foo_proc.size);
+  String8 symbols = cv_c13_stream_alloc_subsection(arena, &debug_s, CV_C13SubSectionKind_Symbols, foo_proc.size);
   MemoryCopyStr8(symbols.str, foo_proc);
-  String8List debug_s_string = cv_data_from_debug_s_c13(arena, &debug_s, 1);
+  String8List debug_s_string = cv_c13_stream_data(arena, &debug_s, 1);
 
   String8 raw_coff = t_coff_from_def_obj(arena, (T_COFF_DefObj){
     .machine = T_COFF_DefSetMachine(X64),
@@ -8328,10 +8328,10 @@ TEST(validate_gsi)
   CV_DebugS debug_s = {0};
   for EachElement(i, symbols) {
     U64 size = cv_size_from_symbol(&symbols[i], CV_SymbolAlign);
-    String8 payload = cv_debug_s_alloc_subsection(arena, &debug_s, CV_C13SubSectionKind_Symbols, size);
+    String8 payload = cv_c13_stream_alloc_subsection(arena, &debug_s, CV_C13SubSectionKind_Symbols, size);
     cv_write_symbol(payload.str, 0, payload.size, &symbols[i], CV_SymbolAlign);
   }
-  String8List raw_debug_s_list = cv_data_from_debug_s_c13(arena, &debug_s, 1);
+  String8List raw_debug_s_list = cv_c13_stream_data(arena, &debug_s, 1);
   String8     raw_debug_s      = str8_list_join(arena, &raw_debug_s_list, 0);
 
   T_Ok(t_write_def_obj("debug.obj", (T_COFF_DefObj){
@@ -8391,10 +8391,10 @@ TEST(validate_gsi_procs_and_typedefs)
   CV_DebugS debug_s = {0};
   for EachElement(i, symbols) {
     U64 size = cv_size_from_symbol(&symbols[i], CV_SymbolAlign);
-    String8 payload = cv_debug_s_alloc_subsection(arena, &debug_s, CV_C13SubSectionKind_Symbols, size);
+    String8 payload = cv_c13_stream_alloc_subsection(arena, &debug_s, CV_C13SubSectionKind_Symbols, size);
     cv_write_symbol(payload.str, 0, payload.size, &symbols[i], CV_SymbolAlign);
   }
-  String8List raw_debug_s_list = cv_data_from_debug_s_c13(arena, &debug_s, 1);
+  String8List raw_debug_s_list = cv_c13_stream_data(arena, &debug_s, 1);
   String8     raw_debug_s      = str8_list_join(arena, &raw_debug_s_list, 0);
 
   T_Ok(t_write_def_obj("debug.obj", (T_COFF_DefObj){
@@ -8633,10 +8633,10 @@ TEST(pdbstripped)
     CV_DebugS debug_s = {0};
     for EachElement(i, symbols) {
       U64 size = cv_size_from_symbol(&symbols[i], CV_SymbolAlign);
-      String8 payload = cv_debug_s_alloc_subsection(arena, &debug_s, CV_C13SubSectionKind_Symbols, size);
+      String8 payload = cv_c13_stream_alloc_subsection(arena, &debug_s, CV_C13SubSectionKind_Symbols, size);
       cv_write_symbol(payload.str, 0, payload.size, &symbols[i], CV_SymbolAlign);
     }
-    String8List raw_debug_s_list = cv_data_from_debug_s_c13(arena, &debug_s, 1);
+    String8List raw_debug_s_list = cv_c13_stream_data(arena, &debug_s, 1);
     String8     raw_debug_s      = str8_list_join(arena, &raw_debug_s_list, 0);
 
     debug_obj = t_coff_from_def_obj(arena, (T_COFF_DefObj){
@@ -9033,14 +9033,14 @@ TEST(pdb_c13_without_symbols)
   CV_DebugS debug_s = {0};
   CV_C13Checksum checksum = { .name_off = 1, .kind = CV_C13ChecksumKind_Null };
   U64 checksum_size = AlignPow2(sizeof(checksum), CV_C13SubSectionAlign);
-  String8 checksums = cv_debug_s_alloc_subsection(arena, &debug_s, CV_C13SubSectionKind_FileChksms, checksum_size);
+  String8 checksums = cv_c13_stream_alloc_subsection(arena, &debug_s, CV_C13SubSectionKind_FileChksms, checksum_size);
   MemoryCopy(checksums.str, &checksum, sizeof(checksum));
 
   String8 file_names = str8_lit("\0checksums_only.c\0");
-  String8 strings = cv_debug_s_alloc_subsection(arena, &debug_s, CV_C13SubSectionKind_StringTable, file_names.size);
+  String8 strings = cv_c13_stream_alloc_subsection(arena, &debug_s, CV_C13SubSectionKind_StringTable, file_names.size);
   MemoryCopyStr8(strings.str, file_names);
 
-  String8List debug_data = cv_data_from_debug_s_c13(arena, &debug_s, 1);
+  String8List debug_data = cv_c13_stream_data(arena, &debug_s, 1);
   T_Ok(t_write_def_obj("checksums_only.obj", (T_COFF_DefObj){
     .machine = T_COFF_DefSetMachine(X64),
     .sections = (T_COFF_DefSection[]){

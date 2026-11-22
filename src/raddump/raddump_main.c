@@ -88,8 +88,6 @@
 
 #include "linker/thread_pool/thread_pool.h"
 #include "linker/thread_pool/thread_pool.c"
-#include "linker/codeview_ext/codeview.h"
-#include "linker/codeview_ext/codeview.c"
 #include "linker/rdi/rdi.h"
 #include "linker/rdi/rdi.c"
 

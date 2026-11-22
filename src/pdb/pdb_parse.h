@@ -222,13 +222,15 @@ internal String8              pdb_leaf_data_from_tpi(PDB_TpiParsed *tpi);
 
 internal CV_TypeIdArray       pdb_tpi_itypes_from_name(Arena *arena,
                                                        PDB_TpiHashParsed *tpi_hash,
-                                                       CV_LeafParsed *tpi_leaf,
+                                                       CV_LeafStream *tpi_leaf,
+                                                       CV_TypeId itype_first,
                                                        String8 name,
                                                        B32 compare_unique_name,
                                                        U32 output_cap);
 
 internal CV_TypeId            pdb_tpi_first_itype_from_name(PDB_TpiHashParsed *tpi_hash,
-                                                            CV_LeafParsed *tpi_leaf,
+                                                            CV_LeafStream *tpi_leaf,
+                                                            CV_TypeId itype_first,
                                                             String8 name,
                                                             B32 compare_unique_name);
 

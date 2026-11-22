@@ -902,7 +902,7 @@ cv_print_symbol(Arena *arena, String8List *out, String8 indent, CV_Arch arch, CV
     case CV_SymKind_CONSTANT_ST:
     case CV_SymKind_CONSTANT: {
       CV_SymConstant   sym  = {0};
-      CV_NumericParsed size = {0};
+      CV_Numeric size = {0};
       String8          name = {0};
       cursor += str8_deserial_read_struct(raw_symbol, cursor, &sym);
       cursor += cv_read_numeric(raw_symbol, cursor, &size);
@@ -1642,7 +1642,7 @@ cv_print_leaf(Arena *arena, String8List *out, String8 indent, CV_TypeIndex min_i
     case CV_LeafKind_CLASS2:
     case CV_LeafKind_STRUCT2: {
       CV_LeafStruct2   lf  = {0};
-      CV_NumericParsed size = {0};
+      CV_Numeric size = {0};
       String8          name = str8_zero();
       cursor += str8_deserial_read_struct(raw_leaf, cursor, &lf);
       cursor += cv_read_numeric(raw_leaf, cursor, &size);
@@ -1760,8 +1760,8 @@ cv_print_leaf(Arena *arena, String8List *out, String8 indent, CV_TypeIndex min_i
     case CV_LeafKind_VBCLASS:
     case CV_LeafKind_IVBCLASS: {
       CV_LeafVBClass   lf          = {0};
-      CV_NumericParsed vbptr_off   = {0};
-      CV_NumericParsed vbtable_off = {0};
+      CV_Numeric vbptr_off   = {0};
+      CV_Numeric vbtable_off = {0};
       cursor += str8_deserial_read_struct(raw_leaf, cursor, &lf);
       cursor += cv_read_numeric(raw_leaf, cursor, &vbptr_off);
       cursor += cv_read_numeric(raw_leaf, cursor, &vbtable_off);
@@ -1774,7 +1774,7 @@ cv_print_leaf(Arena *arena, String8List *out, String8 indent, CV_TypeIndex min_i
     } break;
     case CV_LeafKind_BCLASS: {
       CV_LeafBClass    lf     = {0};
-      CV_NumericParsed offset = {0};
+      CV_Numeric offset = {0};
       cursor += str8_deserial_read_struct(raw_leaf, cursor, &lf);
       cursor += cv_read_numeric(raw_leaf, cursor, &offset);
       
@@ -1855,7 +1855,7 @@ cv_print_leaf(Arena *arena, String8List *out, String8 indent, CV_TypeIndex min_i
     } break;
     case CV_LeafKind_ENUMERATE: {
       CV_LeafEnumerate lf   = {0};
-      CV_NumericParsed value = {0};
+      CV_Numeric value = {0};
       String8          name  = {0};
       cursor += str8_deserial_read_struct(raw_leaf, cursor, &lf);
       cursor += cv_read_numeric(raw_leaf, cursor, &value);
@@ -1932,7 +1932,7 @@ cv_print_leaf(Arena *arena, String8List *out, String8 indent, CV_TypeIndex min_i
     case CV_LeafKind_UNION_ST: 
     case CV_LeafKind_UNION: {
       CV_LeafUnion     lf   = {0};
-      CV_NumericParsed num  = {0};
+      CV_Numeric num  = {0};
       String8          name = {0};
       cursor += str8_deserial_read_struct(raw_leaf, cursor, &lf);
       cursor += cv_read_numeric(raw_leaf, cursor, &num);
@@ -1954,7 +1954,7 @@ cv_print_leaf(Arena *arena, String8List *out, String8 indent, CV_TypeIndex min_i
     case CV_LeafKind_CLASS:
     case CV_LeafKind_STRUCTURE: {
       CV_LeafStruct    lf  = {0};
-      CV_NumericParsed num  = {0};
+      CV_Numeric num  = {0};
       String8          name = {0};
       cursor += str8_deserial_read_struct(raw_leaf, cursor, &lf);
       cursor += cv_read_numeric(raw_leaf, cursor, &num);
@@ -2020,7 +2020,7 @@ cv_print_leaf(Arena *arena, String8List *out, String8 indent, CV_TypeIndex min_i
     case CV_LeafKind_ARRAY_ST: 
     case CV_LeafKind_ARRAY: {
       CV_LeafArray     lf  = {0};
-      CV_NumericParsed num  = {0};
+      CV_Numeric num  = {0};
       cursor += str8_deserial_read_struct(raw_leaf, cursor, &lf);
       cursor += cv_read_numeric(raw_leaf, cursor, &num);
       
@@ -2044,7 +2044,7 @@ cv_print_leaf(Arena *arena, String8List *out, String8 indent, CV_TypeIndex min_i
     case CV_LeafKind_MEMBER_ST:
     case CV_LeafKind_MEMBER: {
       CV_LeafMember    lf   = {0};
-      CV_NumericParsed num  = {0};
+      CV_Numeric num  = {0};
       String8          name = {0};
       cursor += str8_deserial_read_struct(raw_leaf, cursor, &lf);
       cursor += cv_read_numeric(raw_leaf, cursor, &num);
@@ -2159,13 +2159,17 @@ cv_print_leaf(Arena *arena, String8List *out, String8 indent, CV_TypeIndex min_i
 }
 
 internal void
-cv_print_debug_t(Arena *arena, String8List *out, String8 indent, CV_DebugT debug_t)
+cv_print_leaf_stream(Arena *arena, String8List *out, String8 indent, CV_LeafStream *stream, CV_TypeIndex itype_first)
 {
   Temp scratch = scratch_begin(&arena, 1);
-  for (U64 lf_idx = 0; lf_idx < debug_t.count; ++lf_idx) {
-    CV_Leaf      lf     = cv_debug_t_get_leaf(debug_t, lf_idx);
-    U64          offset = (U64)(lf.data.str-debug_t.v[0]);
-    CV_TypeIndex itype  = CV_MinComplexTypeIndex + lf_idx;
+  for (U64 lf_idx = 0; lf_idx < stream->count; ++lf_idx) {
+    CV_Leaf lf = {0};
+    if (!cv_leaf_stream_get_leaf(stream, lf_idx, &lf)) {
+      rd_errorf("invalid leaf at ordinal %llu", lf_idx);
+      continue;
+    }
+    U64          offset = (U64)stream->offsets[lf_idx] + sizeof(CV_LeafHeader);
+    CV_TypeIndex itype  = itype_first + lf_idx;
     rd_printf("LF_%S (%x) [%04llx-%04llx)", cv_string_from_leaf_kind(lf.kind), itype, offset, offset+lf.data.size);
     rd_indent();
     cv_print_leaf(arena, out, indent, CV_MinComplexTypeIndex, lf.kind, lf.data);
@@ -2225,22 +2229,13 @@ internal void
 cv_print_lines_c13(Arena *arena, String8List *out, String8 indent, String8 raw_lines)
 {
   Temp scratch = scratch_begin(&arena, 1);
-  
-  U64 cursor = 0;
-  
-  CV_C13SubSecLinesHeader header = {0};
-  cursor += str8_deserial_read_struct(raw_lines, cursor, &header);
-  
-  B32 has_columns = !!(header.flags & CV_C13SubSecLinesFlag_HasColumns);
-  if (has_columns) {
-    rd_errorf("TOOD: columns");
-  }
+  CV_C13LinesIter it = cv_c13_lines_iter_init(raw_lines);
+  CV_C13SubSecLinesHeader header = it.header;
   
   rd_printf("%04x:%08x-%08x, flags = %04x", header.sec, header.sec_off, header.len, header.flags);
   
-  for (; cursor < raw_lines.size; ) {
-    CV_C13File file = {0};
-    cursor += str8_deserial_read_struct(raw_lines, cursor, &file);
+  while(cv_c13_lines_iter_next(&it)) {
+    CV_C13File file = it.file;
     
     rd_printf("file = %08x, line count = %u, block size %08x", file.file_off, file.num_lines, file.block_size);
     
@@ -2248,7 +2243,7 @@ cv_print_lines_c13(Arena *arena, String8List *out, String8 indent, String8 raw_l
     String8List columns = {0};
     for (U32 line_idx = 0; line_idx < file.num_lines; ++line_idx) {
       CV_C13Line line = {0};
-      cursor += str8_deserial_read_struct(raw_lines, cursor, &line);
+      MemoryCopy(&line, raw_lines.str + it.line_array_off + (U64)line_idx*sizeof(line), sizeof(line));
       
       B32 always_step_in_line_number = line.off == 0xFEEFEE;
       B32 never_step_in_line_number  = line.off == 0xF00F00;
@@ -2262,6 +2257,11 @@ cv_print_lines_c13(Arena *arena, String8List *out, String8 indent, String8 raw_l
       } else {
         str8_list_pushf(temp.arena, &columns, "%5u %08X", ln, line.off);
       }
+      if(it.col_count) {
+        CV_C13Column col;
+        MemoryCopy(&col, raw_lines.str + it.col_array_off + (U64)line_idx*sizeof(col), sizeof(col));
+        str8_list_pushf(temp.arena, &columns, " cols %u-%u", col.start, col.end);
+      }
       
       if ((line_idx+1) % 4 == 0 || (line_idx+1) == file.num_lines) {
         String8 line_str = str8_list_join(scratch.arena, &columns, &(StringJoin){.sep=str8_lit("\t")});
@@ -2274,10 +2274,11 @@ cv_print_lines_c13(Arena *arena, String8List *out, String8 indent, String8 raw_l
     }
     temp_end(temp);
     
-    if (cursor < raw_lines.size) {
+    if (it.cursor < raw_lines.size) {
       rd_newline();
     }
   }
+  if(it.malformed) { rd_errorf("Malformed C13 line file block"); }
   
   scratch_end(scratch);
 }
@@ -2290,11 +2291,15 @@ cv_print_file_checksums(Arena *arena, String8List *out, String8 indent, String8 
   rd_printf("%-8s %-8s %-8s %-16s", "File", "Size", "Type", "Checksum");
   for (U64 cursor = 0; cursor < raw_chksums.size; ) {
     CV_C13Checksum chksum = {0};
-    cursor += str8_deserial_read_struct(raw_chksums, cursor, &chksum);
+    String8 value;
+    if(!cv_c13_checksum_from_data(raw_chksums, cursor, &chksum, &value, &cursor)) {
+      rd_errorf("Malformed C13 checksum");
+      break;
+    }
     
     Temp     temp       = temp_begin(scratch.arena);
     String8  chksum_str = str8_lit("???");
-    U8      *chksum_ptr = str8_deserial_get_raw_ptr(raw_chksums, cursor, chksum.len);
+    U8      *chksum_ptr = value.str;
     if (chksum_ptr) {
       chksum_str = rd_format_hex_array(temp.arena, chksum_ptr, chksum.len);
     }
@@ -2307,8 +2312,6 @@ cv_print_file_checksums(Arena *arena, String8List *out, String8 indent, String8 
     
     temp_end(temp);
     
-    cursor += chksum.len;
-    cursor = AlignPow2(cursor, CV_FileCheckSumsAlign);
   }
   
   scratch_end(scratch);
@@ -2319,8 +2322,9 @@ cv_print_string_table(Arena *arena, String8List *out, String8 indent, String8 ra
 {
   for (U64 cursor = 0; cursor < raw_strtab.size; ) {
     String8 str = {0};
-    cursor += str8_deserial_read_cstr(raw_strtab, cursor, &str);
+    if(!cv_c13_name_from_string_table(raw_strtab, cursor, &str)) { rd_errorf("Unterminated C13 string"); break; }
     rd_printf("%08x %S", cursor, str);
+    cursor += str.size + 1;
   }
 }
 
@@ -2328,46 +2332,21 @@ internal void
 cv_print_inlinee_lines(Arena *arena, String8List *out, String8 indent, String8 raw_data)
 {
   Temp scratch = scratch_begin(&arena, 1);
-  
-  U64 cursor = 0;
-  
-  U32 inlinee_sig = ~0u;
-  cursor += str8_deserial_read_struct(raw_data, cursor, &inlinee_sig);
-  
-  switch (inlinee_sig) {
-    case CV_C13InlineeLinesSig_NORMAL: {
-      rd_printf("%-8s %-8s %-8s", "Inlinee", "File ID", "Base LN");
-      for (; cursor < raw_data.size; ) {
-        CV_C13InlineeSourceLineHeader line = {0};
-        cursor += str8_deserial_read_struct(raw_data, cursor, &line);
-        rd_printf("%08x %08x %8u", line.inlinee, line.file_off, line.first_source_ln);
-      }
-      
-    } break;
-    case CV_C13InlineeLinesSig_EXTRA_FILES: {
-      rd_printf("%-8s %-8s %-8s %s", "Inlinee", "File ID", "Base LN", "Extra FileIDs");
-      for (; cursor < raw_data.size; ) {
-        Temp temp = temp_begin(scratch.arena);
-        
-        CV_C13InlineeSourceLineHeader line             = {0};
-        U32                           extra_file_count = 0;
-        cursor += str8_deserial_read_struct(raw_data, cursor, &line);
-        cursor += str8_deserial_read_struct(raw_data, cursor, &extra_file_count);
-        
-        String8List extra_files_list = {0};
-        for (U32 i = 0; i < extra_file_count; ++i) {
-          U32 file_id = 0;
-          cursor += str8_deserial_read_struct(raw_data, cursor, &file_id);
-          str8_list_pushf(temp.arena, &extra_files_list, "%08x", file_id);
-        }
-        String8 extra_files = str8_list_join(temp.arena, &extra_files_list, &(StringJoin){.sep=str8_lit(" ,")});
-        
-        rd_printf("%08x %08x %u %S", line.inlinee, line.file_off, line.first_source_ln, extra_files);
-        
-        temp_end(temp);
-      }
-    } break;
+  CV_C13InlineeIter it = cv_c13_inlinee_iter_init(raw_data);
+  rd_printf("%-8s %-8s %-8s %s", "Inlinee", "File ID", "Base LN", "Extra FileIDs");
+  while(cv_c13_inlinee_iter_next(&it)) {
+    Temp temp = temp_begin(scratch.arena);
+    String8List extra_files_list = {0};
+    for(U32 i = 0; i < it.v.extra_file_count; i += 1) {
+      U32 file_id;
+      MemoryCopy(&file_id, it.v.extra_files + i, sizeof(file_id));
+      str8_list_pushf(temp.arena, &extra_files_list, "%08x", file_id);
+    }
+    String8 extra_files = str8_list_join(temp.arena, &extra_files_list, &(StringJoin){.sep=str8_lit(" ,")});
+    rd_printf("%08x %08x %u %S", it.v.inlinee, it.v.file_off, it.v.first_source_ln, extra_files);
+    temp_end(temp);
   }
+  if(it.malformed) { rd_errorf("Malformed C13 inlinee lines"); }
   
   scratch_end(scratch);
 }
@@ -2384,37 +2363,28 @@ cv_print_symbols_section(Arena       *arena,
   U64 cursor = 0;
   U32 cv_sig = 0;
   cursor += str8_deserial_read_struct(raw_ss, cursor, &cv_sig);
-  
-  for (; cursor < raw_ss.size; ) {
-    U64                    sst_offset = 0;
-    CV_C13SubSectionHeader ss_header  = {0};
-    char                  *ss_ver     = "???";
-    switch (cv_sig) {
-      case CV_Signature_C6: {
-        rd_printf("TODO: C6");
-      } break;
-      case CV_Signature_C7: {
-        rd_printf("TODO: C7");
-      } break;
-      case CV_Signature_C11: {
-        ss_header.kind = CV_C13SubSectionKind_Symbols;
-        ss_header.size = raw_ss.size - sizeof(cv_sig);
-        ss_ver         = "C11";
-      } break;
-      case CV_Signature_C13: {
-        sst_offset = cursor;
-        cursor += str8_deserial_read_struct(raw_ss, cursor, &ss_header);
-        ss_ver = "C13";
-      } break;
-    }
-    
-    U64     sst_end = cursor + ss_header.size;
-    String8 raw_sst = str8_substr(raw_ss, rng_1u64(cursor, sst_end));
-    cursor = AlignPow2(sst_end, CV_C13SubSectionAlign);
-    
-    rd_printf("# %S %s [%llx-%llx)", cv_string_from_c13_subsection_kind(ss_header.kind), ss_ver, sst_offset, sst_end);
+
+  if(cv_sig == CV_Signature_C11) {
+    rd_printf("# Symbols C11 [%llx-%llx)", (U64)sizeof(cv_sig), raw_ss.size);
+    cv_print_symbols_c13(arena, out, indent, arch, str8_skip(raw_ss, sizeof(cv_sig)));
+    scratch_end(scratch);
+    return;
+  }
+  CV_C13Stream debug_s = {0};
+  if(!cv_c13_stream_from_data_checked(scratch.arena, raw_ss, &debug_s)) {
+    rd_errorf("Unsupported CodeView signature or incomplete C13 subsection: %u", cv_sig);
+    scratch_end(scratch);
+    return;
+  }
+  CV_C13StreamIter it = cv_c13_stream_iter_init(&debug_s);
+  while(cv_c13_stream_iter_next_block(&it))
+  while(cv_c13_stream_iter_next(&it)) {
+    U64 sst_offset = sizeof(cv_sig) + it.data_offset - sizeof(CV_C13SubSectionHeader);
+    U64 sst_end = sizeof(cv_sig) + it.data_offset + it.data.size;
+    String8 raw_sst = it.data;
+    rd_printf("# %S C13 [%llx-%llx)", cv_string_from_c13_subsection_kind(it.kind), sst_offset, sst_end);
     rd_indent();
-    switch (ss_header.kind) {
+    switch (it.kind) {
       case CV_C13SubSectionKind_Symbols: {
         cv_print_symbols_c13(arena, out, indent, arch, raw_sst);
         rd_newline();
@@ -2468,9 +2438,14 @@ cv_format_debug_sections(Arena *arena, String8List *out, String8 indent, String8
       String8             raw_sect    = str8_substr(raw_image, sect_frange);
       if (str8_match_lit(".debug$S", sect_name, 0)) {
         Temp scratch = scratch_begin(&arena, 1);
-        CV_DebugS debug_s = cv_debug_s_from_data(scratch.arena, raw_sect);
-        CV_DebugS_Iter it = cv_debug_s_iter_init(&debug_s);
-        while (keep_parsing && cv_debug_s_iter_next_kind(&it, CV_C13SubSectionKind_Symbols)) {
+        CV_C13Stream debug_s = {0};
+        if (!cv_c13_stream_from_data_checked(scratch.arena, raw_sect, &debug_s)) {
+          rd_printf("incomplete or invalid .debug$S section");
+          scratch_end(scratch);
+          continue;
+        }
+        CV_C13StreamIter it = cv_c13_stream_iter_init(&debug_s);
+        while (keep_parsing && cv_c13_stream_iter_next_kind(&it, CV_C13SubSectionKind_Symbols)) {
           Temp temp = temp_begin(scratch.arena);
           CV_SymbolList symbol_list = {0};
           cv_parse_symbol_sub_section(temp.arena, &symbol_list, 0, it.data, CV_SymbolAlign);
@@ -2525,16 +2500,18 @@ cv_format_debug_sections(Arena *arena, String8List *out, String8 indent, String8
       str8_deserial_read_struct(raw_sect, 0, &sig);
       
       String8 raw_types = str8_skip(raw_sect, sizeof(sig));
-      CV_DebugT debug_t = {0};
+      CV_LeafStream leaf_stream = {0};
       if (sig == CV_Signature_C13) {
-        debug_t = cv_debug_t_from_data(scratch.arena, raw_types, CV_LeafAlign);
+        if (!cv_leaf_stream_from_data_checked(scratch.arena, raw_types, CV_LeafAlign, &leaf_stream)) {
+          rd_errorf("invalid .debug$T leaf stream");
+        }
       } else {
         NotImplemented;
       }
       
       rd_printf("# .debug$T No. %llx", i+1);
       rd_indent();
-      cv_print_debug_t(arena, out, indent, debug_t);
+      cv_print_leaf_stream(arena, out, indent, &leaf_stream, CV_MinComplexTypeIndex);
       rd_unindent();
       scratch_end(scratch);
     }
