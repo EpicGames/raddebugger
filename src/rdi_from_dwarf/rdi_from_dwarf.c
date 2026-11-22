@@ -1,6 +1,58 @@
 // Copyright (c) Epic Games Tools
 // Licensed under the MIT license (https://opensource.org/license/mit/)
 
+// TODO: DWARF converter regressions & lost functionality after the rewrite:
+//
+// 1. Compilation-unit ranges misinterpret high_pc; Address-form values are added to voff_base; size-form
+//    values are treated as absolute ending offsets. The old converter handled both correctly.
+//    PR#1039 fixes procedure/scope ranges, but leaves this path unchanged.
+//
+// 2. Location disappear when a parent has no frame base. Conversion executes zero iterations when a parent
+//    exists with an empty frame-base list -- even for register only expressions. This also prevents namespace
+//    contained functions from converting their own frame bases.
+//
+// 3. DW_FORM_loclistx uses the wrong offset base. Offset-table entries are interpreted relative to the
+//    section instead of the table's entries base, causing unrelated bytes to be decoded as locations.
+//
+// 4. DW_OP_lit0 - DW_OP_lit31 no longer push values in the evaluator. Their metadata specifies push_count=0
+//    This also desynchronizes the converter's metadata stack. The old evaluator explicitly pushed literals.
+//
+// 5. Address arithmetic loses address/value classification. plus_uconst and general arithmetic discard
+//    address metadata, so an expression describing memory can become a value expression.
+//
+// 6. DW_OP_stack_value is ignored. Address-producing expressions remain address locations instead of
+//    becoming values, introducing an unwanted dereference. The old converter handled the transition
+//    explicitly.
+//
+// 7. Runtime stack operations are broken. dup copies an unpopulated temp, over never enters its
+//    section handler, and sawp/not use incorrect ordering. The old evaluator implemented these correctly.
+//
+// 8. Fixed-with signed operands are zero-extended. Negative 8/16/32 bit constants become positive;
+//    negative branch displacements are also broken.
+//
+// 9. Arithmetic lowering changed semantics. ne emits Neg instead of NtEq; not emits LogNot instead of BitNot;
+//    arithmetic right shift uses an unsigned type group. These were handled correctly in the old convereter.
+//
+// 10. Brach relocation was left unfinished. Skip and Cond are emitted with displacement zero; both
+//     resolution phases are TODOs. Old converter had byte-offset fixup pass that was lost in the rewrite.
+//
+// 11. Ordinary constant-valued locals lose their values. DW_AT_const_value is collected but never
+//     converted into a location/value for ordinary locals. The old converter emitted constant-value bytecode.
+//
+// 12. DW_FORM_udata references resolve to zero. The resolver omits this previously supported CU-relative
+//     reference encoding.
+//
+// 13. Enums without DW_AT_type become zero-sized. The default non-null void direct type overrides the enum's
+//     explicit byte size. The old converter used the enum DIE's size.
+//
+// 14. Variadic function markers are dropped. Parameter collection ignores DW_TAG_unspecified_parameters; the
+//     old converter appended RDI_TypeKind_Variadic.
+//
+// 15. .debug_aranges padding can skip a valid first tuple. The new calculation adds an entire tuple when already
+//     aligned and aligns against the section offset rather than the contribution-relative offset. The old parser
+//     conditionally aligned its unit-relative cursor. 
+//
+
 ////////////////////////////////
 //~ rjf: Helpers
 
