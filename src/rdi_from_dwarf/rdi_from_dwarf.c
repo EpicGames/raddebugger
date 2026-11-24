@@ -814,12 +814,13 @@ d2r_convert(Arena *arena, D2R_ConvertParams *params)
           }
 
           //- rjf: emit lines
-          if(vm.emit_row && !vm_regs.end_sequence && vm_regs.address != 0 && vm_regs.line != 0)
+          if(vm.emit_row && !vm_regs.end_sequence && vm_regs.address != 0)
           {
             // rjf: grab the last emitted line info
             U32 last_line = 0;
             U16 last_col = 0;
-            if(last_line_seq_chunk != 0 && last_line_seq_chunk->line_count > 0)
+            B32 has_last_line = last_line_seq_chunk != 0 && last_line_seq_chunk->line_count > 0;
+            if(has_last_line)
             {
               last_line = last_line_seq_chunk->line_nums[last_line_seq_chunk->line_count-1];
               last_col = last_line_seq_chunk->col_nums[last_line_seq_chunk->line_count-1];
@@ -831,7 +832,7 @@ d2r_convert(Arena *arena, D2R_ConvertParams *params)
             // we need to adjust this when we want to start correctly supporting columnar
             // line info / stepping
             //
-            B32 need_new_line = (last_line != (U32)vm_regs.line);
+            B32 need_new_line = !has_last_line || last_line != (U32)vm_regs.line;
 
             // rjf: need new line -> grab chunk
             LineSeqChunk *chunk = last_line_seq_chunk;

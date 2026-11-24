@@ -1160,35 +1160,38 @@ rb_thread_entry_point(void *p)
                 }
                 
                 // rjf: dump function lines
-                U64 unit_vmap_count = 0;
-                RDI_VMapEntry *unit_vmap = rdi_table_from_name(rdi, UnitVMap, &unit_vmap_count);
                 RDI_Unit *unit = rdi_unit_from_voff(rdi, voff_range.min);
                 RDI_LineTable *line_table = rdi_line_table_from_unit(rdi, unit);
                 RDI_ParsedLineTable line_info = {0};
                 rdi_parsed_from_line_table(rdi, line_table, &line_info);
-                for(U64 voff = voff_range.min, last_voff = 0;
-                    voff < voff_range.max && voff > last_voff;)
+
+                // find the interval containing the function start
+                U64 first = rdi_line_info_idx_range_from_voff(&line_info, voff_range.min, 0);
+                if(first == max_U64)
                 {
-                  RDI_U64 line_info_idx = rdi_line_info_idx_from_voff(&line_info, voff);
-                  if(line_info_idx < line_info.count)
+                  first = 0;
+                  if(line_info.count > 0 && voff_range.min >= line_info.voffs[line_info.count - 1])
                   {
-                    RDI_Line *line = &line_info.lines[line_info_idx];
-                    U64 line_voff_min = line_info.voffs[line_info_idx];
-                    U64 line_voff_opl = line_info.voffs[line_info_idx+1];
-                    if(line->file_idx != 0)
-                    {
-                      str8_list_pushf(arena, out, "%I64x %I64x %I64u %I64u\n",
-                                      line_voff_min,
-                                      line_voff_opl-line_voff_min,
-                                      (U64)line->line_num,
-                                      (U64)line->file_idx);
-                    }
-                    last_voff = voff;
-                    voff = line_voff_opl;
+                    first = line_info.count - 1;
                   }
-                  else
+                }
+
+                // advance by index so empty intervals and sequence-end gaps cannot stop
+                // the rest of the function; only emit nonempty spans clipped to the FUNC
+                for(U64 line_info_idx = first < max_U64 ? first - 1 : 0;
+                    line_info_idx < line_info.count && line_info.voffs[line_info_idx] < voff_range.max;
+                    line_info_idx += 1)
+                {
+                  RDI_Line *line          = &line_info.lines[line_info_idx];
+                  U64       line_voff_min = Max(line_info.voffs[line_info_idx], voff_range.min);
+                  U64       line_voff_opl = Min(line_info.voffs[line_info_idx+1], voff_range.max);
+                  if(line->file_idx != 0 && line_voff_min < line_voff_opl)
                   {
-                    break;
+                    str8_list_pushf(arena, out, "%I64x %I64x %I64u %I64u\n",
+                                    line_voff_min,
+                                    line_voff_opl-line_voff_min,
+                                    (U64)line->line_num,
+                                    (U64)line->file_idx);
                   }
                 }
               }
