@@ -64,6 +64,7 @@ read_only global RB_File rb_file_nil = {0};
 typedef struct RB_BreakpadIdentity
 {
   String8 os;
+  String8 cpu;
   String8 debug_id;
   String8 code_id;
   String8 code_file;

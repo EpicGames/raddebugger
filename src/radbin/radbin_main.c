@@ -22,6 +22,7 @@
 #include "elf/elf.h"
 #include "gnu/gnu.h"
 #include "elf/elf_parse.h"
+#include "macho/macho.h"
 #include "elf/elf_dump.h"
 #include "codeview/codeview.h"
 #include "codeview/codeview_parse.h"
@@ -43,6 +44,7 @@
 #include "rdi_from_codeview/rdi_from_codeview.h"
 #include "rdi_from_pdb/rdi_from_pdb.h"
 #include "rdi_from_dwarf/rdi_from_dwarf.h"
+#include "dwarf/dwarf_macho.h"
 #include "radbin/radbin.h"
 
 //- rjf: [c]
@@ -57,6 +59,7 @@
 #include "elf/elf.c"
 #include "gnu/gnu.c"
 #include "elf/elf_parse.c"
+#include "macho/macho.c"
 #include "elf/elf_dump.c"
 #include "codeview/codeview.c"
 #include "codeview/codeview_parse.c"
@@ -78,6 +81,7 @@
 #include "rdi_from_pdb/rdi_from_pdb.c"
 #include "rdi_from_codeview/rdi_from_codeview.c"
 #include "rdi_from_dwarf/rdi_from_dwarf.c"
+#include "dwarf/dwarf_macho.c"
 #include "radbin/radbin.c"
 
 ////////////////////////////////

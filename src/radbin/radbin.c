@@ -24,7 +24,34 @@ rb_breakpad_identity_from_inputs(Arena *arena, ExecutableImageKind exe_kind, Str
   Temp scratch = scratch_begin(&arena, 1);
 
   RB_BreakpadIdentity result = {0};
-  if (exe_kind == ExecutableImageKind_Elf32 || exe_kind == ExecutableImageKind_Elf64) {
+  if (exe_kind == ExecutableImageKind_Macho) {
+    MACHO_Bin exe_bin = macho_bin_from_data(scratch.arena, exe_data);
+    MACHO_Bin dbg_bin = exe_bin;
+
+    if (exe_data.str != dbg_data.str || exe_data.size != dbg_data.size) {
+      dbg_bin = macho_bin_from_data(scratch.arena, dbg_data);
+    }
+
+    if (! exe_bin.valid                         ||
+        ! dbg_bin.valid                         ||
+        ! exe_bin.has_uuid || !dbg_bin.has_uuid ||
+        ! MemoryMatch(exe_bin.uuid, dbg_bin.uuid, sizeof(exe_bin.uuid)) ||
+        exe_bin.arch != dbg_bin.arch) {
+      log_user_errorf("Mach-O executable and dSYM must have matching architectures and UUIDs.\n");
+      goto done;
+    }
+
+    result.os       = s("mac");
+    result.cpu      = exe_bin.arch == Arch_arm64 ? s("arm64") : s("x86_64");
+    result.debug_id = str8(push_array_no_zero(arena, U8, 33), 33);
+
+    for EachIndex(idx, 16) {
+      result.debug_id.str[2*idx]   = "0123456789ABCDEF"[exe_bin.uuid[idx] >> 4];
+      result.debug_id.str[2*idx+1] = "0123456789ABCDEF"[exe_bin.uuid[idx] & 15];
+    }
+    result.debug_id.str[32] = '0';
+  }
+  else if (exe_kind == ExecutableImageKind_Elf32 || exe_kind == ExecutableImageKind_Elf64) {
     result.os = s("linux");
 
     ELF_Bin exe_bin  = elf_bin_from_data(scratch.arena, exe_data);
@@ -372,6 +399,15 @@ rb_thread_entry_point(void *p)
           }
         }
         
+        // Mach-O magic -> Mach-O input (unsupported variants get explicit errors)
+        if (file_format == RB_FileFormat_Null) {
+          U32 magic = 0;
+          file_read_struct(file, 0, &magic);
+          if (macho_is_magic(magic)) {
+            file_format = RB_FileFormat_Macho;
+          }
+        }
+
         //- rjf: RDI magic -> RDI input
         if(file_format == RB_FileFormat_Null)
         {
@@ -520,6 +556,24 @@ rb_thread_entry_point(void *p)
       }
       
       //////////////////////////
+      // Mach-O => validate and check for usable DWARF
+      if (file_format == RB_FileFormat_Macho) {
+        Temp scratch = scratch_begin(&arena, 1);
+
+        MACHO_Bin bin = macho_bin_from_data(scratch.arena, file_data);
+        if ( ! bin.valid) {
+          log_user_errorf("%S: %S\n", input_file_path, bin.error);
+        } else {
+          DW_Raw raw = rb_dw_raw_from_macho_bin(file_data, &bin);
+          if (raw.sec[DW_SectionKind_Info].data.size != 0 && raw.sec[DW_SectionKind_Abbrev].data.size != 0) {
+            file_format_flags |= RB_FileFormatFlag_HasDWARF;
+            log_infof("DWARF data detected in %S (Mach-O)\n", input_file_path);
+          }
+        }
+
+        scratch_end(scratch);
+      }
+
       //- rjf: ELF => check if contains EH frame info
       //
       if(file_format == RB_FileFormat_ELF32 ||
@@ -691,7 +745,7 @@ rb_thread_entry_point(void *p)
       fprintf(stderr, "This utility provides a number of operations relating to executable image and\n");
       fprintf(stderr, "debug information formats. It can convert debug information to the RAD Debug\n");
       fprintf(stderr, "Info (.rdi) format. It can also parse and dump textualized contents of several\n");
-      fprintf(stderr, "formats, including PDB, PE, ELF, and RDI. It also supports converting debug\n");
+      fprintf(stderr, "formats, including PDB, PE, ELF, Mach-O, and RDI. It also supports converting debug\n");
       fprintf(stderr, "information to the textual Breakpad format.\n\n");
       
       fprintf(stderr, "-------------------------------------------------------------------------------\n\n");
@@ -763,7 +817,8 @@ rb_thread_entry_point(void *p)
         case OutputKind_Breakpad:
         {
           fprintf(stderr, "All input files specified on the command line will be dumped. The following\n");
-          fprintf(stderr, "formats are currently supported: PE, COFF, RDI, and ELF\n\n");
+          fprintf(stderr, "formats are currently supported: PE, COFF, RDI, ELF, and thin 64-bit Mach-O\n\n");
+          fprintf(stderr, "Pass the DWARF payload file for a dSYM bundle. ARM64 conversion supports --breakpad only.\n\n");
         }break;
         case OutputKind_VOff2Line:
         {
@@ -975,6 +1030,98 @@ rb_thread_entry_point(void *p)
           ProfScope("convert") dwarf_bake_params = d2r_convert(conversion_arena, &convert_params);
         }
         
+        // thin Mach-O / dSYM inputs => DWARF conversion
+        if (input_files_from_format_table[RB_FileFormat_Macho].count != 0) {
+          Temp scratch = scratch_begin(&arena, 1);
+
+          RB_File   *exe_file  = 0;
+          RB_File   *dbg_file  = 0;
+          MACHO_Bin  exe_bin   = {0};
+          MACHO_Bin  dbg_bin   = {0};
+          B32        supported = !convert_done && input_files_from_format_table[RB_FileFormat_PDB].count == 0 && input_files_from_format_table[RB_FileFormat_RDI].count == 0;
+          for EachNode(n, RB_FileNode, input_files_from_format_table[RB_FileFormat_Macho].first) {
+            MACHO_Bin bin = macho_bin_from_data(scratch.arena, n->v->data);
+
+            if (!bin.valid) {
+              supported = 0;
+              continue;
+            }
+
+            if (bin.file_type == 10) { // MH_DSYM
+              if (dbg_file != 0) { supported = 0; }
+              dbg_file = n->v;
+              dbg_bin  = bin;
+            } else {
+              if (exe_file != 0) { supported = 0; }
+              exe_file = n->v;
+              exe_bin  = bin;
+            }
+          }
+
+          if (exe_file == 0) {
+            exe_file = dbg_file;
+            exe_bin  = dbg_bin;
+          }
+
+          if (dbg_file == 0) {
+            dbg_file = exe_file;
+            dbg_bin  = exe_bin;
+          }
+
+          D2R_ConvertParams convert_params = {0};
+          if (exe_file == 0 || dbg_file == 0) {
+            supported = 0;
+          } else {
+            convert_params.raw = rb_dw_raw_from_macho_bin(dbg_file->data, &dbg_bin);
+            supported = supported                                &&
+                        exe_bin.arch == dbg_bin.arch             &&
+                        exe_bin.base_vaddr == dbg_bin.base_vaddr &&
+                        exe_bin.has_uuid                         &&
+                        dbg_bin.has_uuid                         &&
+                        MemoryMatch(exe_bin.uuid, dbg_bin.uuid, sizeof(exe_bin.uuid)) &&
+                        convert_params.raw.sec[DW_SectionKind_Info].data.size != 0    &&
+                        convert_params.raw.sec[DW_SectionKind_Abbrev].data.size != 0;
+
+            // ARM64 address/name/line data is arch independent; register
+            // locations and persistent ARM64 RDI output are not supported yet
+            if (dbg_bin.arch == Arch_arm64 && output_kind != OutputKind_Breakpad) {
+              supported = 0;
+              if (lane_idx() == 0) { log_user_errorf("ARM64 Mach-O conversion currently supports --breakpad only.\n"); }
+            }
+
+            if (supported) {
+              convert_params.exe_name        = exe_file->path;
+              convert_params.exe_data        = exe_file->data;
+              convert_params.arch            = dbg_bin.arch;
+              convert_params.base_vaddr      = dbg_bin.base_vaddr;
+              convert_params.binary_sections = rb_rdi_binary_sections_from_macho_bin(conversion_arena, &dbg_bin);
+              convert_params.path_style      = PathStyle_UnixAbsolute;
+              convert_params.subset_flags    = subset_flags;
+              convert_params.deterministic   = cmd_line_has_flag(cmdline, str8_lit("deterministic"));
+              convert_params.skip_exe_hash   = output_kind == OutputKind_Breakpad;
+              breakpad_exe_kind    = ExecutableImageKind_Macho;
+              breakpad_exe_name    = exe_file->path;
+              breakpad_exe_data    = exe_file->data;
+              breakpad_dbg_data    = dbg_file->data;
+              breakpad_module_name = exe_file->path;
+            }
+          }
+
+          if (supported) {
+            convert_done = 1;
+            log_infof("Mach-O DWARF specified; converting debug data\n");
+            ProfScope("convert") dwarf_bake_params = d2r_convert(conversion_arena, &convert_params);
+          } else {
+            output_valid          = 0;
+            breakpad_mixed_inputs = 1;
+            if (lane_idx() == 0) {
+              log_user_errorf("Provide one supported thin Mach-O with DWARF and a UUID, optionally with its matching executable; mixed formats are unsupported.\n");
+            }
+          }
+
+          scratch_end(scratch);
+        }
+
         //- rjf: PDB inputs => PDB -> RDI conversion
         if(input_files_from_format_table[RB_FileFormat_PDB].count != 0)
         {
@@ -988,7 +1135,7 @@ rb_thread_entry_point(void *p)
           String8 pdb_path  = pdb_file->path;
           String8 exe_data  = exe_file->data;
           String8 pdb_data  = pdb_file->data;
-          breakpad_mixed_inputs = breakpad_exe_kind != ExecutableImageKind_Null;
+          breakpad_mixed_inputs |= breakpad_exe_kind != ExecutableImageKind_Null;
           breakpad_exe_kind     = ExecutableImageKind_CoffPe;
           breakpad_exe_name     = exe_path;
           breakpad_exe_data     = exe_data;
@@ -1071,6 +1218,7 @@ rb_thread_entry_point(void *p)
         if(output_path__noext.size == 0) { output_path__noext = str8_chop_last_dot(rb_file_list_first(&input_files_from_format_table[RB_FileFormat_PE])->path); }
         if(output_path__noext.size == 0) { output_path__noext = str8_chop_last_dot(rb_file_list_first(&input_files_from_format_table[RB_FileFormat_ELF64])->path); }
         if(output_path__noext.size == 0) { output_path__noext = str8_chop_last_dot(rb_file_list_first(&input_files_from_format_table[RB_FileFormat_ELF32])->path); }
+        if(output_path__noext.size == 0) { output_path__noext = str8_chop_last_dot(rb_file_list_first(&input_files_from_format_table[RB_FileFormat_Macho])->path); }
         if(output_path__noext.size == 0) { output_path__noext = str8_chop_last_dot(rb_file_list_first(&input_files_from_format_table[RB_FileFormat_RDI])->path); }
         switch(output_kind)
         {
@@ -1099,7 +1247,7 @@ rb_thread_entry_point(void *p)
       //- rjf: no viable input paths
       if(!convert_done && cmdline->inputs.node_count != 0)
       {
-        log_user_errorf("Could not load debug info from the specified inputs. You must provide a valid PDB file, an executable image (PE, ELF) file with DWARF debug info, or RDI file(s).");
+        log_user_errorf("Could not load debug info from the specified inputs. You must provide a valid PDB file, a PE/ELF/Mach-O file with DWARF debug info, or RDI file(s).");
       }
       
       //- rjf: bake
@@ -1252,6 +1400,10 @@ rb_thread_entry_point(void *p)
             {
               identity = rb_breakpad_identity_from_inputs(arena, breakpad_exe_kind, breakpad_exe_name, breakpad_exe_data, breakpad_dbg_data, breakpad_dbg_is_pdb);
             }
+            if(identity.cpu.size != 0)
+            {
+              cpu = identity.cpu;
+            }
             module_valid = identity.debug_id.size != 0 && cpu.size != 0 && module_name_string.size != 0;
             if(module_valid)
             {
@@ -1271,7 +1423,7 @@ rb_thread_entry_point(void *p)
             }
             else
             {
-              log_user_errorf("Cannot emit Breakpad symbols: provide a single supported module with an ELF build ID or PDB/PE GUID and age.\n");
+              log_user_errorf("Cannot emit Breakpad symbols: provide a single supported module with an ELF build ID, Mach-O UUID, or PDB/PE GUID and age.\n");
               output_valid = 0;
             }
           }
@@ -1628,6 +1780,12 @@ rb_thread_entry_point(void *p)
                 eh_frame_vaddr = shdr->sh_addr;
               }
             }
+          }
+          else if(f->format == RB_FileFormat_Macho)
+          {
+            MACHO_Bin bin = macho_bin_from_data(arena, f->data);
+            arch = bin.arch;
+            dw = rb_dw_raw_from_macho_bin(f->data, &bin);
           }
           if(f->format_flags & RB_FileFormatFlag_HasDWARF)
           {

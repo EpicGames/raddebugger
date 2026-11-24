@@ -12,6 +12,7 @@ RB_FileFormatTable:
   { COFF_ThinArchive "COFF (Thin Archive)" }
   { ELF32            "ELF32" }
   { ELF64            "ELF64" }
+  { Macho            "Mach-O" }
   { RDI              "RDI" }
 }
 

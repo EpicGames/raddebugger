@@ -17,12 +17,13 @@ RB_FileFormat_COFF_Archive,
 RB_FileFormat_COFF_ThinArchive,
 RB_FileFormat_ELF32,
 RB_FileFormat_ELF64,
+RB_FileFormat_Macho,
 RB_FileFormat_RDI,
 RB_FileFormat_COUNT,
 } RB_FileFormat;
 
 C_LINKAGE_BEGIN
-extern String8 rb_file_format_display_name_table[10];
+extern String8 rb_file_format_display_name_table[11];
 
 C_LINKAGE_END
 
