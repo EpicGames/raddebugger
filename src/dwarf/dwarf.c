@@ -448,3 +448,16 @@ dw_reg_count_from_arch(Arch arch)
   }
   return result;
 }
+
+internal B32
+dw_tag_is_name_container(DW_TagKind kind)
+{
+  B32 result = (kind == DW_TagKind_Namespace       ||
+                kind == DW_TagKind_ClassType       ||
+                kind == DW_TagKind_StructureType   ||
+                kind == DW_TagKind_UnionType       ||
+                kind == DW_TagKind_EnumerationType ||
+                kind == DW_TagKind_SubProgram);
+  return result;
+}
+

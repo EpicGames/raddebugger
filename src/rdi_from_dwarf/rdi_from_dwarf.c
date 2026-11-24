@@ -171,6 +171,33 @@ d2r_collect_tag_attributes(Arena *arena,
   scratch_end(scratch);
 }
 
+internal void
+d2r_name_refs_from_tag(DW2_ParseCtx *unit_parse_ctx, Rng1U64 unit_info_tag_range, DW2_Tag *tag, U64 ref_offs[3])
+{
+  MemoryZero(ref_offs, sizeof(ref_offs[0])*3);
+  U64 ref_count = 0;
+  for EachNode(n, DW2_AttribNode, tag->attribs.first) {
+    DW2_Attrib *attrib  = &n->v;
+    U64         ref_idx = max_U64;
+    if ((attrib->attrib_kind == DW_AttribKind_AbstractOrigin ||
+         attrib->attrib_kind == DW_AttribKind_Specification) && ref_count < 2) {
+      ref_idx = ref_count++;
+    } else if (tag->kind == DW_TagKind_Namespace && attrib->attrib_kind == DW_AttribKind_Extension) {
+      ref_idx = 2;
+    }
+    if (ref_idx != max_U64) {
+      U64 ref_off = dw2_reference_info_off_from_form_val(unit_parse_ctx, &attrib->val);
+      B32 valid_ref = (ref_off != 0 &&
+                       (attrib->val.kind == DW_FormKind_RefAddr ||
+                        (attrib->val.u128.u64[0] <= max_U64 - unit_parse_ctx->unit_base_info_off &&
+                         contains_1u64(unit_info_tag_range, ref_off))));
+      if (valid_ref) {
+        ref_offs[ref_idx] = ref_off;
+      }
+    }
+  }
+}
+
 internal D2R_NameNode *
 d2r_name_parent(HashTable *name_ht, D2R_NameNode *node)
 {
@@ -1047,10 +1074,13 @@ d2r_convert(Arena *arena, D2R_ConvertParams *params)
   ////////////////////////////
   //- rjf: find all offsets of top-level tag trees across all units
   //
-  U64Array *unit_info_root_tag_offs = 0;
-  U64 *unit_tag_counts__first_pass = 0; // only includes roots + any descendants of roots who *don't* have a 'sibling' attribute
-  U64 total_root_tag_count = 0;
-  U64 *total_root_tag_count_ptr = &total_root_tag_count;
+  HashTable *name_ht                     = 0;
+  U64Array  *unit_name_ref_offs          = 0;
+  Arena     *name_refs_arena             = (make_namespaces && !make_types) ? arena_alloc() : 0;
+  U64Array  *unit_info_root_tag_offs     = 0;
+  U64       *unit_tag_counts__first_pass = 0; // includes all tags when collecting name references; otherwise skips sibling-linked descendants
+  U64        total_root_tag_count        = 0;
+  U64       *total_root_tag_count_ptr    = &total_root_tag_count;
   lane_sync_u64(&total_root_tag_count_ptr, 0);
   ProfScope("find all offsets of top-level tag trees across all units")
   {
@@ -1058,9 +1088,13 @@ d2r_convert(Arena *arena, D2R_ConvertParams *params)
     {
       unit_info_root_tag_offs = push_array(scratch.arena, U64Array, unit_count);
       unit_tag_counts__first_pass = push_array(scratch.arena, U64, unit_count);
+      if (name_refs_arena != 0) {
+        unit_name_ref_offs = push_array(scratch.arena, U64Array, unit_count);
+      }
     }
     lane_sync_u64(&unit_info_root_tag_offs, 0);
     lane_sync_u64(&unit_tag_counts__first_pass, 0);
+    lane_sync_u64(&unit_name_ref_offs, 0);
     typedef struct D2R_UnitTagTreeOffChunkNode D2R_UnitTagTreeOffChunkNode;
     struct D2R_UnitTagTreeOffChunkNode
     {
@@ -1096,6 +1130,7 @@ d2r_convert(Arena *arena, D2R_ConvertParams *params)
       
       //- rjf: gather all offsets of root-level trees
       D2R_UnitTagTreeOffChunkList tree_offs = {0};
+      D2R_UnitTagTreeOffChunkList name_ref_offs = {0};
       S64 depth = 0;
       for(U64 off = unit_info_tag_range.min; contains_1u64(unit_info_tag_range, off);)
       {
@@ -1123,6 +1158,30 @@ d2r_convert(Arena *arena, D2R_ConvertParams *params)
         DW2_Tag tag = {0};
         off += dw2_read_tag(scratch3.arena, raw, unit_parse_ctx, raw->sec[DW_SectionKind_Info].data, off, &tag);
         unit_tag_counts__first_pass[unit_idx] += 1;
+
+        // collect only references used by naming records
+        if (name_refs_arena != 0 &&
+            (dw_tag_is_name_container(tag.kind) ||
+             ((make_global_vars || make_thread_vars) && (tag.kind == DW_TagKind_Member || tag.kind == DW_TagKind_Variable)) ||
+             (make_locals && (tag.kind == DW_TagKind_Variable || tag.kind == DW_TagKind_FormalParameter)))) {
+          U64 ref_offs[3];
+          d2r_name_refs_from_tag(unit_parse_ctx, unit_info_tag_range, &tag, ref_offs);
+          for EachElement(ref_idx, ref_offs) {
+            if (ref_offs[ref_idx] != 0) {
+              D2R_UnitTagTreeOffChunkNode *chunk = name_ref_offs.last;
+              if (chunk == 0 || chunk->count >= chunk->cap) {
+                chunk = push_array(scratch2.arena, D2R_UnitTagTreeOffChunkNode, 1);
+                chunk->cap = 512;
+                chunk->v = push_array(scratch2.arena, U64, chunk->cap);
+                SLLQueuePush(name_ref_offs.first, name_ref_offs.last, chunk);
+                name_ref_offs.chunk_count += 1;
+              }
+              chunk->v[chunk->count] = ref_offs[ref_idx];
+              chunk->count += 1;
+              name_ref_offs.total_count += 1;
+            }
+          }
+        }
         
         //- rjf: look for sibling attribute fast path
         DW2_Attrib *sibling_attrib = dw2_attrib_from_kind(&tag, DW_AttribKind_Sibling);
@@ -1130,7 +1189,7 @@ d2r_convert(Arena *arena, D2R_ConvertParams *params)
         U64 sibling_off = dw2_reference_info_off_from_form_val(unit_parse_ctx, &sibling_attrib->val);
         
         //- rjf: if we have a sibling link, follow it -> depth stays the same
-        if(sibling_encoded && sibling_off >= off)
+        if(name_refs_arena == 0 && sibling_encoded && sibling_off >= off)
         {
           off = sibling_off;
         }
@@ -1171,11 +1230,45 @@ d2r_convert(Arena *arena, D2R_ConvertParams *params)
         unit_info_root_tag_offs[unit_idx] = tree_offs_array;
         ins_atomic_u64_add_eval(total_root_tag_count_ptr, tree_offs_array.count);
       }
+
+      if (name_refs_arena != 0) {
+        U64Array ref_offs_array = {0};
+        ref_offs_array.count = name_ref_offs.total_count;
+        ref_offs_array.v = push_array(name_refs_arena, U64, ref_offs_array.count);
+        U64 idx = 0;
+        for EachNode(n, D2R_UnitTagTreeOffChunkNode, name_ref_offs.first) {
+          MemoryCopy(ref_offs_array.v + idx, n->v, sizeof(n->v[0])*n->count);
+          idx += n->count;
+        }
+        unit_name_ref_offs[unit_idx] = ref_offs_array;
+      }
       
       scratch_end(scratch2);
     }
     lane_sync();
     total_root_tag_count = *total_root_tag_count_ptr;
+    if (name_refs_arena != 0) ProfScope("build naming reference index") {
+      if (lane_idx() == 0) {
+        U64 total_ref_count = 0;
+        for EachIndex(unit_idx, unit_count) {
+          total_ref_count += unit_name_ref_offs[unit_idx].count;
+        }
+        name_ht = hash_table_init(scratch.arena, total_ref_count/2 + 1);
+        for EachIndex(unit_idx, unit_count) {
+          U64Array ref_offs = unit_name_ref_offs[unit_idx];
+          for EachIndex(ref_idx, ref_offs.count) {
+            U64 ref_off = ref_offs.v[ref_idx];
+            if (hash_table_search_u64(name_ht, ref_off) == 0) {
+              hash_table_push_u64_raw(scratch.arena, name_ht, ref_off, 0);
+            }
+          }
+        }
+      }
+      lane_sync_u64(&name_ht, 0);
+      arena_release(name_refs_arena);
+      name_refs_arena = 0;
+      unit_name_ref_offs = 0;
+    }
   }
   
   ////////////////////////////
@@ -3178,6 +3271,9 @@ d2r_convert(Arena *arena, D2R_ConvertParams *params)
       RDIM_Type             *container_type;
       RDIM_Namespace        *container_namespace;
       D2R_NameNode          *name_context;
+      D2R_ParentNode        *name_pending_next;
+      String8                name;
+      U64                    name_ref_offs[3];
       RDIM_LocationCaseList  framebase_location_cases;
     };
     D2R_ParentNode *free_parent = 0;
@@ -4301,64 +4397,74 @@ d2r_convert(Arena *arena, D2R_ConvertParams *params)
             }
           }
           
-          // collect naming contexts without type dependencies, layouts, or type merging
-          D2R_NameNode *name_context = top_parent ? top_parent->name_context : 0;
+          // Keep unused ancestors in the recyclable stack until an output or target
+          // needs their naming context. Only persistent nodes may escape that stack.
+          D2R_NameNode *name_context = 0;
+          U64 name_ref_offs[3] = {0};
           if (make_namespaces && !make_types) {
-            B32 is_name_container  = (tag.kind == DW_TagKind_Namespace ||
-                                      tag.kind == DW_TagKind_ClassType ||
-                                      tag.kind == DW_TagKind_StructureType ||
-                                      tag.kind == DW_TagKind_UnionType ||
-                                      tag.kind == DW_TagKind_EnumerationType ||
-                                      tag.kind == DW_TagKind_SubProgram);
+            B32 is_name_container  = dw_tag_is_name_container(tag.kind);
             B32 is_member_identity = ((make_global_vars || make_thread_vars) &&
                                       (tag.kind == DW_TagKind_Member || tag.kind == DW_TagKind_Variable));
             if (is_name_container || is_member_identity || new_symbol != 0) {
-              D2R_NameNode *n = push_array(scratch.arena, D2R_NameNode, 1);
-              SLLQueuePush(dst_artifacts->first_name_node, dst_artifacts->last_name_node, n);
-              dst_artifacts->name_node_count += 1;
-              n->info_off = start_off;
-              n->parent   = name_context;
-              n->name     = name;
-              n->symbol   = new_symbol;
+              d2r_name_refs_from_tag(unit_parse_ctx, unit_info_tag_range, &tag, name_ref_offs);
 
-              // keep the attribute collector's reference order; link across work items later
-              U64 ref_count = 0;
-              for EachNode(attrib_n, DW2_AttribNode, tag.attribs.first) {
-                DW2_Attrib *attrib  = &attrib_n->v;
-                U64         ref_idx = max_U64;
-                if ((attrib->attrib_kind == DW_AttribKind_AbstractOrigin ||
-                     attrib->attrib_kind == DW_AttribKind_Specification) && ref_count < 2) {
-                  ref_idx = ref_count++;
-                } else if (tag.kind == DW_TagKind_Namespace && attrib->attrib_kind == DW_AttribKind_Extension) {
-                  ref_idx = 2;
-                }
-                if (ref_idx != max_U64) {
-                  U64 ref_off = dw2_reference_info_off_from_form_val(unit_parse_ctx, &attrib->val);
-                  if (attrib->val.kind == DW_FormKind_RefAddr ||
-                      (attrib->val.u128.u64[0] <= max_U64 - unit_parse_ctx->unit_base_info_off &&
-                       contains_1u64(unit_info_tag_range, ref_off))) {
-                    n->ref_offs[ref_idx] = ref_off;
+              BucketNode *target = hash_table_search_u64(name_ht, start_off);
+              if (tag.kind == DW_TagKind_Namespace || new_symbol != 0 || target != 0) {
+                D2R_NameNode   *parent_context = 0;
+                D2R_ParentNode *pending        = 0;
+                for EachNode(parent, D2R_ParentNode, top_parent) {
+                  if (parent->name_context != 0) {
+                    parent_context = parent->name_context;
+                    break;
+                  }
+                  if (dw_tag_is_name_container(parent->tag_kind)) {
+                    parent->name_pending_next = pending;
+                    pending = parent;
                   }
                 }
-              }
 
-              // emit actual namespaces; other containers only contribute their names
-              if (tag.kind == DW_TagKind_Namespace) {
-                U64 namespace_chunk_count = Min(64, Max(16, dst_artifacts->namespaces.total_count));
-                n->ns = rdim_namespace_chunk_list_push(arena, &dst_artifacts->namespaces, namespace_chunk_count);
-                n->ns->name         = name.size != 0 ? name : str8_lit("(anonymous namespace)");
-                n->ns->parent_scope = top_parent ? top_parent->scope : 0;
-                if (n->ns->parent_scope == 0) {
-                  for (D2R_NameNode *parent = name_context; parent != 0; parent = parent->parent) {
-                    if (parent->ns != 0) {
-                      n->ns->parent_namespace = parent->ns;
-                      break;
+                for (D2R_ParentNode *parent = pending; parent != 0; parent = parent->name_pending_next) {
+                  D2R_NameNode *n = push_array(scratch.arena, D2R_NameNode, 1);
+                  SLLQueuePush(dst_artifacts->first_name_node, dst_artifacts->last_name_node, n);
+                  dst_artifacts->name_node_count += 1;
+                  n->info_off = parent->info_off;
+                  n->parent   = parent_context;
+                  n->name     = parent->name;
+                  MemoryCopy(n->ref_offs, parent->name_ref_offs, sizeof(n->ref_offs));
+                  parent->name_context = n;
+                  parent_context = n;
+                }
+
+                D2R_NameNode *n = push_array(scratch.arena, D2R_NameNode, 1);
+                SLLQueuePush(dst_artifacts->first_name_node, dst_artifacts->last_name_node, n);
+                dst_artifacts->name_node_count += 1;
+                n->info_off = start_off;
+                n->parent   = parent_context;
+                n->name     = name;
+                n->symbol   = new_symbol;
+                MemoryCopy(n->ref_offs, name_ref_offs, sizeof(n->ref_offs));
+
+                // emit actual namespaces; other ancestors remain name-only records
+                if (tag.kind == DW_TagKind_Namespace) {
+                  U64 namespace_chunk_count = Min(64, Max(16, dst_artifacts->namespaces.total_count));
+                  n->ns = rdim_namespace_chunk_list_push(arena, &dst_artifacts->namespaces, namespace_chunk_count);
+                  n->ns->name         = name.size != 0 ? name : str8_lit("(anonymous namespace)");
+                  n->ns->parent_scope = top_parent ? top_parent->scope : 0;
+                  if (n->ns->parent_scope == 0) {
+                    for (D2R_NameNode *parent = parent_context; parent != 0; parent = parent->parent) {
+                      if (parent->ns != 0) {
+                        n->ns->parent_namespace = parent->ns;
+                        break;
+                      }
                     }
                   }
                 }
-              }
-              if (is_name_container) {
-                name_context = n;
+                if (target != 0) {
+                  target->v.value_raw = n;
+                }
+                if (is_name_container) {
+                  name_context = n;
+                }
               }
             }
           }
@@ -4461,12 +4567,14 @@ d2r_convert(Arena *arena, D2R_ConvertParams *params)
             {
               n = push_array(scratch.arena, D2R_ParentNode, 1);
             }
-            n->tag_kind = tag.kind;
-            n->info_off = start_off;
-            n->scope = new_scope_open ? new_scope_open : top_parent ? top_parent->scope : 0;
-            n->container_type = new_scope_open ? 0 : container_type;
+            n->tag_kind            = tag.kind;
+            n->info_off            = start_off;
+            n->scope               = new_scope_open ? new_scope_open : top_parent ? top_parent->scope : 0;
+            n->container_type      = new_scope_open ? 0 : container_type;
             n->container_namespace = new_scope_open ? 0 : container_namespace;
-            n->name_context = name_context;
+            n->name_context        = name_context;
+            n->name                = name;
+            MemoryCopy(n->name_ref_offs, name_ref_offs, sizeof(n->name_ref_offs));
             if(framebase_attrib != &dw2_attrib_nil)
             {
               n->framebase_location_cases = framebase_location_cases;
@@ -4553,26 +4661,14 @@ d2r_convert(Arena *arena, D2R_ConvertParams *params)
   }
   
   if (make_namespaces && !make_types) ProfScope("resolve lightweight naming contexts") {
-    HashTable *name_ht = 0;
     if (lane_idx() == 0) {
-      U64 name_node_count = 0;
       all_namespaces = push_array(scratch.arena, RDIM_NamespaceChunkList, 1);
       for EachIndex(work_idx, sub_unit_works_count) {
         D2R_SubUnitWorkArtifacts *work = &sub_unit_work_artifacts[work_idx];
-        name_node_count += work->name_node_count;
         rdim_namespace_chunk_list_concat_in_place(all_namespaces, &work->namespaces);
-      }
-
-      // HashTable insertion is not concurrent; publish a complete read-only table
-      name_ht = hash_table_init(scratch.arena, name_node_count/2 + 1);
-      for EachIndex(work_idx, sub_unit_works_count) {
-        for EachNode(n, D2R_NameNode, sub_unit_work_artifacts[work_idx].first_name_node) {
-          hash_table_push_u64_raw(scratch.arena, name_ht, n->info_off, n);
-        }
       }
     }
     lane_sync_u64(&all_namespaces, 0);
-    lane_sync_u64(&name_ht, 0);
 
     // resolve namespace extensions before qualifying symbols; a nameless extension
     // inherits its name rather than becoming an anonymous namespace
