@@ -959,8 +959,6 @@ rdim_bake(Arena *arena, RDIM_BakeParams *params)
   };
   U64 line_tables_count = 0;
   RDIM_LineTable **src_line_tables = 0;
-  RDIM_UnsortedJoinedLineTable *unsorted_joined_line_tables = 0;
-  RDIM_SortKey **sorted_line_table_keys = 0;
   BakedLineTables *baked_line_tables = 0;
   ProfScope("gather all unsorted, joined, line table info; & sort")
   {
@@ -997,14 +995,6 @@ rdim_bake(Arena *arena, RDIM_BakeParams *params)
       // rjf: allocate outputs
       ProfScope("allocate outputs")
       {
-        if(lane_idx() == lane_from_task_idx(0))
-        {
-          unsorted_joined_line_tables = push_array(scratch.arena, RDIM_UnsortedJoinedLineTable, line_tables_count);
-        }
-        if(lane_idx() == lane_from_task_idx(1))
-        {
-          sorted_line_table_keys = push_array(scratch.arena, RDIM_SortKey *, line_tables_count);
-        }
         if(lane_idx() == lane_from_task_idx(2))
         {
           baked_line_tables->line_tables = push_array(arena, RDI_LineTable, baked_line_tables->line_tables_count);
@@ -1041,8 +1031,7 @@ rdim_bake(Arena *arena, RDIM_BakeParams *params)
         }
       }
     }
-    lane_sync_u64(&unsorted_joined_line_tables, lane_from_task_idx(0));
-    lane_sync_u64(&sorted_line_table_keys, lane_from_task_idx(1));
+    lane_sync();
     
     //- rjf: wide bake
     ProfScope("wide bake") 
@@ -1064,15 +1053,18 @@ rdim_bake(Arena *arena, RDIM_BakeParams *params)
         line_table_range.max = Min(line_tables_count, line_table_range.max);
         for EachInRange(line_table_idx, line_table_range)
         {
+          Temp line_temp = scratch_begin(&scratch.arena, 1);
+
           RDIM_LineTable *src = src_line_tables[line_table_idx];
-          RDIM_UnsortedJoinedLineTable *dst = &unsorted_joined_line_tables[line_table_idx];
+          RDIM_UnsortedJoinedLineTable unsorted = {0};
+          RDIM_UnsortedJoinedLineTable *dst = &unsorted;
           
           //- rjf: gather
           dst->line_count = src->line_count;
           dst->seq_count = src->seq_count;
           dst->key_count = dst->line_count + dst->seq_count;
-          dst->line_keys = rdim_push_array_no_zero(arena, RDIM_SortKey, dst->key_count);
-          dst->line_recs = rdim_push_array_no_zero(arena, RDIM_LineRec, dst->line_count);
+          dst->line_keys = rdim_push_array_no_zero(line_temp.arena, RDIM_SortKey, dst->key_count);
+          dst->line_recs = rdim_push_array_no_zero(line_temp.arena, RDIM_LineRec, dst->line_count);
           {
             RDIM_SortKey *key_ptr = dst->line_keys;
             RDIM_LineRec *rec_ptr = dst->line_recs;
@@ -1100,13 +1092,10 @@ rdim_bake(Arena *arena, RDIM_BakeParams *params)
           }
           
           //- rjf: sort
-          sorted_line_table_keys[line_table_idx] = rdim_sort_key_array(arena,
-                                                                       unsorted_joined_line_tables[line_table_idx].line_keys,
-                                                                       unsorted_joined_line_tables[line_table_idx].key_count);
+          RDIM_SortKey *sorted_line_keys = rdim_sort_key_array(line_temp.arena, dst->line_keys, dst->key_count);
           
           //- rjf: fill
-          RDIM_SortKey *sorted_line_keys = sorted_line_table_keys[line_table_idx];
-          U64 sorted_line_keys_count = unsorted_joined_line_tables[line_table_idx].key_count;
+          U64 sorted_line_keys_count = dst->key_count;
           RDI_LineTable *dst_line_table = &baked_line_tables->line_tables[line_table_idx+1];
           U64 *arranged_voffs           = baked_line_tables->line_table_voffs   + dst_line_table->voffs_base_idx;
           RDI_Line *arranged_lines      = baked_line_tables->line_table_lines   + dst_line_table->lines_base_idx;
@@ -1133,6 +1122,8 @@ rdim_bake(Arena *arena, RDIM_BakeParams *params)
               }
             }
           }
+          
+          scratch_end(line_temp);
         }
       }
       lane_sync();
