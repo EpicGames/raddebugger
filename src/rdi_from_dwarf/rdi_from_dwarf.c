@@ -945,12 +945,12 @@ d2r_convert(Arena *arena, D2R_ConvertParams *params)
             LineSeqChunk *chunk = last_line_seq_chunk;
             if(need_new_line && (chunk == 0 || chunk->line_count >= chunk->line_cap))
             {
-              chunk = push_array(scratch.arena, LineSeqChunk, 1);
+              chunk = push_array(scratch2.arena, LineSeqChunk, 1);
               SLLQueuePush(first_line_seq_chunk, last_line_seq_chunk, chunk);
-              chunk->line_cap = 64;
-              chunk->voffs = push_array(scratch.arena, U64, chunk->line_cap + 1);
-              chunk->line_nums = push_array(scratch.arena, U32, chunk->line_cap);
-              chunk->col_nums = push_array(scratch.arena, U16, 2*chunk->line_cap);
+              chunk->line_cap  = 64;
+              chunk->voffs     = push_array(scratch2.arena, U64, chunk->line_cap + 1);
+              chunk->line_nums = push_array(scratch2.arena, U32, chunk->line_cap);
+              chunk->col_nums  = push_array(scratch2.arena, U16, 2*chunk->line_cap);
             }
 
             // rjf: need new line -> push
