@@ -156,6 +156,8 @@ d2r_collect_tag_attributes(Arena *arena,
 #define X(id, kind) case DW_AttribKind_##kind: slot = D2R_CommonAttrib_##kind; break;
           D2R_CommonAttrib_XList
 #undef X
+        // legacy spelling used by older DWARF producers, not only MIPS
+        case DW_MIPS_AttribKind_LinkageName: slot = D2R_CommonAttrib_LinkageName; break;
         }
         if (slot < D2R_CommonAttrib_COUNT && attribs->v[slot] == 0) {
           // original tag lives in the caller's arena; referenced tags do not

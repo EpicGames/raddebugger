@@ -1474,7 +1474,16 @@ rb_thread_entry_point(void *p)
                 };
                 {
                   Temp scratch = scratch_begin(0, 0);
-                  String8 name = fully_qualified_str8_from_rdi_symbol(scratch.arena, rdi, proc);
+
+                  String8 name = {0};
+                  if(str8_from_rdi_string_idx(rdi, proc->name_string_idx).size == 0)
+                  {
+                    name = str8_from_rdi_string_idx(rdi, proc->link_name_string_idx);
+                  }
+                  if(name.size == 0)
+                  {
+                    name = fully_qualified_str8_from_rdi_symbol(scratch.arena, rdi, proc);
+                  }
                   str8_list_pushf(arena, out, "FUNC %I64x %I64x %I64x %S\n", voff_range.min, voff_range.max-voff_range.min, 0ull, name);
                   scratch_end(scratch);
                 }
