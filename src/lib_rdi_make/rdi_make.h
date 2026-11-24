@@ -333,6 +333,7 @@ RDIM_CheckNil(nil,p) ? \
   Y(LinkNameProcedureNameMap,    link_name_procedure_name_map) \
   Y(NormalSourcePathNameMap,     normal_source_path_name_map)  \
   X(Namespaces,                  namespaces)                   \
+  X(SourceLineMaps,              source_line_maps)             \
   // end of list
 
 typedef enum RDIM_Subset

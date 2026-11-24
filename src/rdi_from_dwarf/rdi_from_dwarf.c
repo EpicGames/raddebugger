@@ -291,15 +291,16 @@ d2r_convert(Arena *arena, D2R_ConvertParams *params)
   U64 base_vaddr = params->base_vaddr;
   U64 arch_addr_size = byte_size_from_arch(arch);
   
-  B32 make_procedures   = !!(params->subset_flags & RDIM_SubsetFlag_Procedures || params->subset_flags & RDIM_SubsetFlag_ProcedureNameMap);
-  B32 make_types        = !!(params->subset_flags & RDIM_SubsetFlag_Types || params->subset_flags & RDIM_SubsetFlag_TypeNameMap);
-  B32 make_namespaces   = !!(params->subset_flags & RDIM_SubsetFlag_Namespaces);
-  B32 make_scopes       = make_procedures && !!(params->subset_flags & RDIM_SubsetFlag_Scopes);
-  B32 make_locals       = make_scopes && !!(params->subset_flags & RDIM_SubsetFlag_Locals);
-  B32 make_global_vars  = !!(params->subset_flags & RDIM_SubsetFlag_GlobalVariables || params->subset_flags & RDIM_SubsetFlag_GlobalVariableNameMap);
-  B32 make_thread_vars  = !!(params->subset_flags & RDIM_SubsetFlag_ThreadVariables || params->subset_flags & RDIM_SubsetFlag_ThreadVariableNameMap);
-  B32 make_line_tables  = !!(params->subset_flags & RDIM_SubsetFlag_LineInfo);
-  B32 make_inline_sites = make_procedures && make_scopes && !!(params->subset_flags & RDIM_SubsetFlag_InlineLineInfo);
+  B32 make_procedures       = !!(params->subset_flags & RDIM_SubsetFlag_Procedures || params->subset_flags & RDIM_SubsetFlag_ProcedureNameMap);
+  B32 make_types            = !!(params->subset_flags & RDIM_SubsetFlag_Types || params->subset_flags & RDIM_SubsetFlag_TypeNameMap);
+  B32 make_namespaces       = !!(params->subset_flags & RDIM_SubsetFlag_Namespaces);
+  B32 make_scopes           = make_procedures && !!(params->subset_flags & RDIM_SubsetFlag_Scopes);
+  B32 make_locals           = make_scopes && !!(params->subset_flags & RDIM_SubsetFlag_Locals);
+  B32 make_global_vars      = !!(params->subset_flags & RDIM_SubsetFlag_GlobalVariables || params->subset_flags & RDIM_SubsetFlag_GlobalVariableNameMap);
+  B32 make_thread_vars      = !!(params->subset_flags & RDIM_SubsetFlag_ThreadVariables || params->subset_flags & RDIM_SubsetFlag_ThreadVariableNameMap);
+  B32 make_source_line_maps = !!(params->subset_flags & RDIM_SubsetFlag_SourceLineMaps);
+  B32 make_line_tables      = !!(params->subset_flags & RDIM_SubsetFlag_LineInfo) || make_source_line_maps;
+  B32 make_inline_sites     = make_procedures && make_scopes && !!(params->subset_flags & RDIM_SubsetFlag_InlineLineInfo);
   
   ////////////////////////////
   //- rjf: determine acceptable address range
@@ -797,7 +798,10 @@ d2r_convert(Arena *arena, D2R_ConvertParams *params)
       {
         unit_line_table_chunk_lists = push_array(scratch.arena, RDIM_LineTableChunkList, unit_count);
         unit_line_tables = push_array(scratch.arena, RDIM_LineTable *, unit_count);
-        unit_file_seq_maps = push_array(scratch.arena, FileSeqMap, unit_count);
+        if(make_source_line_maps)
+        {
+          unit_file_seq_maps = push_array(scratch.arena, FileSeqMap, unit_count);
+        }
       }
       lane_sync_u64(&unit_line_table_chunk_lists, 0);
       lane_sync_u64(&unit_line_tables, 0);
@@ -831,8 +835,11 @@ d2r_convert(Arena *arena, D2R_ConvertParams *params)
         unit_line_tables[unit_idx] = dst_line_table;
 
         //- rjf: set up per-unit file sequence map
-        unit_file_seq_maps[unit_idx].slots_count = line_table_header->files.count + 1;
-        unit_file_seq_maps[unit_idx].slots = push_array(scratch.arena, FileSeqNode *, unit_file_seq_maps[unit_idx].slots_count);
+        if(make_source_line_maps)
+        {
+          unit_file_seq_maps[unit_idx].slots_count = line_table_header->files.count + 1;
+          unit_file_seq_maps[unit_idx].slots = push_array(scratch.arena, FileSeqNode *, unit_file_seq_maps[unit_idx].slots_count);
+        }
 
         //- rjf: set up vm registers
         DW2_LineVM vm = dw2_line_vm_init(line_table_header);
@@ -882,32 +889,35 @@ d2r_convert(Arena *arena, D2R_ConvertParams *params)
             // rjf: push sequence to line table
             RDIM_LineSequence *seq = rdim_line_table_push_sequence(arena, dst_line_tables, dst_line_table, line_seq_src_file, seq_voffs, seq_lines, seq_cols, seq_line_count);
 
-            // rjf: map src file -> file seq node
-            FileSeqNode *file_seq_n = 0;
+            if(make_source_line_maps)
             {
-              U64 hash = u64_hash_from_str8(str8_struct(&line_seq_src_file));
-              U64 slot_idx = hash%unit_file_seq_maps[unit_idx].slots_count;
-              for(FileSeqNode *n = unit_file_seq_maps[unit_idx].slots[slot_idx]; n != 0; n = n->next)
+              // rjf: map src file -> file seq node
+              FileSeqNode *file_seq_n = 0;
               {
-                if(n->src_file == line_seq_src_file)
+                U64 hash = u64_hash_from_str8(str8_struct(&line_seq_src_file));
+                U64 slot_idx = hash%unit_file_seq_maps[unit_idx].slots_count;
+                for(FileSeqNode *n = unit_file_seq_maps[unit_idx].slots[slot_idx]; n != 0; n = n->next)
                 {
-                  file_seq_n = n;
-                  break;
+                  if(n->src_file == line_seq_src_file)
+                  {
+                    file_seq_n = n;
+                    break;
+                  }
+                }
+                if(file_seq_n == 0)
+                {
+                  file_seq_n = push_array(scratch.arena, FileSeqNode, 1);
+                  SLLStackPush(unit_file_seq_maps[unit_idx].slots[slot_idx], file_seq_n);
+                  file_seq_n->src_file = line_seq_src_file;
                 }
               }
-              if(file_seq_n == 0)
-              {
-                file_seq_n = push_array(scratch.arena, FileSeqNode, 1);
-                SLLStackPush(unit_file_seq_maps[unit_idx].slots[slot_idx], file_seq_n);
-                file_seq_n->src_file = line_seq_src_file;
-              }
-            }
 
-            // rjf: record sequence in file seq node
-            {
-              RDIM_SrcFileLineMapFragment *f = push_array(scratch.arena, RDIM_SrcFileLineMapFragment, 1);
-              SLLQueuePush(file_seq_n->first_line_map_fragment, file_seq_n->last_line_map_fragment, f);
-              f->seq = seq;
+              // rjf: record sequence in file seq node
+              {
+                RDIM_SrcFileLineMapFragment *f = push_array(scratch.arena, RDIM_SrcFileLineMapFragment, 1);
+                SLLQueuePush(file_seq_n->first_line_map_fragment, file_seq_n->last_line_map_fragment, f);
+                f->seq = seq;
+              }
             }
 
             // rjf: reset
@@ -994,7 +1004,7 @@ d2r_convert(Arena *arena, D2R_ConvertParams *params)
       // could go wide across all src files, which would be very nice. just lane-0ing
       // for now. when possible, we can probably do the same thing in PDB too.
       //
-      if(lane_idx() == 0)
+      if(make_source_line_maps && lane_idx() == 0)
       {
         for EachIndex(unit_idx, unit_count)
         {

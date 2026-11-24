@@ -281,6 +281,8 @@ rdim_bake(Arena *arena, RDIM_BakeParams *params)
 {
   Temp scratch = scratch_begin(&arena, 1);
   
+  B32 make_source_line_maps = !!(params->subset_flags & RDIM_SubsetFlag_SourceLineMaps);
+  
   //////////////////////////////////////////////////////////////
   //- rjf: @rdim_bake_stage form joined symbol lists, from all units
   //
@@ -2165,7 +2167,7 @@ rdim_bake(Arena *arena, RDIM_BakeParams *params)
   //- rjf: @rdim_bake_stage gather line-bucketed src line map data
   //
   RDIM_BakeSrcLineMap *bake_src_line_maps = 0;
-  ProfScope("gather line-bucketed src line map data")
+  if(make_source_line_maps) ProfScope("gather line-bucketed src line map data")
   {
     if(lane_idx() == 0)
     {
@@ -2234,7 +2236,7 @@ rdim_bake(Arena *arena, RDIM_BakeParams *params)
   //- rjf: @rdim_bake_stage sort line-bucketed src line map data
   //
   RDIM_SortKey **bake_src_line_map_keys = 0;
-  ProfScope("sort line-bucketed src line map data")
+  if(make_source_line_maps) ProfScope("sort line-bucketed src line map data")
   {
     U64 map_count = params->src_files.total_count;
     if(lane_idx() == 0)
@@ -2327,10 +2329,13 @@ rdim_bake(Arena *arena, RDIM_BakeParams *params)
         U64 slot_idx = lane_idx()*params->src_files.chunk_count + chunk_idx;
         for EachInRange(idx, range)
         {
-          RDIM_BakeSrcLineMap *map = &bake_src_line_maps[n->base_idx + idx];
-          src_map_layout->lane_chunk_src_file_num_counts[slot_idx] += map->line_count;
-          src_map_layout->lane_chunk_src_file_voff_counts[slot_idx] += map->voff_range_count;
-          src_map_layout->lane_chunk_src_file_map_counts[slot_idx] += !!map->line_count;
+          if(make_source_line_maps)
+          {
+            RDIM_BakeSrcLineMap *map = &bake_src_line_maps[n->base_idx + idx];
+            src_map_layout->lane_chunk_src_file_num_counts[slot_idx]  += map->line_count;
+            src_map_layout->lane_chunk_src_file_voff_counts[slot_idx] += map->voff_range_count;
+            src_map_layout->lane_chunk_src_file_map_counts[slot_idx]  += !!map->line_count;
+          }
           RDI_ChecksumKind k = n->v[idx].checksum_kind;
           String8 val = n->v[idx].checksum;
           if(RDI_ChecksumKind_NULL < k && k < RDI_ChecksumKind_COUNT && val.size != 0)
@@ -2406,14 +2411,17 @@ rdim_bake(Arena *arena, RDIM_BakeParams *params)
       baked_src_files = push_array(scratch.arena, BakedSrcFiles, 1);
       baked_src_files->source_files_count = params->src_files.total_count+1;
       baked_src_files->source_files = push_array(arena, RDI_SourceFile, baked_src_files->source_files_count);
-      baked_src_files->source_line_maps_count = params->src_files.source_line_map_count+1;
-      baked_src_files->source_line_maps = push_array(arena, RDI_SourceLineMap, baked_src_files->source_line_maps_count);
-      baked_src_files->source_line_map_nums_count = src_map_layout->total_src_map_line_count;
-      baked_src_files->source_line_map_nums = push_array(arena, RDI_U32, baked_src_files->source_line_map_nums_count);
-      baked_src_files->source_line_map_rngs_count = src_map_layout->total_src_map_line_count + baked_src_files->source_line_maps_count;
-      baked_src_files->source_line_map_rngs = push_array(arena, RDI_U32, baked_src_files->source_line_map_rngs_count);
-      baked_src_files->source_line_map_voffs_count = src_map_layout->total_src_map_voff_count;
-      baked_src_files->source_line_map_voffs = push_array(arena, RDI_U64, baked_src_files->source_line_map_voffs_count);
+      if(make_source_line_maps)
+      {
+        baked_src_files->source_line_maps_count      = params->src_files.source_line_map_count+1;
+        baked_src_files->source_line_maps            = push_array(arena, RDI_SourceLineMap, baked_src_files->source_line_maps_count);
+        baked_src_files->source_line_map_nums_count  = src_map_layout->total_src_map_line_count;
+        baked_src_files->source_line_map_nums        = push_array(arena, RDI_U32, baked_src_files->source_line_map_nums_count);
+        baked_src_files->source_line_map_rngs_count  = src_map_layout->total_src_map_line_count + baked_src_files->source_line_maps_count;
+        baked_src_files->source_line_map_rngs        = push_array(arena, RDI_U32, baked_src_files->source_line_map_rngs_count);
+        baked_src_files->source_line_map_voffs_count = src_map_layout->total_src_map_voff_count;
+        baked_src_files->source_line_map_voffs       = push_array(arena, RDI_U64, baked_src_files->source_line_map_voffs_count);
+      }
     }
     lane_sync_u64(&baked_src_files, 0);
     
@@ -2434,14 +2442,8 @@ rdim_bake(Arena *arena, RDIM_BakeParams *params)
       }
       for EachInRange(idx, range)
       {
-        RDIM_BakeSrcLineMap *map = &bake_src_line_maps[n->base_idx + idx];
-        RDIM_SortKey *sorted_map_keys = bake_src_line_map_keys[n->base_idx + idx];
         RDIM_SrcFile *src = &n->v[idx];
         RDI_SourceFile *dst = &baked_src_files->source_files[n->base_idx + idx + 1];
-        RDI_SourceLineMap *dst_map = &baked_src_files->source_line_maps[dst_map_off];
-        RDI_U32 *dst_nums  = &baked_src_files->source_line_map_nums[dst_num_off];
-        RDI_U32 *dst_rngs  = &baked_src_files->source_line_map_rngs[dst_rng_off];
-        RDI_U64 *dst_voffs = &baked_src_files->source_line_map_voffs[dst_voff_off];
         
         //- rjf: fill file info
         Temp scratch2 = scratch_begin(&scratch.arena, 1);
@@ -2449,7 +2451,7 @@ rdim_bake(Arena *arena, RDIM_BakeParams *params)
         B32 has_checksum = (RDI_ChecksumKind_NULL < src->checksum_kind && src->checksum_kind < RDI_ChecksumKind_COUNT && src->checksum.size != 0);
         dst->file_path_node_idx = rdim_bake_path_node_idx_from_string(path_tree, src->path);
         dst->normal_full_path_string_idx = rdim_bake_idx_from_string(bake_strings, normalized_path);
-        dst->source_line_map_idx = src->total_line_count ? dst_map_off : 0;
+        dst->source_line_map_idx = make_source_line_maps && src->total_line_count ? dst_map_off : 0;
         dst->checksum_kind = src->checksum_kind;
         dst->checksum_idx  = has_checksum ? dst_checksums_off[dst->checksum_kind] : 0;
         scratch_end(scratch2);
@@ -2461,19 +2463,22 @@ rdim_bake(Arena *arena, RDIM_BakeParams *params)
         }
         
         //- rjf: fill map info
-        if(src->total_line_count != 0)
+        if(make_source_line_maps && src->total_line_count != 0)
         {
+          RDIM_BakeSrcLineMap *map = &bake_src_line_maps[n->base_idx + idx];
+          RDIM_SortKey *sorted_map_keys = bake_src_line_map_keys[n->base_idx + idx];
+          RDI_SourceLineMap *dst_map = &baked_src_files->source_line_maps[dst_map_off];
+          RDI_U32 *dst_nums  = &baked_src_files->source_line_map_nums[dst_num_off];
+          RDI_U32 *dst_rngs  = &baked_src_files->source_line_map_rngs[dst_rng_off];
+          RDI_U64 *dst_voffs = &baked_src_files->source_line_map_voffs[dst_voff_off];
           dst_map->line_count = (RDI_U32)map->line_count; // TODO(rjf): @u64_to_u32
           dst_map->voff_count = (RDI_U32)map->voff_range_count; // TODO(rjf): @u64_to_u32
           dst_map->line_map_nums_base_idx = (RDI_U32)dst_num_off; // TODO(rjf): @u64_to_u32
           dst_map->line_map_range_base_idx = (RDI_U32)dst_rng_off; // TODO(rjf): @u64_to_u32
           dst_map->line_map_voff_base_idx = (RDI_U32)dst_voff_off; // TODO(rjf): @u64_to_u32
           dst_map_off += 1;
-        }
-        
-        //- rjf: fill nums/ranges/voffs info
-        if(src->total_line_count != 0)
-        {
+
+          //- rjf: fill nums/ranges/voffs info
           U64 *dst_voff_ptr = dst_voffs;
           for EachIndex(line_num_idx, map->line_count)
           {

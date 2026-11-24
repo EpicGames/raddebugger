@@ -1348,6 +1348,7 @@ cv2r_convert(Arena *arena, CV2R_ConvertParams *params)
   }
   if(lane_idx() == 0 && params->subset_flags & (RDIM_SubsetFlag_NormalSourcePathNameMap|
                                                 RDIM_SubsetFlag_LineInfo|
+                                                RDIM_SubsetFlag_SourceLineMaps|
                                                 RDIM_SubsetFlag_InlineLineInfo))
   {
     //- rjf: set up table
@@ -1433,6 +1434,7 @@ cv2r_convert(Arena *arena, CV2R_ConvertParams *params)
     if(params->subset_flags & (RDIM_SubsetFlag_Units|
                                RDIM_SubsetFlag_NormalSourcePathNameMap|
                                RDIM_SubsetFlag_LineInfo|
+                               RDIM_SubsetFlag_SourceLineMaps|
                                RDIM_SubsetFlag_InlineLineInfo))
     {
       U64 *sym_take_counter = lane_idx() == 0 ? push_array(scratch.arena, U64, 1) : 0;
@@ -1501,7 +1503,7 @@ cv2r_convert(Arena *arena, CV2R_ConvertParams *params)
         
         //- rjf: main unit line table conversion
         RDIM_LineTable *line_table = 0;
-        if(params->subset_flags & RDIM_SubsetFlag_LineInfo && src_unit_c13 != 0) ProfScope("main unit line table conversion")
+        if(params->subset_flags & (RDIM_SubsetFlag_LineInfo|RDIM_SubsetFlag_SourceLineMaps) && src_unit_c13 != 0) ProfScope("main unit line table conversion")
         {
           for EachNode(lines_n, CV_C13LinesParsedNode, src_unit_c13->lines_first)
           {
