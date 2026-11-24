@@ -1041,7 +1041,7 @@ rdim_bake(Arena *arena, RDIM_BakeParams *params)
       U64 line_table_block_take_counter_ = 0;
       U64 *line_table_block_take_counter = &line_table_block_take_counter_;
       lane_sync_u64(&line_table_block_take_counter, 0);
-      U64 line_table_block_size = 4096;
+      U64 line_table_block_size = 1;
       U64 line_table_block_count = (line_tables_count + line_table_block_size - 1) / line_table_block_size;
       for(;;)
       {
