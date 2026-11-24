@@ -747,8 +747,9 @@ d2r_convert(Arena *arena, D2R_ConvertParams *params)
             src_file = unit_src_file_maps[unit_idx].v[vm_regs.file_index];
           }
 
-          //- rjf: sequence ended explicitly, or file change, or end of stream? -> push to line table
-          if(line_seq_src_file != 0 && (vm_regs.end_sequence || (src_file != line_seq_src_file && first_line_seq_chunk != 0) || !stepped))
+          // line sequence terminated -> emit
+          B32 emitted_file_change = vm.emit_row && src_file != line_seq_src_file && first_line_seq_chunk != 0;
+          if(line_seq_src_file != 0 && (vm_regs.end_sequence || emitted_file_change || !stepped))
           {
             // rjf: combine voffs/lines/cols
             U64 seq_line_count = total_line_seq_count;
