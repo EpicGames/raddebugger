@@ -3152,6 +3152,20 @@ d2r_convert(Arena *arena, D2R_ConvertParams *params)
   D2R_SubUnitWorkArtifacts *sub_unit_work_artifacts = 0;
   ProfScope("convert all symbols")
   {
+    typedef struct D2R_ParentNode D2R_ParentNode;
+    struct D2R_ParentNode
+    {
+      D2R_ParentNode        *next;
+      DW_TagKind             tag_kind;
+      U64                    info_off;
+      RDIM_Scope            *scope;
+      RDIM_Type             *container_type;
+      RDIM_Namespace        *container_namespace;
+      D2R_NameNode          *name_context;
+      RDIM_LocationCaseList  framebase_location_cases;
+    };
+    D2R_ParentNode *free_parent = 0;
+
     if(lane_idx() == 0)
     {
       if(make_types && make_scopes)
@@ -3188,20 +3202,7 @@ d2r_convert(Arena *arena, D2R_ConvertParams *params)
       U64 chunk_count = 256;
       for EachInRange(root_tag_idx, root_tag_idx_range)
       {
-        typedef struct D2R_ParentNode D2R_ParentNode;
-        struct D2R_ParentNode
-        {
-          D2R_ParentNode        *next;
-          DW_TagKind             tag_kind;
-          U64                    info_off;
-          RDIM_Scope            *scope;
-          RDIM_Type             *container_type;
-          RDIM_Namespace        *container_namespace;
-          D2R_NameNode          *name_context;
-          RDIM_LocationCaseList  framebase_location_cases;
-        };
         D2R_ParentNode *top_parent         = 0;
-        D2R_ParentNode *free_parent        = 0;
         U64             root_tag_start_off = unit_info_root_tag_offs[unit_idx].v[root_tag_idx];
         S64             depth              = 1;
         Temp            scratch2           = scratch_begin(&scratch.arena, 1);
@@ -4430,6 +4431,7 @@ d2r_convert(Arena *arena, D2R_ConvertParams *params)
             if(n != 0)
             {
               SLLStackPop(free_parent);
+              MemoryZeroStruct(n);
             }
             else
             {
@@ -4479,6 +4481,15 @@ d2r_convert(Arena *arena, D2R_ConvertParams *params)
             break;
           }
         }
+
+        // recycle active parents if a malformed/truncated tree stopped early
+        while(top_parent != 0)
+        {
+          D2R_ParentNode *n = top_parent;
+          SLLStackPop(top_parent);
+          SLLStackPush(free_parent, n);
+        }
+
         scratch_end(scratch2);
       }
     }
