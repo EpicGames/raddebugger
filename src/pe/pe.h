@@ -1010,6 +1010,7 @@ struct PE_BinInfo
   U64 image_base;
   U64 entry_point;
   U32 timestamp;
+  U32 image_size;
   B32 is_pe32;
   PE_WindowsSubsystem subsystem;
   U32 *check_sum;

@@ -171,12 +171,64 @@ elf_gnu_debug_link_from_bin(String8 raw_data, ELF_Bin *bin)
   return result;
 }
 
+internal String8
+elf_note_desc_from_bin(String8 raw_data, ELF_Bin *bin, String8 owner, ELF_NoteType type)
+{
+  String8 result = {0};
+
+  ELF_Class elf_class = bin->hdr.e_ident[ELF_Identifier_Class];
+
+  if (bin->hdr.e_ident[ELF_Identifier_Data] == ELF_Data_2LSB && (elf_class == ELF_Class_32 || elf_class == ELF_Class_64)) {
+    Temp scratch = scratch_begin(0, 0);
+
+    for (U64 pass = 0; pass < 2 && result.size == 0; pass += 1) {
+      U64 count         = pass == 0 ? bin->shdrs.count     : bin->phdrs.count;
+      U64 table_off     = pass == 0 ? bin->hdr.e_shoff     : bin->hdr.e_phoff;
+      U64 entry_size    = pass == 0 ? bin->hdr.e_shentsize : bin->hdr.e_phentsize;
+      U64 expected_size = pass == 0 ? (elf_class == ELF_Class_32 ? sizeof(ELF_Shdr32) : sizeof(ELF_Shdr64)) :
+                                      (elf_class == ELF_Class_32 ? sizeof(ELF_Phdr32) : sizeof(ELF_Phdr64));
+
+      if (entry_size != expected_size || table_off > raw_data.size || count > (raw_data.size - table_off)/expected_size) {
+        continue;
+      }
+
+      for (U64 idx = 0; idx < count && result.size == 0; idx += 1) {
+        B32 is_note = pass == 0 ? bin->shdrs.v[idx].sh_type == ELF_ShType_Note : bin->phdrs.v[idx].p_type == ELF_PType_Note;
+        if (!is_note) {
+          continue;
+        }
+
+        U64 off  = pass == 0 ? bin->shdrs.v[idx].sh_offset : bin->phdrs.v[idx].p_offset;
+        U64 size = pass == 0 ? bin->shdrs.v[idx].sh_size   : bin->phdrs.v[idx].p_filesz;
+        if (off > raw_data.size || size > raw_data.size - off) {
+          continue;
+        }
+
+        Temp note_temp = temp_begin(scratch.arena);
+
+        ELF_NoteList notes = elf_parse_note(scratch.arena, str8_substr(raw_data, r1u64(off, off + size)), elf_class, bin->hdr.e_machine);
+        for EachNode(n, ELF_NoteNode, notes.first) {
+          if (n->v.type == type && str8_match(n->v.owner, owner, 0) && n->v.desc.size != 0) {
+            result = n->v.desc;
+            break;
+          }
+        }
+
+        temp_end(note_temp);
+      }
+    }
+
+    scratch_end(scratch);
+  }
+
+  return result;
+}
+
 internal ELF_NoteList
 elf_parse_note(Arena *arena, String8 raw_note, ELF_Class elf_class, ELF_MachineKind e_machine)
 {
   ELF_NoteList result = {0};
-  for(U64 cursor = 0; cursor < raw_note.size; )
-  {
+  for (U64 cursor = 0; cursor < raw_note.size; ) {
     U32 owner_size;
     U64 owner_size_size = str8_deserial_read_struct(raw_note, cursor, &owner_size);
     if (owner_size_size == 0) { goto exit; }
@@ -192,14 +244,15 @@ elf_parse_note(Arena *arena, String8 raw_note, ELF_Class elf_class, ELF_MachineK
     if (type_size == 0) { goto exit; }
     cursor += type_size;
     
-    if (cursor + owner_size > raw_note.size) { goto exit; }
+    U64 owner_padded_size = AlignPow2((U64)owner_size, 4);
+    if (owner_padded_size > raw_note.size - cursor) { goto exit; }
     String8 owner = str8_cstring_capped(raw_note.str + cursor, raw_note.str + cursor + owner_size);
-    cursor += owner_size;
+    cursor += owner_padded_size;
     
-    if (cursor + desc_size > raw_note.size) { goto exit; }
+    U64 desc_padded_size = AlignPow2((U64)desc_size, 4);
+    if (desc_size > raw_note.size - cursor) { goto exit; }
     String8 desc = str8_substr(raw_note, r1u64(cursor, cursor + desc_size));
-    cursor += desc_size;
-    cursor = AlignPow2(cursor, 4);
+    cursor += Min(desc_padded_size, raw_note.size - cursor);
     
     ELF_NoteNode *n = push_array(arena, ELF_NoteNode, 1);
     n->v.owner = owner;

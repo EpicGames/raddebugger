@@ -508,6 +508,7 @@ pe_bin_info_from_data(Arena *arena, String8 data)
   // rjf: read optional header
   U16                  optional_magic     = 0;
   U64                  image_base         = 0;
+  U32                  image_size         = 0;
   U64                  entry_point        = 0;
   PE_WindowsSubsystem  subsystem          = 0;
   U32                 *check_sum          = 0;
@@ -533,6 +534,7 @@ pe_bin_info_from_data(Arena *arena, String8 data)
         if(pe_optional)
         {
           image_base               = pe_optional->image_base;
+          image_size               = pe_optional->sizeof_image;
           entry_point              = pe_optional->entry_point_va;
           subsystem                = pe_optional->subsystem;
           check_sum                = &pe_optional->check_sum;
@@ -548,6 +550,7 @@ pe_bin_info_from_data(Arena *arena, String8 data)
         if(pe_optional)
         {
           image_base               = pe_optional->image_base;
+          image_size               = pe_optional->sizeof_image;
           entry_point              = pe_optional->entry_point_va;
           subsystem                = pe_optional->subsystem;
           check_sum                = &pe_optional->check_sum;
@@ -631,6 +634,7 @@ pe_bin_info_from_data(Arena *arena, String8 data)
     info.image_base          = image_base;
     info.entry_point         = entry_point;
     info.timestamp           = file_header.time_stamp;
+    info.image_size          = image_size;
     info.is_pe32             = (optional_magic == PE_PE32_MAGIC);
     info.subsystem           = subsystem;
     info.check_sum           = check_sum;

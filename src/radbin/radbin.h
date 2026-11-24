@@ -59,6 +59,17 @@ read_only global RB_File rb_file_nil = {0};
 #define rb_file_list_first(list) ((list)->first ? (list)->first->v : &rb_file_nil)
 
 ////////////////////////////////
+//~ Breakpad Module Identity
+
+typedef struct RB_BreakpadIdentity
+{
+  String8 os;
+  String8 debug_id;
+  String8 code_id;
+  String8 code_file;
+} RB_BreakpadIdentity;
+
+////////////////////////////////
 //~ rjf: Cross-Thread State
 
 typedef struct RB_Shared RB_Shared;

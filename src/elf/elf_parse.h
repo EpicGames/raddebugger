@@ -71,6 +71,7 @@ internal B32 elf_is_dwarf_present_from_bin(String8 data, ELF_Bin *bin);
 internal String8 elf_name_from_shdr64(String8 raw_data, ELF_Bin *bin, ELF_Shdr64 *shdr);
 internal U64 elf_base_addr_from_bin(ELF_Bin *bin);
 internal ELF_GnuDebugLink elf_gnu_debug_link_from_bin(String8 raw_data, ELF_Bin *bin);
+internal String8 elf_note_desc_from_bin(String8 raw_data, ELF_Bin *bin, String8 owner, ELF_NoteType type);
 
 internal ELF_NoteList elf_parse_note(Arena *arena, String8 raw_note, ELF_Class elf_class, ELF_MachineKind e_machine);
 

@@ -7,6 +7,114 @@
 #include "radbin/generated/radbin.meta.c"
 
 ////////////////////////////////
+//~ Breakpad Module Identity
+
+internal String8
+rb_breakpad_debug_id_from_guid_age(Arena *arena, Guid guid, U32 age)
+{
+  return str8f(arena, "%08X%04X%04X%02X%02X%02X%02X%02X%02X%02X%02X%X",
+               guid.data1, guid.data2, guid.data3,
+               guid.data4[0], guid.data4[1], guid.data4[2], guid.data4[3],
+               guid.data4[4], guid.data4[5], guid.data4[6], guid.data4[7], age);
+}
+
+internal RB_BreakpadIdentity
+rb_breakpad_identity_from_inputs(Arena *arena, ExecutableImageKind exe_kind, String8 exe_name, String8 exe_data, String8 dbg_data, B32 dbg_is_pdb)
+{
+  Temp scratch = scratch_begin(&arena, 1);
+
+  RB_BreakpadIdentity result = {0};
+  if (exe_kind == ExecutableImageKind_Elf32 || exe_kind == ExecutableImageKind_Elf64) {
+    result.os = s("linux");
+
+    ELF_Bin exe_bin  = elf_bin_from_data(scratch.arena, exe_data);
+    String8 build_id = elf_note_desc_from_bin(exe_data, &exe_bin, s("GNU"), GNU_NoteType_BuildId);
+    if (exe_data.str != dbg_data.str || exe_data.size != dbg_data.size) {
+      ELF_Bin dbg_bin      = elf_bin_from_data(scratch.arena, dbg_data);
+      String8 dbg_build_id = elf_note_desc_from_bin(dbg_data, &dbg_bin, s("GNU"), GNU_NoteType_BuildId);
+      if (build_id.size != 0 && dbg_build_id.size != 0 && !str8_match(build_id, dbg_build_id, 0)) {
+        log_user_errorf("ELF executable and debug file build IDs do not match.\n");
+        goto done;
+      }
+      if (build_id.size == 0) {
+        build_id = dbg_build_id;
+      }
+    }
+
+    if (build_id.size) {
+      // Breakpad's debug ID uses the first 16 bytes as a GUID, zero-padded,
+      // followed by age zero; INFO CODE_ID preserves every original byte
+      Guid guid = {0};
+      MemoryCopy(&guid, build_id.str, Min(sizeof(guid), build_id.size));
+      result.debug_id = rb_breakpad_debug_id_from_guid_age(arena, guid, 0);
+      result.code_id  = str8(push_array_no_zero(arena, U8, build_id.size*2), build_id.size*2);
+      for EachIndex(idx, build_id.size) {
+        result.code_id.str[idx*2 + 0] = "0123456789ABCDEF"[build_id.str[idx] >> 4];
+        result.code_id.str[idx*2 + 1] = "0123456789ABCDEF"[build_id.str[idx] & 15];
+      }
+    }
+  } else if (exe_kind == ExecutableImageKind_CoffPe || dbg_is_pdb) {
+    result.os = s("windows");
+
+    Guid guid     = {0};
+    U32  age      = 0;
+    B32  got_guid = 0;
+    if (dbg_is_pdb) {
+      MSF_RawStreamTable *st        = msf_raw_stream_table_from_data(scratch.arena, dbg_data);
+      String8             info_data = msf_data_from_stream_number(scratch.arena, dbg_data, st, PDB_FixedStream_Info);
+      PDB_InfoParse       info      = {0};
+      pdb_info_parse_from_data(info_data, &info);
+
+      if (info.version >= PDB_InfoVersion_VC70_DEP) {
+        guid     = info.guid;
+        age      = info.age;
+        got_guid = 1;
+      }
+    }
+
+    if (exe_data.size) {
+      PE_BinInfo pe = pe_bin_info_from_data(scratch.arena, exe_data);
+
+      if (pe.image_size != 0 && exe_name.size != 0) {
+        result.code_id   = str8f(arena, "%08X%X", pe.timestamp, pe.image_size);
+        result.code_file = str8_skip_last_slash(exe_name);
+      }
+
+      if (pe.data_dir_count > PE_DataDirectoryIndex_DEBUG) {
+        Rng1U64 range = pe.data_dir_franges[PE_DataDirectoryIndex_DEBUG];
+        if (range.min <= range.max && range.max <= exe_data.size && dim_1u64(range) >= sizeof(PE_DebugDirectory)) {
+          PE_DebugInfoList debug_info = pe_debug_info_list_from_raw_debug_dir(scratch.arena, exe_data, str8_substr(exe_data, range));
+          for EachNode(n, PE_DebugInfoNode, debug_info.first) {
+            if (n->v.cv_pdb70_header.magic == PE_CODEVIEW_PDB70_MAGIC &&
+                n->v.header.size >= sizeof(PE_CvHeaderPDB70) &&
+                n->v.header.foff <= exe_data.size && n->v.header.size <= exe_data.size - n->v.header.foff) {
+              if (got_guid && (!MemoryMatchStruct(&guid, &n->v.guid) || age != n->v.age)) {
+                log_user_errorf("PE executable and PDB GUID/age do not match.\n");
+                goto done;
+              }
+
+              guid     = n->v.guid;
+              age      = n->v.age;
+              got_guid = 1;
+
+              break;
+            }
+          }
+        }
+      }
+    }
+
+    if(got_guid) {
+      result.debug_id = rb_breakpad_debug_id_from_guid_age(arena, guid, age);
+    }
+  }
+  done:;
+
+  scratch_end(scratch);
+  return result;
+}
+
+////////////////////////////////
 //~ rjf: Top-Level Entry Points
 
 internal void
@@ -556,6 +664,7 @@ rb_thread_entry_point(void *p)
   //- rjf: perform operation based on output kind
   //
   String8List output_blobs = {0};
+  B32 output_valid = output_kind != OutputKind_Breakpad;
   switch(output_kind)
   {
     ////////////////////////////
@@ -710,9 +819,16 @@ rb_thread_entry_point(void *p)
       Arena *conversion_arena = arena_alloc();
       
       //- rjf: convert inputs to RDI info
-      B32 convert_done = 0;
-      RDIM_BakeParams pdb_bake_params = {0};
-      RDIM_BakeParams dwarf_bake_params = {0};
+      B32                 convert_done          = 0;
+      RDIM_BakeParams     pdb_bake_params       = {0};
+      RDIM_BakeParams     dwarf_bake_params     = {0};
+      ExecutableImageKind breakpad_exe_kind     = ExecutableImageKind_Null;
+      String8             breakpad_exe_name     = {0};
+      String8             breakpad_exe_data     = {0};
+      String8             breakpad_dbg_data     = {0};
+      String8             breakpad_module_name  = {0};
+      B32                 breakpad_dbg_is_pdb   = 0;
+      B32                 breakpad_mixed_inputs = 0;
       typedef struct RDIM_BakeParamsNode RDIM_BakeParamsNode;
       struct RDIM_BakeParamsNode
       {
@@ -850,6 +966,11 @@ rb_thread_entry_point(void *p)
             convert_params.subset_flags  = subset_flags;
             convert_params.deterministic = cmd_line_has_flag(cmdline, str8_lit("deterministic"));
             convert_params.skip_exe_hash = output_kind == OutputKind_Breakpad;
+            breakpad_exe_kind    = exe_kind;
+            breakpad_exe_name    = exe_name;
+            breakpad_exe_data    = exe_data;
+            breakpad_dbg_data    = dbg_data;
+            breakpad_module_name = exe_name;
           }
           ProfScope("convert") dwarf_bake_params = d2r_convert(conversion_arena, &convert_params);
         }
@@ -867,6 +988,13 @@ rb_thread_entry_point(void *p)
           String8 pdb_path  = pdb_file->path;
           String8 exe_data  = exe_file->data;
           String8 pdb_data  = pdb_file->data;
+          breakpad_mixed_inputs = breakpad_exe_kind != ExecutableImageKind_Null;
+          breakpad_exe_kind     = ExecutableImageKind_CoffPe;
+          breakpad_exe_name     = exe_path;
+          breakpad_exe_data     = exe_data;
+          breakpad_dbg_data     = pdb_data;
+          breakpad_module_name  = pdb_path;
+          breakpad_dbg_is_pdb   = 1;
           
           // rjf: convert
           P2R_ConvertParams convert_params = {0};
@@ -884,6 +1012,7 @@ rb_thread_entry_point(void *p)
         //- rjf: RDI inputs => RDI joining
         if(input_files_from_format_table[RB_FileFormat_RDI].count > 1)
         {
+          breakpad_mixed_inputs = 1;
           convert_done = 1;
           log_infof("RDIs specified; joining RDIs\n");
           
@@ -1096,52 +1225,60 @@ rb_thread_entry_point(void *p)
           lane_sync_u64(&p2b_shared, 0);
           
           //- rjf: dump MODULE record
+          U64 module_valid = 0;
           if(lane_idx() == 0)
           {
-            // rjf: pick name to identify module
             RDI_TopLevelInfo *tli = rdi_element_from_name_idx(rdi, TopLevelInfo, 0);
-            String8 module_name_string = str8_from_rdi_string_idx(rdi, tli->exe_name_string_idx);
-            if(module_name_string.size == 0 && input_files.first != 0)
-            {
+
+            // rjf: pick name to identify module
+            String8 module_name_string = breakpad_module_name;
+            if(module_name_string.size == 0) {
+              module_name_string = str8_from_rdi_string_idx(rdi, tli->exe_name_string_idx);
+            }
+            if(module_name_string.size == 0 && input_files.first != 0) {
               module_name_string = input_files.first->v->path;
             }
-            
-            // rjf: pick string for unique code
-            String8 unique_identifier_string = {0};
-            if(unique_identifier_string.size == 0 && tli->exe_hash != 0)
+            module_name_string = str8_skip_last_slash(module_name_string);
+
+            String8 cpu = {0};
+            switch(tli->arch)
             {
-              unique_identifier_string = str8f(arena, "%I64x", tli->exe_hash);
+            case RDI_Arch_X64: cpu = str8_lit("x86_64"); break;
+            case RDI_Arch_X86: cpu = str8_lit("x86");    break;
             }
-            if(unique_identifier_string.size == 0)
+
+            RB_BreakpadIdentity identity = {0};
+            if( ! breakpad_mixed_inputs)
             {
-              Temp scratch = scratch_begin(&arena, 1);
-              String8 msf_data = input_files.first->v->data;
-              MSF_RawStreamTable *st = msf_raw_stream_table_from_data(scratch.arena, msf_data);
-              String8 info_data = msf_data_from_stream_number(scratch.arena, msf_data, st, PDB_FixedStream_Info);
-              PDB_Info *info = pdb_info_from_data(scratch.arena, info_data);
-              if(info != 0 && info_data.size >= sizeof(PDB_InfoHeader))
+              identity = rb_breakpad_identity_from_inputs(arena, breakpad_exe_kind, breakpad_exe_name, breakpad_exe_data, breakpad_dbg_data, breakpad_dbg_is_pdb);
+            }
+            module_valid = identity.debug_id.size != 0 && cpu.size != 0 && module_name_string.size != 0;
+            if(module_valid)
+            {
+              output_valid = 1;
+              str8_list_pushf(arena, &p2b_shared->dump, "MODULE %S %S %S %S\n", identity.os, cpu, identity.debug_id, module_name_string);
+              if(identity.code_id.size != 0)
               {
-                PDB_InfoHeader *info_header = (PDB_InfoHeader *)info_data.str;
-                Guid guid = info->auth_guid;
-                unique_identifier_string = str8f(arena, "%08X%04X%04X%02X%02X%02X%02X%02X%02X%02X%02X%u",
-                                                 guid.data1,
-                                                 guid.data2,
-                                                 guid.data3,
-                                                 guid.data4[0],
-                                                 guid.data4[1],
-                                                 guid.data4[2],
-                                                 guid.data4[3],
-                                                 guid.data4[4],
-                                                 guid.data4[5],
-                                                 guid.data4[6],
-                                                 guid.data4[7],
-                                                 info_header->age);
+                if(identity.code_file.size != 0)
+                {
+                  str8_list_pushf(arena, &p2b_shared->dump, "INFO CODE_ID %S %S\n", identity.code_id, identity.code_file);
+                }
+                else
+                {
+                  str8_list_pushf(arena, &p2b_shared->dump, "INFO CODE_ID %S\n", identity.code_id);
+                }
               }
-              scratch_end(scratch);
             }
-            
-            // rjf: push record
-            str8_list_pushf(arena, &p2b_shared->dump, "MODULE windows x86_64 %S %S\n", unique_identifier_string, module_name_string);
+            else
+            {
+              log_user_errorf("Cannot emit Breakpad symbols: provide a single supported module with an ELF build ID or PDB/PE GUID and age.\n");
+              output_valid = 0;
+            }
+          }
+          lane_sync_u64(&module_valid, 0);
+          if( ! module_valid)
+          {
+            break;
           }
           
           //- rjf: dump FILE records
@@ -1616,7 +1753,7 @@ rb_thread_entry_point(void *p)
   //////////////////////////////
   //- rjf: write outputs
   //
-  if(lane_idx() == 0)
+  if(lane_idx() == 0 && output_valid)
   {
     if(output_path.size != 0) ProfScope("write outputs [file]")
     {
