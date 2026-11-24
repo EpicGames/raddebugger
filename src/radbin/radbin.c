@@ -713,7 +713,6 @@ rb_thread_entry_point(void *p)
       B32 convert_done = 0;
       RDIM_BakeParams pdb_bake_params = {0};
       RDIM_BakeParams dwarf_bake_params = {0};
-      RDIM_BakeParams dwarf_bake_params_2 = {0};
       typedef struct RDIM_BakeParamsNode RDIM_BakeParamsNode;
       struct RDIM_BakeParamsNode
       {
@@ -846,10 +845,11 @@ rb_thread_entry_point(void *p)
                 scratch_end(scratch);
               }break;
             }
-            convert_params.exe_name = exe_name;
-            convert_params.exe_data = exe_data;
+            convert_params.exe_name      = exe_name;
+            convert_params.exe_data      = exe_data;
             convert_params.subset_flags  = subset_flags;
             convert_params.deterministic = cmd_line_has_flag(cmdline, str8_lit("deterministic"));
+            convert_params.skip_exe_hash = output_kind == OutputKind_Breakpad;
           }
           ProfScope("convert") dwarf_bake_params = d2r_convert(conversion_arena, &convert_params);
         }

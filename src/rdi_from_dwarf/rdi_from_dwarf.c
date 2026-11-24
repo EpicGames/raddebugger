@@ -359,6 +359,7 @@ d2r_convert(Arena *arena, D2R_ConvertParams *params)
   //
   U64 exe_hash = 0;
   ProfScope("compute exe hash")
+  if( ! params->skip_exe_hash)
   {
     if(lane_idx() == 0)
     {

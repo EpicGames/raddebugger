@@ -99,6 +99,7 @@ struct D2R_ConvertParams
   PathStyle path_style;
   RDIM_SubsetFlags subset_flags;
   B32 deterministic;
+  B32 skip_exe_hash;
 };
 
 ////////////////////////////////
