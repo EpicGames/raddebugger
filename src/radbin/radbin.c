@@ -1498,7 +1498,7 @@ rb_thread_entry_point(void *p)
 
                 // advance by index so empty intervals and sequence-end gaps cannot stop
                 // the rest of the function; only emit nonempty spans clipped to the FUNC
-                for(U64 line_info_idx = first < max_U64 ? first - 1 : 0;
+                for(U64 line_info_idx = first > 0 ? first - 1 : 0;
                     line_info_idx < line_info.count && line_info.voffs[line_info_idx] < voff_range.max;
                     line_info_idx += 1)
                 {
