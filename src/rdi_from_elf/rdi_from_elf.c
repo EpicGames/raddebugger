@@ -5,13 +5,21 @@ internal RDIM_BinarySectionList
 e2r_rdi_binary_sections_from_elf_section_table(Arena *arena, String8 data, ELF_Bin *bin, ELF_Shdr64Array *shdrs)
 {
   RDIM_BinarySectionList result = {0};
+  U64 base_vaddr = elf_base_addr_from_bin(bin);
   for EachIndex(idx, shdrs->count)
   {
     // rjf: unpack section
     ELF_Shdr64 *src_section = &shdrs->v[idx];
     String8 name = elf_name_from_shdr64(data, bin, src_section);
-    U64 voff_first = src_section->sh_addr;
-    U64 voff_opl   = voff_first + src_section->sh_size;
+
+    U64 voff_first = 0;
+    U64 voff_opl   = 0;
+    if((src_section->sh_flags & ELF_Shf_Alloc) && src_section->sh_size != 0 && src_section->sh_addr >= base_vaddr && src_section->sh_size <= max_U64 - src_section->sh_addr)
+    {
+      voff_first = src_section->sh_addr - base_vaddr;
+      voff_opl   = voff_first + src_section->sh_size;
+    }
+
     U64 foff_first = src_section->sh_offset;
     U64 foff_opl   = foff_first + src_section->sh_size;
     

@@ -442,7 +442,7 @@ DW_LanguageTable:
   
   //- rjf: version 5 forms
   {Strx          0x1a  5      String}
-  {Addrx         0x1b  5      String}
+  {Addrx         0x1b  5      Address}
   {RefSup4       0x1c  5      Reference}
   {StrpSup       0x1d  5      String}
   {Data16        0x1e  5      Const}

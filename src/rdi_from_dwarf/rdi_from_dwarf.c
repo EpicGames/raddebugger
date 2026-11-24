@@ -354,14 +354,19 @@ d2r_convert(Arena *arena, D2R_ConvertParams *params)
   // from our final debug info - a good enough heuristic is to disqualify them by
   // whether or not they actually fall into the ranges covered by the binary sections.
   //
-  Rng1U64 acceptable_vaddr_range = {0};
+  Rng1U64 acceptable_vaddr_range      = {0};
+  B32     have_acceptable_vaddr_range = 0;
   {
     acceptable_vaddr_range.min = max_U64;
     acceptable_vaddr_range.max = 0;
     for EachNode(n, RDIM_BinarySectionNode, binary_sections.first)
     {
-      acceptable_vaddr_range.min = Min(base_vaddr + n->v.voff_first, acceptable_vaddr_range.min);
-      acceptable_vaddr_range.max = Max(base_vaddr + n->v.voff_opl, acceptable_vaddr_range.max);
+      if(n->v.voff_first < n->v.voff_opl && n->v.voff_opl <= max_U64 - base_vaddr)
+      {
+        acceptable_vaddr_range.min = Min(base_vaddr + n->v.voff_first, acceptable_vaddr_range.min);
+        acceptable_vaddr_range.max = Max(base_vaddr + n->v.voff_opl, acceptable_vaddr_range.max);
+        have_acceptable_vaddr_range = 1;
+      }
     }
   }
   
@@ -388,7 +393,7 @@ d2r_convert(Arena *arena, D2R_ConvertParams *params)
     top_level_info.arch     = rdi_arch_from_arch(arch);
     top_level_info.exe_name = params->exe_name;
     top_level_info.exe_hash = exe_hash;
-    top_level_info.voff_max = acceptable_vaddr_range.max - base_vaddr;
+    top_level_info.voff_max = have_acceptable_vaddr_range ? acceptable_vaddr_range.max - base_vaddr : 0;
     if(!params->deterministic)
     {
       // TODO(rjf): top_level_info.guid = ...;
@@ -898,6 +903,16 @@ d2r_convert(Arena *arena, D2R_ConvertParams *params)
         {
           B32 stepped = dw2_line_vm_step(line_table_header, unit_line_table_data, &vm);
           DW2_LineVMRegs vm_regs = vm.regs;
+          B32 address_can_rebase = vm_regs.address >= base_vaddr;
+          
+          // below-base tombstones must not wrap into high virtual offsets; a
+          // run with an invalid endpoint cannot be emitted as a valid range
+          if( ! address_can_rebase && (vm.emit_row || vm_regs.end_sequence || !stepped))
+          {
+            first_line_seq_chunk = last_line_seq_chunk = 0;
+            total_line_seq_count = 0;
+            line_seq_src_file = 0;
+          }
 
           //- rjf: map file index -> rdim src file
           RDIM_SrcFile *src_file = 0;
@@ -976,7 +991,7 @@ d2r_convert(Arena *arena, D2R_ConvertParams *params)
           }
 
           //- rjf: emit lines
-          if(vm.emit_row && !vm_regs.end_sequence && vm_regs.address != 0)
+          if(vm.emit_row && !vm_regs.end_sequence && vm_regs.address != 0 && address_can_rebase)
           {
             // rjf: grab the last emitted line info
             U32 last_line = 0;
@@ -3202,24 +3217,34 @@ d2r_convert(Arena *arena, D2R_ConvertParams *params)
           Rng1U64List ranges = dw2_rnglist_from_form_val(scratch.arena, unit_parse_ctx, raw, ranges_attrib->val);
           for EachNode(n, Rng1U64Node, ranges.first)
           {
-            rdim_rng1u64_chunk_list_push(arena, &unit_voff_ranges, 256, (RDIM_Rng1U64){n->v.min - base_vaddr, n->v.max - base_vaddr});
+            if(n->v.min >= base_vaddr && n->v.min < n->v.max)
+            {
+              rdim_rng1u64_chunk_list_push(arena, &unit_voff_ranges, 256, (RDIM_Rng1U64){n->v.min - base_vaddr, n->v.max - base_vaddr});
+            }
           }
         }
         
         // rjf: gather contiguous range from low-pc / high-pc attribute
         if(lopc_attrib != &dw2_attrib_nil && hipc_attrib != &dw2_attrib_nil)
         {
-          U64 voff_base = lopc_attrib->val.addr - base_vaddr;
-          U64 voff_opl = 0;
+          U64 vaddr_min = lopc_attrib->val.addr;
+          U64 vaddr_opl = 0;
           if(dw_attrib_class_from_form_kind(unit_parse_ctx->version, unit_parse_ctx->exts, hipc_attrib->val.kind) & DW_AttribClass_Address)
           {
-            voff_opl = voff_base + hipc_attrib->val.u128.u64[0];
+            vaddr_opl = hipc_attrib->val.addr;
           }
           else
           {
-            voff_opl = hipc_attrib->val.addr;
+            U64 size = hipc_attrib->val.u128.u64[0];
+            if(size <= max_U64 - vaddr_min)
+            {
+              vaddr_opl = vaddr_min + size;
+            }
           }
-          rdim_rng1u64_chunk_list_push(arena, &unit_voff_ranges, 256, (RDIM_Rng1U64){voff_base, voff_opl});
+          if(vaddr_min >= base_vaddr && vaddr_min < vaddr_opl)
+          {
+            rdim_rng1u64_chunk_list_push(arena, &unit_voff_ranges, 256, (RDIM_Rng1U64){vaddr_min - base_vaddr, vaddr_opl - base_vaddr});
+          }
         }
       }
       
@@ -3396,7 +3421,7 @@ d2r_convert(Arena *arena, D2R_ConvertParams *params)
             for EachNode(n, Rng1U64Node, tag_ranges.first) {
               // discard linker tombstones and invalid absolute ranges before rebasing
               if (n->v.min == 0 || n->v.min < base_vaddr || n->v.min >= n->v.max ||
-                  (binary_sections.count != 0 &&
+                  (have_acceptable_vaddr_range &&
                    (n->v.min < acceptable_vaddr_range.min || n->v.max > acceptable_vaddr_range.max))) {
                 continue;
               }

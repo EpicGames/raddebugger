@@ -128,15 +128,16 @@ internal U64
 elf_base_addr_from_bin(ELF_Bin *bin)
 {
   U64 base_vaddr = 0;
+  B32 found_load = 0;
   if(bin->hdr.e_type != ELF_Type_Dyn)
   {
     for EachIndex(phdr_idx, bin->phdrs.count)
     {
       ELF_Phdr64 *phdr = &bin->phdrs.v[phdr_idx];
-      if(phdr->p_type == ELF_PType_Load &&
-         (base_vaddr == 0 || phdr->p_vaddr < base_vaddr))
+      if(phdr->p_type == ELF_PType_Load && ( ! found_load || phdr->p_vaddr < base_vaddr))
       {
         base_vaddr = phdr->p_vaddr;
+        found_load = 1;
       }
     }
   }

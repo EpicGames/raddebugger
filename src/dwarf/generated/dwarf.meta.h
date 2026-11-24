@@ -1240,7 +1240,7 @@ X(ExprLoc, 0x18, DW_Version_4, DW_AttribClass_ExprLoc)\
 X(FlagPresent, 0x19, DW_Version_4, DW_AttribClass_Flag)\
 X(RefSig8, 0x20, DW_Version_4, DW_AttribClass_Reference)\
 X(Strx, 0x1a, DW_Version_5, DW_AttribClass_String)\
-X(Addrx, 0x1b, DW_Version_5, DW_AttribClass_String)\
+X(Addrx, 0x1b, DW_Version_5, DW_AttribClass_Address)\
 X(RefSup4, 0x1c, DW_Version_5, DW_AttribClass_Reference)\
 X(StrpSup, 0x1d, DW_Version_5, DW_AttribClass_String)\
 X(Data16, 0x1e, DW_Version_5, DW_AttribClass_Const)\
