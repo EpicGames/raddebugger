@@ -72,13 +72,14 @@ d2r_unique_tag_node_is_less_than(D2R_UniqueTagNode **l, D2R_UniqueTagNode **r)
 
 internal void
 d2r_collect_tag_attributes(Arena *arena,
-                           HashMap *attribs_hm,
+                           D2R_CommonAttribs *attribs,
                            DW_Raw *raw,
                            Rng1U64Array unit_info_tag_ranges_array,
                            DW2_ParseCtx *unit_parse_ctxs,
                            DW2_Tag tag)
 {
   Temp scratch = scratch_begin(&arena, 1);
+  MemoryZeroArray(attribs->v);
 
   typedef struct Task {
     struct Task *next;
@@ -149,11 +150,21 @@ d2r_collect_tag_attributes(Arena *arena,
           continue;
         }
 
-        // push unique attributes, first seen attributes take precedance
-        if ( ! hash_map_search_u64_raw(attribs_hm, n->v.attrib_kind)) {
-          DW2_AttribNode *dst = push_array(arena, DW2_AttribNode, 1);
-          dst->v = n->v;
-          hash_map_push_u64_raw(arena, attribs_hm, n->v.attrib_kind, &dst->v);
+        // retain only the attributes consumed by symbol conversion
+        U64 slot = D2R_CommonAttrib_COUNT;
+        switch (n->v.attrib_kind) {
+#define X(id, kind) case DW_AttribKind_##kind: slot = D2R_CommonAttrib_##kind; break;
+          D2R_CommonAttrib_XList
+#undef X
+        }
+        if (slot < D2R_CommonAttrib_COUNT && attribs->v[slot] == 0) {
+          // original tag lives in the caller's arena; referenced tags do not
+          DW2_Attrib *dst = &n->v;
+          if (t != &first_task) {
+            dst = &attribs->inherited[slot];
+            *dst = n->v;
+          }
+          attribs->v[slot] = dst;
         }
       }
     }
@@ -3334,31 +3345,14 @@ d2r_convert(Arena *arena, D2R_ConvertParams *params)
           DW2_Tag tag = {0};
           off += dw2_read_tag(temp.arena, raw, unit_parse_ctx, raw->sec[DW_SectionKind_Info].data, off, &tag);
 
-          HashMap attribs_hm = {0};
-          d2r_collect_tag_attributes(temp.arena, &attribs_hm, raw, unit_info_tag_ranges_array, unit_parse_ctxs, tag);
-
-#define DW2_CommonAttrib_XList \
-          X(name,            Name)           \
-          X(linkname,        LinkageName)    \
-          X(type,            Type)           \
-          X(inline,          Inline)         \
-          X(ranges,          Ranges)         \
-          X(lopc,            LowPc)          \
-          X(hipc,            HighPc)         \
-          X(constval,        ConstValue)     \
-          X(location,        Location)       \
-          X(framebase,       FrameBase)      \
-          X(external,        External)       \
-          X(decl,            Declaration)    \
-          X(abstract_origin, AbstractOrigin) \
-          X(specification,   Specification)  \
-          // end of list
+          D2R_CommonAttribs attribs;
+          d2r_collect_tag_attributes(temp.arena, &attribs, raw, unit_info_tag_ranges_array, unit_parse_ctxs, tag);
 
           // declare attributes
 #define X(id, kind, ...) \
-          DW2_Attrib *id##_attrib = hash_map_search_u64_raw(&attribs_hm, DW_AttribKind_##kind); \
+          DW2_Attrib *id##_attrib = attribs.v[D2R_CommonAttrib_##kind]; \
           id##_attrib = id##_attrib ? id##_attrib : &dw2_attrib_nil;
-          DW2_CommonAttrib_XList
+          D2R_CommonAttrib_XList
 #undef X
           
           ////////////////////////

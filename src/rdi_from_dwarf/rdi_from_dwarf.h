@@ -70,6 +70,40 @@ struct D2R_UnitDedupedTagMap
 };
 
 ////////////////////////////////
+// Common Symbol Attributes
+
+#define D2R_CommonAttrib_XList \
+  X(name,            Name)           \
+  X(linkname,        LinkageName)    \
+  X(type,            Type)           \
+  X(inline,          Inline)         \
+  X(ranges,          Ranges)         \
+  X(lopc,            LowPc)          \
+  X(hipc,            HighPc)         \
+  X(constval,        ConstValue)     \
+  X(location,        Location)       \
+  X(framebase,       FrameBase)      \
+  X(external,        External)       \
+  X(decl,            Declaration)    \
+  X(abstract_origin, AbstractOrigin) \
+  X(specification,   Specification)  \
+  // end of list
+
+typedef enum D2R_CommonAttrib
+{
+#define X(id, kind) D2R_CommonAttrib_##kind,
+  D2R_CommonAttrib_XList
+#undef X
+  D2R_CommonAttrib_COUNT
+} D2R_CommonAttrib;
+
+typedef struct D2R_CommonAttribs
+{
+  DW2_Attrib *v[D2R_CommonAttrib_COUNT];
+  DW2_Attrib inherited[D2R_CommonAttrib_COUNT];
+} D2R_CommonAttribs;
+
+////////////////////////////////
 // Lightweight Name Space
 
 typedef struct D2R_NameNode D2R_NameNode;
