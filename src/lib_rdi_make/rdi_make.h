@@ -313,25 +313,27 @@ RDIM_CheckNil(nil,p) ? \
 //~ rjf: RDI Subsets
 
 #define RDIM_Subset_XList \
-X(BinarySections,              binary_sections)\
-X(Units,                       units)\
-X(Procedures,                  procedures)\
-X(GlobalVariables,             global_variables)\
-X(ThreadVariables,             thread_variables)\
-X(Constants,                   constants)\
-X(Scopes,                      scopes)\
-X(Locals,                      locals)\
-X(Types,                       types)\
-X(UDTs,                        udts)\
-X(LineInfo,                    line_info)\
-X(InlineLineInfo,              inline_line_info)\
-Y(GlobalVariableNameMap,       global_variable_name_map)\
-Y(ThreadVariableNameMap,       thread_variable_name_map)\
-Y(ProcedureNameMap,            procedure_name_map)\
-Y(ConstantNameMap,             constant_name_map)\
-Y(TypeNameMap,                 type_name_map)\
-Y(LinkNameProcedureNameMap,    link_name_procedure_name_map)\
-Y(NormalSourcePathNameMap,     normal_source_path_name_map)\
+  X(BinarySections,              binary_sections)              \
+  X(Units,                       units)                        \
+  X(Procedures,                  procedures)                   \
+  X(GlobalVariables,             global_variables)             \
+  X(ThreadVariables,             thread_variables)             \
+  X(Constants,                   constants)                    \
+  X(Scopes,                      scopes)                       \
+  X(Locals,                      locals)                       \
+  X(Types,                       types)                        \
+  X(UDTs,                        udts)                         \
+  X(LineInfo,                    line_info)                    \
+  X(InlineLineInfo,              inline_line_info)             \
+  Y(GlobalVariableNameMap,       global_variable_name_map)     \
+  Y(ThreadVariableNameMap,       thread_variable_name_map)     \
+  Y(ProcedureNameMap,            procedure_name_map)           \
+  Y(ConstantNameMap,             constant_name_map)            \
+  Y(TypeNameMap,                 type_name_map)                \
+  Y(LinkNameProcedureNameMap,    link_name_procedure_name_map) \
+  Y(NormalSourcePathNameMap,     normal_source_path_name_map)  \
+  X(Namespaces,                  namespaces)                   \
+  // end of list
 
 typedef enum RDIM_Subset
 {

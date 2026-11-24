@@ -697,7 +697,7 @@ rb_thread_entry_point(void *p)
         }break;
         case OutputKind_Breakpad:
         {
-          subset_flags = (RDIM_SubsetFlag_Units|RDIM_SubsetFlag_Procedures|RDIM_SubsetFlag_Scopes|RDIM_SubsetFlag_LineInfo|RDIM_SubsetFlag_InlineLineInfo);
+          subset_flags = (RDIM_SubsetFlag_Units|RDIM_SubsetFlag_Procedures|RDIM_SubsetFlag_Scopes|RDIM_SubsetFlag_LineInfo|RDIM_SubsetFlag_InlineLineInfo|RDIM_SubsetFlag_Namespaces);
         }break;
         case OutputKind_VOff2Line:
         {

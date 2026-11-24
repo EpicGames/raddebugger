@@ -171,6 +171,112 @@ d2r_collect_tag_attributes(Arena *arena,
   scratch_end(scratch);
 }
 
+internal D2R_NameNode *
+d2r_name_parent(HashTable *name_ht, D2R_NameNode *node)
+{
+  // lexical contexts need no reference walk
+  D2R_NameNode *result = node->parent;
+  if (node->ref_offs[0] != 0 || node->ref_offs[1] != 0 || node->ref_offs[2] != 0) {
+    Temp scratch = scratch_begin(0, 0);
+
+    typedef struct Task {
+      struct Task  *next;
+      D2R_NameNode *node;
+      B32           use_parent;
+    } Task;
+
+    HashMap  visited    = {0};
+    Task     first_task = {0, node, 0};
+    Task    *tasks      = &first_task;
+    while (tasks != 0) {
+      Task *t = tasks;
+      SLLStackPop(tasks);
+      if (t->use_parent) {
+        if (t->node->parent != 0) {
+          result = t->node->parent;
+          break;
+        }
+        continue;
+      }
+      if (hash_map_search_u64_u64(&visited, t->node->info_off)) {
+        continue;
+      }
+      hash_map_push_u64_u64(scratch.arena, &visited, t->node->info_off, 1);
+
+      // prefer declaration/origin context over the lexical parent
+      Task *fallback = push_array(scratch.arena, Task, 1);
+      fallback->node = t->node;
+      fallback->use_parent = 1;
+      SLLStackPush(tasks, fallback);
+      for EachElement(ref_idx, t->node->ref_offs) {
+        U64           off = t->node->ref_offs[ref_idx];
+        D2R_NameNode *ref = off != 0 ? hash_table_search_u64_raw(name_ht, off) : 0;
+        if (ref != 0) {
+          Task *next = push_array(scratch.arena, Task, 1);
+          next->node = ref;
+          SLLStackPush(tasks, next);
+        }
+      }
+    }
+    scratch_end(scratch);
+  }
+  return result;
+}
+
+internal B32
+d2r_name_nodes_share_identity(HashTable *name_ht, D2R_NameNode *a, D2R_NameNode *b)
+{
+  if (a == 0 || b == 0) {
+    return 0;
+  }
+  if (a == b) {
+    return 1;
+  }
+
+  Temp scratch = scratch_begin(0, 0);
+
+  typedef struct Task {
+    struct Task  *next;
+    D2R_NameNode *node;
+  } Task;
+
+  HashMap       visited[2] = {0};
+  D2R_NameNode *roots[]    = {a, b};
+  B32           result     = 0;
+  for EachElement(pass_idx, roots) {
+    Task  first = {0, roots[pass_idx]};
+    Task *tasks = &first;
+    while (tasks != 0) {
+      Task *t = tasks;
+      SLLStackPop(tasks);
+
+      if (pass_idx == 1 && hash_map_search_u64_u64(&visited[0], t->node->info_off)) {
+        result = 1;
+        goto done;
+      }
+
+      if (hash_map_search_u64_u64(&visited[pass_idx], t->node->info_off)) {
+        continue;
+      }
+      hash_map_push_u64_u64(scratch.arena, &visited[pass_idx], t->node->info_off, 1);
+
+      for EachElement(ref_idx, t->node->ref_offs) {
+        U64           off = t->node->ref_offs[ref_idx];
+        D2R_NameNode *ref = off != 0 ? hash_table_search_u64_raw(name_ht, off) : 0;
+        if (ref != 0) {
+          Task *next = push_array(scratch.arena, Task, 1);
+          next->node = ref;
+          SLLStackPush(tasks, next);
+        }
+      }
+    }
+  }
+  done:;
+
+  scratch_end(scratch);
+  return result;
+}
+
 ////////////////////////////////
 //~ rjf: Main Conversion Entry Point (New)
 
@@ -187,6 +293,7 @@ d2r_convert(Arena *arena, D2R_ConvertParams *params)
   
   B32 make_procedures   = !!(params->subset_flags & RDIM_SubsetFlag_Procedures || params->subset_flags & RDIM_SubsetFlag_ProcedureNameMap);
   B32 make_types        = !!(params->subset_flags & RDIM_SubsetFlag_Types || params->subset_flags & RDIM_SubsetFlag_TypeNameMap);
+  B32 make_namespaces   = !!(params->subset_flags & RDIM_SubsetFlag_Namespaces);
   B32 make_scopes       = make_procedures && !!(params->subset_flags & RDIM_SubsetFlag_Scopes);
   B32 make_locals       = make_scopes && !!(params->subset_flags & RDIM_SubsetFlag_Locals);
   B32 make_global_vars  = !!(params->subset_flags & RDIM_SubsetFlag_GlobalVariables || params->subset_flags & RDIM_SubsetFlag_GlobalVariableNameMap);
@@ -3036,6 +3143,10 @@ d2r_convert(Arena *arena, D2R_ConvertParams *params)
     RDIM_SymbolChunkList procedures;
     RDIM_ScopeChunkList scopes;
     RDIM_InlineSiteChunkList inline_sites;
+    RDIM_NamespaceChunkList namespaces;
+    D2R_NameNode *first_name_node;
+    D2R_NameNode *last_name_node;
+    U64 name_node_count;
   };
   D2R_ScopeContainerMap *scope_container_map = 0;
   D2R_SubUnitWorkArtifacts *sub_unit_work_artifacts = 0;
@@ -3043,7 +3154,7 @@ d2r_convert(Arena *arena, D2R_ConvertParams *params)
   {
     if(lane_idx() == 0)
     {
-      if(make_scopes)
+      if(make_types && make_scopes)
       {
         scope_container_map = push_array(scratch.arena, D2R_ScopeContainerMap, 1);
         scope_container_map->slots_count = total_tag_count_estimate/8 + 1;
@@ -3086,6 +3197,7 @@ d2r_convert(Arena *arena, D2R_ConvertParams *params)
           RDIM_Scope            *scope;
           RDIM_Type             *container_type;
           RDIM_Namespace        *container_namespace;
+          D2R_NameNode          *name_context;
           RDIM_LocationCaseList  framebase_location_cases;
         };
         D2R_ParentNode *top_parent         = 0;
@@ -4124,7 +4236,7 @@ d2r_convert(Arena *arena, D2R_ConvertParams *params)
             }break;
           }
           
-          if(make_scopes)
+          if(scope_container_map != 0)
           {
             ////////////////////////
             //- rjf: if we've determined that the parent tag is a container to
@@ -4165,6 +4277,67 @@ d2r_convert(Arena *arena, D2R_ConvertParams *params)
             }
           }
           
+          // collect naming contexts without type dependencies, layouts, or type merging
+          D2R_NameNode *name_context = top_parent ? top_parent->name_context : 0;
+          if (make_namespaces && !make_types) {
+            B32 is_name_container  = (tag.kind == DW_TagKind_Namespace ||
+                                      tag.kind == DW_TagKind_ClassType ||
+                                      tag.kind == DW_TagKind_StructureType ||
+                                      tag.kind == DW_TagKind_UnionType ||
+                                      tag.kind == DW_TagKind_EnumerationType ||
+                                      tag.kind == DW_TagKind_SubProgram);
+            B32 is_member_identity = ((make_global_vars || make_thread_vars) &&
+                                      (tag.kind == DW_TagKind_Member || tag.kind == DW_TagKind_Variable));
+            if (is_name_container || is_member_identity || new_symbol != 0) {
+              D2R_NameNode *n = push_array(scratch.arena, D2R_NameNode, 1);
+              SLLQueuePush(dst_artifacts->first_name_node, dst_artifacts->last_name_node, n);
+              dst_artifacts->name_node_count += 1;
+              n->info_off = start_off;
+              n->parent   = name_context;
+              n->name     = name;
+              n->symbol   = new_symbol;
+
+              // keep the attribute collector's reference order; link across work items later
+              U64 ref_count = 0;
+              for EachNode(attrib_n, DW2_AttribNode, tag.attribs.first) {
+                DW2_Attrib *attrib  = &attrib_n->v;
+                U64         ref_idx = max_U64;
+                if ((attrib->attrib_kind == DW_AttribKind_AbstractOrigin ||
+                     attrib->attrib_kind == DW_AttribKind_Specification) && ref_count < 2) {
+                  ref_idx = ref_count++;
+                } else if (tag.kind == DW_TagKind_Namespace && attrib->attrib_kind == DW_AttribKind_Extension) {
+                  ref_idx = 2;
+                }
+                if (ref_idx != max_U64) {
+                  U64 ref_off = dw2_reference_info_off_from_form_val(unit_parse_ctx, &attrib->val);
+                  if (attrib->val.kind == DW_FormKind_RefAddr ||
+                      (attrib->val.u128.u64[0] <= max_U64 - unit_parse_ctx->unit_base_info_off &&
+                       contains_1u64(unit_info_tag_range, ref_off))) {
+                    n->ref_offs[ref_idx] = ref_off;
+                  }
+                }
+              }
+
+              // emit actual namespaces; other containers only contribute their names
+              if (tag.kind == DW_TagKind_Namespace) {
+                n->ns = rdim_namespace_chunk_list_push(arena, &dst_artifacts->namespaces, 64);
+                n->ns->name         = name.size != 0 ? name : str8_lit("(anonymous namespace)");
+                n->ns->parent_scope = top_parent ? top_parent->scope : 0;
+                if (n->ns->parent_scope == 0) {
+                  for (D2R_NameNode *parent = name_context; parent != 0; parent = parent->parent) {
+                    if (parent->ns != 0) {
+                      n->ns->parent_namespace = parent->ns;
+                      break;
+                    }
+                  }
+                }
+              }
+              if (is_name_container) {
+                name_context = n;
+              }
+            }
+          }
+
           ////////////////////////
           //- rjf: equip new symbols with container info
           //
@@ -4267,6 +4440,7 @@ d2r_convert(Arena *arena, D2R_ConvertParams *params)
             n->scope = new_scope_open ? new_scope_open : top_parent ? top_parent->scope : 0;
             n->container_type = new_scope_open ? 0 : container_type;
             n->container_namespace = new_scope_open ? 0 : container_namespace;
+            n->name_context = name_context;
             if(framebase_attrib != &dw2_attrib_nil)
             {
               n->framebase_location_cases = framebase_location_cases;
@@ -4343,6 +4517,141 @@ d2r_convert(Arena *arena, D2R_ConvertParams *params)
     lane_sync();
   }
   
+  if (make_namespaces && !make_types) ProfScope("resolve lightweight naming contexts") {
+    HashTable *name_ht = 0;
+    if (lane_idx() == 0) {
+      U64 name_node_count = 0;
+      all_namespaces = push_array(scratch.arena, RDIM_NamespaceChunkList, 1);
+      for EachIndex(work_idx, sub_unit_works_count) {
+        D2R_SubUnitWorkArtifacts *work = &sub_unit_work_artifacts[work_idx];
+        name_node_count += work->name_node_count;
+        rdim_namespace_chunk_list_concat_in_place(all_namespaces, &work->namespaces);
+      }
+
+      // HashTable insertion is not concurrent; publish a complete read-only table
+      name_ht = hash_table_init(scratch.arena, name_node_count/2 + 1);
+      for EachIndex(work_idx, sub_unit_works_count) {
+        for EachNode(n, D2R_NameNode, sub_unit_work_artifacts[work_idx].first_name_node) {
+          hash_table_push_u64_raw(scratch.arena, name_ht, n->info_off, n);
+        }
+      }
+    }
+    lane_sync_u64(&all_namespaces, 0);
+    lane_sync_u64(&name_ht, 0);
+
+    // resolve namespace extensions before qualifying symbols; a nameless extension
+    // inherits its name rather than becoming an anonymous namespace
+    Rng1U64 range = lane_range(sub_unit_works_count);
+    for EachInRange(work_idx, range) {
+      for EachNode(n, D2R_NameNode, sub_unit_work_artifacts[work_idx].first_name_node) {
+        if (n->ns == 0 || n->ref_offs[2] == 0) {
+          continue;
+        }
+        Temp    temp    = scratch_begin(&arena, 1);
+        HashMap visited = {0};
+        String8 name    = {0};
+        for (D2R_NameNode *origin = n; origin != 0 && origin->ns != 0;
+             origin = origin->ref_offs[2] != 0 ? hash_table_search_u64_raw(name_ht, origin->ref_offs[2]) : 0) {
+          if (hash_map_search_u64_u64(&visited, origin->info_off)) {
+            break;
+          }
+          hash_map_push_u64_u64(temp.arena, &visited, origin->info_off, 1);
+          if (origin->name.size != 0) {
+            name = origin->name;
+            break;
+          }
+        }
+        n->ns->name = name.size != 0 ? name : str8_lit("(anonymous namespace)");
+
+        HashMap visited_parents = {0};
+        for (D2R_NameNode *parent = d2r_name_parent(name_ht, n); parent != 0;
+             parent = d2r_name_parent(name_ht, parent)) {
+          if (parent == n || hash_map_search_u64_u64(&visited_parents, parent->info_off)) {
+            break;
+          }
+          hash_map_push_u64_u64(temp.arena, &visited_parents, parent->info_off, 1);
+          if (parent->ns != 0) {
+            n->ns->parent_namespace = parent->ns;
+            n->ns->parent_scope     = 0;
+            break;
+          }
+          if (parent->symbol != 0 && parent->symbol->root_scope != 0) {
+            n->ns->parent_scope     = parent->symbol->root_scope;
+            n->ns->parent_namespace = 0;
+            break;
+          }
+        }
+        scratch_end(temp);
+      }
+    }
+    lane_sync();
+
+    // qualify symbols with namespace and name-only class containers
+    for EachInRange(work_idx, range) {
+      for EachNode(n, D2R_NameNode, sub_unit_work_artifacts[work_idx].first_name_node) {
+        RDIM_Symbol *symbol = n->symbol;
+        if (symbol == 0 || symbol->name.size == 0) {
+          continue;
+        }
+
+        Temp temp  = scratch_begin(&arena, 1);
+
+        String8List parts = {0};
+        str8_list_push(temp.arena, &parts, symbol->name);
+
+        HashMap         visited     = {0};
+        RDIM_Namespace *ns          = 0;
+        RDIM_Symbol    *scope_owner = symbol->container_scope ? symbol->container_scope->symbol : 0;
+        D2R_NameNode   *scope_node  = 0;
+        if (scope_owner != 0) {
+          for (D2R_NameNode *parent = n->parent; parent != 0; parent = parent->parent) {
+            if (parent->symbol == scope_owner) {
+              scope_node = parent;
+              break;
+            }
+          }
+        }
+
+        B32 found_scope = (symbol->container_scope == 0);
+        for (D2R_NameNode *parent = d2r_name_parent(name_ht, n); parent != 0; parent = d2r_name_parent(name_ht, parent)) {
+          if (hash_map_search_u64_u64(&visited, parent->info_off)) {
+            break;
+          }
+          hash_map_push_u64_u64(temp.arena, &visited, parent->info_off, 1);
+
+          if (scope_owner != 0 &&
+              (parent->symbol == scope_owner ||
+               (parent->symbol != 0 && parent->symbol->root_scope != 0 && d2r_name_nodes_share_identity(name_ht, scope_node, parent)))) {
+            found_scope = 1;
+            break;
+          }
+
+          if (parent->ns != 0) {
+            ns = parent->ns;
+            break;
+          }
+
+          if (parent->name.size != 0) {
+            str8_list_push_front(temp.arena, &parts, parent->name);
+          }
+        }
+
+        if (found_scope) {
+          // retain real namespace/scope containers; class names need no synthetic types
+          if (parts.node_count > 1) {
+            StringJoin join = {.sep = str8_lit("::")};
+            symbol->name = str8_list_join(arena, &parts, &join);
+          }
+          if (symbol->container_scope == 0) {
+            symbol->container_namespace = ns;
+          }
+        }
+        scratch_end(temp);
+      }
+    }
+    lane_sync();
+  }
+
   ////////////////////////////
   //- rjf: upgrade all types with namespacing info
   //

@@ -70,6 +70,21 @@ struct D2R_UnitDedupedTagMap
 };
 
 ////////////////////////////////
+// Lightweight Name Space
+
+typedef struct D2R_NameNode D2R_NameNode;
+struct D2R_NameNode
+{
+  D2R_NameNode   *next;
+  D2R_NameNode   *parent;
+  U64             info_off;
+  U64             ref_offs[3]; // origin/specification in attribute order, then namespace extension
+  String8         name;
+  RDIM_Namespace *ns;
+  RDIM_Symbol    *symbol;
+};
+
+////////////////////////////////
 //~ rjf: Conversion Stage Inputs (New)
 
 typedef struct D2R_ConvertParams D2R_ConvertParams;
