@@ -505,6 +505,8 @@ dw2_read_form_val(DW_Raw *raw, DW2_ParseCtx *ctx, String8 data, U64 off, DW_Form
       
       //- rjf: format-defined-size reads
       case DW_FormKind_RefAddr:
+      bytes_to_read = ctx->version == DW_Version_2 ? ctx->addr_size : dw_addr_size_from_format(ctx->format); goto read_fixed_uint;
+      
       case DW_FormKind_SecOffset:
       case DW_FormKind_LineStrp:
       case DW_FormKind_Strp:
@@ -893,10 +895,18 @@ dw2_reference_info_off_from_form_val(DW2_ParseCtx *ctx, DW2_FormVal *v)
     case DW_FormKind_Ref2:
     case DW_FormKind_Ref4:
     case DW_FormKind_Ref8:
+    case DW_FormKind_RefUData:
     {
-      result = ctx->unit_base_info_off + v->u128.u64[0];
+      if(v->u128.u64[0] <= max_U64 - ctx->unit_base_info_off)
+      {
+        result = ctx->unit_base_info_off + v->u128.u64[0];
+      }
     }break;
-    // TODO(rjf): DW_FormKind_RefAddr, DW_FormKind_RefUData, DW_FormKind_RefSig8, DW_FormKind_RefSup8, etc.
+    case DW_FormKind_RefAddr:
+    {
+      result = v->u128.u64[0];
+    }break;
+    // TODO(rjf): DW_FormKind_RefSig8, DW_FormKind_RefSup8, etc.
   }
   return result;
 }
