@@ -811,6 +811,7 @@ dw2_read_tag(Arena *arena, DW_Raw *raw, DW2_ParseCtx *ctx, String8 data, U64 off
     U64 abbrev_read_off = attrib_abbrev_read_off;
     for(;;)
     {
+      U64 attrib_start_off = off;
       U64 abbrev_start_read_off = abbrev_read_off;
       
       // rjf: read next attribute abbreviation from .debug_abbrev
@@ -843,6 +844,7 @@ dw2_read_tag(Arena *arena, DW_Raw *raw, DW2_ParseCtx *ctx, String8 data, U64 off
         DW2_AttribNode *n = push_array(arena, DW2_AttribNode, 1);
         SLLQueuePush(attribs.first, attribs.last, n);
         attribs.count += 1;
+        n->v.off         = attrib_start_off;
         n->v.attrib_kind = attrib_kind;
         n->v.val         = val;
       }

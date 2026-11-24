@@ -70,6 +70,107 @@ d2r_unique_tag_node_is_less_than(D2R_UniqueTagNode **l, D2R_UniqueTagNode **r)
   return is_less_than;
 }
 
+internal void
+d2r_collect_tag_attributes(Arena *arena,
+                           HashMap *attribs_hm,
+                           DW_Raw *raw,
+                           Rng1U64Array unit_info_tag_ranges_array,
+                           DW2_ParseCtx *unit_parse_ctxs,
+                           DW2_Tag tag)
+{
+  Temp scratch = scratch_begin(&arena, 1);
+
+  typedef struct Task {
+    struct Task *next;
+    DW2_Attrib *attrib;
+  } Task;
+
+  HashMap  visited_tags = {0};
+  Task     first_task   = {0};
+  Task    *tasks        = &first_task;
+  while (tasks) {
+    Task *t = tasks;
+    SLLStackPop(tasks);
+
+    DW2_Tag current_tag = tag;
+    if (t->attrib) {
+      // find unit where attribute is defined
+      U64 unit_num = rng1u64_array_num_from_value__binary_search(&unit_info_tag_ranges_array, t->attrib->off);
+      if (unit_num == 0) {
+        log_user_errorf("[.debug_info@0x%I64x] abstract origin or specification has no owning unit\n", t->attrib->off);
+        continue;
+      }
+
+      // resolve attribute reference
+      DW2_ParseCtx *unit_parse_ctx = &unit_parse_ctxs[unit_num - 1];
+      U64           ref_off        = dw2_reference_info_off_from_form_val(unit_parse_ctx, &t->attrib->val);
+      B32           valid_ref      = (ref_off != 0 &&
+                                      (t->attrib->val.kind == DW_FormKind_RefAddr ||
+                                       (t->attrib->val.u128.u64[0] <= max_U64 - unit_parse_ctx->unit_base_info_off && contains_1u64(unit_info_tag_ranges_array.v[unit_num - 1], ref_off))));
+      if ( ! valid_ref) {
+        log_user_errorf("[.debug_info@0x%I64x] invalid or unsupported abstract origin or specification reference\n", t->attrib->off);
+        continue;
+      }
+
+      // resolve reference unit
+      U64 ref_unit_num = rng1u64_array_num_from_value__binary_search(&unit_info_tag_ranges_array, ref_off);
+      if (ref_unit_num == 0 || ref_off >= raw->sec[DW_SectionKind_Info].data.size) {
+        log_user_errorf("[.debug_info@0x%I64x] abstract origin or specification points to invalid debug info offset %I64x\n", t->attrib->off, ref_off);
+        continue;
+      }
+
+      // skip repeated references
+      if (hash_map_search_u64_u64(&visited_tags, ref_off)) {
+        continue;
+      }
+      hash_map_push_u64_u64(scratch.arena, &visited_tags, ref_off, 1);
+
+      // read tag
+      current_tag = (DW2_Tag){0};
+      U64 ref_tag_size = dw2_read_tag(scratch.arena, raw, &unit_parse_ctxs[ref_unit_num - 1], raw->sec[DW_SectionKind_Info].data, ref_off, &current_tag);
+      if (ref_tag_size == 0 || current_tag.kind == DW_TagKind_Null ||
+          ref_tag_size > unit_info_tag_ranges_array.v[ref_unit_num - 1].max - ref_off) {
+        log_user_errorf("[.debug_info@0x%I64x] failed to read abstract origin or specification tag at %I64x\n", t->attrib->off, ref_off);
+        continue;
+      }
+    }
+
+    // collect current tag attributes
+    U64         new_refs_count = 0;
+    DW2_Attrib *new_refs[2]    = {0};
+    for EachNode(n, DW2_AttribNode, current_tag.attribs.first) {
+      if (n->v.attrib_kind == DW_AttribKind_AbstractOrigin || n->v.attrib_kind == DW_AttribKind_Specification) {
+        if (new_refs_count < ArrayCount(new_refs)) {
+          new_refs[new_refs_count++] = &n->v;
+        }
+      } else {
+        // exceptions: declaration and sibling are non-sharable attributes
+        if (t != &first_task && (n->v.attrib_kind == DW_AttribKind_Declaration || n->v.attrib_kind == DW_AttribKind_Sibling)) {
+          continue;
+        }
+
+        // push unique attributes, first seen attributes take precedance
+        if ( ! hash_map_search_u64_raw(attribs_hm, n->v.attrib_kind)) {
+          DW2_AttribNode *dst = push_array(arena, DW2_AttribNode, 1);
+          dst->v = n->v;
+          hash_map_push_u64_raw(arena, attribs_hm, n->v.attrib_kind, &dst->v);
+        }
+      }
+    }
+
+    // append new tag references for the walk
+    for EachIndex(ref_idx, new_refs_count) {
+      if (new_refs[ref_idx] != 0) {
+        Task *new_task = push_array(scratch.arena, Task, 1);
+        new_task->attrib = new_refs[ref_idx];
+        SLLStackPush(tasks, new_task);
+      }
+    }
+  }
+
+  scratch_end(scratch);
+}
+
 ////////////////////////////////
 //~ rjf: Main Conversion Entry Point (New)
 
@@ -2972,79 +3073,74 @@ d2r_convert(Arena *arena, D2R_ConvertParams *params)
       
       //- rjf: produce all unit symbols in this work
       U64 chunk_count = 256;
-      for(U64 root_tag_idx = root_tag_idx_range.min; root_tag_idx < root_tag_idx_range.max; root_tag_idx += 1)
+      for EachInRange(root_tag_idx, root_tag_idx_range)
       {
         typedef struct D2R_ParentNode D2R_ParentNode;
         struct D2R_ParentNode
         {
-          D2R_ParentNode *next;
-          DW_TagKind tag_kind;
-          U64 info_off;
-          RDIM_Scope *scope;
-          RDIM_Type *container_type;
-          RDIM_Namespace *container_namespace;
-          RDIM_LocationCaseList framebase_location_cases;
+          D2R_ParentNode        *next;
+          DW_TagKind             tag_kind;
+          U64                    info_off;
+          RDIM_Scope            *scope;
+          RDIM_Type             *container_type;
+          RDIM_Namespace        *container_namespace;
+          RDIM_LocationCaseList  framebase_location_cases;
         };
-        D2R_ParentNode *top_parent = 0;
-        D2R_ParentNode *free_parent = 0;
-        U64 root_tag_start_off = unit_info_root_tag_offs[unit_idx].v[root_tag_idx];
-        S64 depth = 1;
-        for(U64 off = root_tag_start_off; off < unit_info_tag_range.max && (depth > 1 || off == root_tag_start_off);)
+        D2R_ParentNode *top_parent         = 0;
+        D2R_ParentNode *free_parent        = 0;
+        U64             root_tag_start_off = unit_info_root_tag_offs[unit_idx].v[root_tag_idx];
+        S64             depth              = 1;
+        Temp            scratch2           = scratch_begin(&scratch.arena, 1);
+        Temp            temp               = temp_begin(scratch2.arena);
+        for(U64 off = root_tag_start_off;
+            off < unit_info_tag_range.max && (depth > 1 || off == root_tag_start_off); )
         {
-          Temp scratch2 = scratch_begin(&scratch.arena, 1);
+          temp_end(temp);
+          temp = temp_begin(scratch2.arena);
+
           U64 start_off = off;
           
           ////////////////////////
           //- rjf: parse tag
           //
           DW2_Tag tag = {0};
-          off += dw2_read_tag(scratch2.arena, raw, unit_parse_ctx, raw->sec[DW_SectionKind_Info].data, off, &tag);
-          
-          ////////////////////////
-          //- rjf: gather attributes from tag
-          //
-          DW2_Attrib *name_attrib = &dw2_attrib_nil;
-          DW2_Attrib *linkname_attrib = &dw2_attrib_nil;
-          DW2_Attrib *type_attrib = &dw2_attrib_nil;
-          DW2_Attrib *inline_attrib = &dw2_attrib_nil;
-          DW2_Attrib *ranges_attrib = &dw2_attrib_nil;
-          DW2_Attrib *lopc_attrib = &dw2_attrib_nil;
-          DW2_Attrib *hipc_attrib = &dw2_attrib_nil;
-          DW2_Attrib *constval_attrib = &dw2_attrib_nil;
-          DW2_Attrib *location_attrib = &dw2_attrib_nil;
-          DW2_Attrib *framebase_attrib = &dw2_attrib_nil;
-          DW2_Attrib *external_attrib = &dw2_attrib_nil;
-          DW2_Attrib *decl_attrib = &dw2_attrib_nil;
-          for EachNode(n, DW2_AttribNode, tag.attribs.first)
-          {
-            switch(n->v.attrib_kind)
-            {
-              default:{}break;
-#define Case(dst, src) case DW_AttribKind_##src:{dst##_attrib = &n->v;}break
-              Case(name,      Name);
-              Case(linkname,  LinkageName);
-              Case(type,      Type);
-              Case(inline,    Inline);
-              Case(ranges,    Ranges);
-              Case(lopc,      LowPc);
-              Case(hipc,      HighPc);
-              Case(constval,  ConstValue);
-              Case(location,  Location);
-              Case(framebase, FrameBase);
-              Case(external,  External);
-              Case(decl,      Declaration);
-#undef Case
-            }
-          }
+          off += dw2_read_tag(temp.arena, raw, unit_parse_ctx, raw->sec[DW_SectionKind_Info].data, off, &tag);
+
+          HashMap attribs_hm = {0};
+          d2r_collect_tag_attributes(temp.arena, &attribs_hm, raw, unit_info_tag_ranges_array, unit_parse_ctxs, tag);
+
+#define DW2_CommonAttrib_XList \
+          X(name,            Name)           \
+          X(linkname,        LinkageName)    \
+          X(type,            Type)           \
+          X(inline,          Inline)         \
+          X(ranges,          Ranges)         \
+          X(lopc,            LowPc)          \
+          X(hipc,            HighPc)         \
+          X(constval,        ConstValue)     \
+          X(location,        Location)       \
+          X(framebase,       FrameBase)      \
+          X(external,        External)       \
+          X(decl,            Declaration)    \
+          X(abstract_origin, AbstractOrigin) \
+          X(specification,   Specification)  \
+          // end of list
+
+          // declare attributes
+#define X(id, kind, ...) \
+          DW2_Attrib *id##_attrib = hash_map_search_u64_raw(&attribs_hm, DW_AttribKind_##kind); \
+          id##_attrib = id##_attrib ? id##_attrib : &dw2_attrib_nil;
+          DW2_CommonAttrib_XList
+#undef X
           
           ////////////////////////
           //- rjf: unpack basic attributes
           //
-          String8 name = name_attrib->val.string;
-          String8 link_name = linkname_attrib->val.string;
-          DW_InlKind inl_kind = (DW_InlKind)inline_attrib->val.u128.u64[0];
-          B32 is_external = (external_attrib != &dw2_attrib_nil);
-          B32 is_decl = (decl_attrib != &dw2_attrib_nil);
+          String8    name        = name_attrib->val.string;
+          String8    link_name   = linkname_attrib->val.string;
+          DW_InlKind inl_kind    = (DW_InlKind)inline_attrib->val.u128.u64[0];
+          B32        is_external = external_attrib->val.u128.u64[0] != 0;
+          B32        is_decl     = decl_attrib->val.u128.u64[0] != 0;
           
           ////////////////////////
           //- rjf: unpack ranges
@@ -3053,13 +3149,13 @@ d2r_convert(Arena *arena, D2R_ConvertParams *params)
           {
             if(ranges_attrib != &dw2_attrib_nil)
             {
-              Temp temp = temp_begin(scratch2.arena);
-              Rng1U64List tag_ranges = dw2_rnglist_from_form_val(temp.arena, unit_parse_ctx, raw, ranges_attrib->val);
+              Temp temp2 = temp_begin(temp.arena);
+              Rng1U64List tag_ranges = dw2_rnglist_from_form_val(temp2.arena, unit_parse_ctx, raw, ranges_attrib->val);
               for EachNode(n, Rng1U64Node, tag_ranges.first)
               {
                 rdim_rng1u64_list_push(arena, &ranges, (RDIM_Rng1U64){.min = n->v.min, .max = n->v.max});
               }
-              temp_end(temp);
+              temp_end(temp2);
             }
             if(lopc_attrib != &dw2_attrib_nil && hipc_attrib != &dw2_attrib_nil)
             {
@@ -3176,7 +3272,7 @@ d2r_convert(Arena *arena, D2R_ConvertParams *params)
                   U64 expr_info_off  = attrib->val.u128.u64[0];
                   U64 expr_info_size = attrib->val.u128.u64[1];
                   String8 expr = str8_substr(raw->sec[DW_SectionKind_Info].data, r1u64(expr_info_off, expr_info_off+expr_info_size));
-                  DW2_LocNode *n = push_array(scratch2.arena, DW2_LocNode, 1);
+                  DW2_LocNode *n = push_array(temp.arena, DW2_LocNode, 1);
                   n->v.expr = expr;
                   n->v.range = r1u64(0, max_U64);
                   SLLQueuePush(locs.first, locs.last, n);
@@ -3185,7 +3281,7 @@ d2r_convert(Arena *arena, D2R_ConvertParams *params)
                 case DW_FormKind_LocListx:   // NOTE(rjf): dwarf5+, loclistx -> location list offset table
                 case DW_FormKind_SecOffset:  // NOTE(rjf): pre-dwarf5, location section offset -> a location list
                 {
-                  locs = dw2_loclist_from_form_val(scratch2.arena, unit_parse_ctx, raw, attrib->val);
+                  locs = dw2_loclist_from_form_val(temp.arena, unit_parse_ctx, raw, attrib->val);
                 }break;
               }
               
@@ -3581,7 +3677,7 @@ d2r_convert(Arena *arena, D2R_ConvertParams *params)
                         RDIM_EvalBytecodeOp *op = rdim_bytecode_push_op(arena, &dst_bytecode, rdi_eval_op, 0);
                         
                         // rjf: gather op
-                        JumpOpNode *n = push_array(scratch2.arena, JumpOpNode, 1);
+                        JumpOpNode *n = push_array(temp.arena, JumpOpNode, 1);
                         SLLQueuePush(first_jump_op, last_jump_op, n);
                         n->op = op;
                         n->inst_delta = jump_delta_insts;
@@ -3746,7 +3842,7 @@ d2r_convert(Arena *arena, D2R_ConvertParams *params)
                         }
                         else
                         {
-                          n = push_array(scratch2.arena, D2R_ExprValNode, 1);
+                          n = push_array(temp.arena, D2R_ExprValNode, 1);
                         }
                         n->v = push_vals[push_idx];
                         SLLStackPush(val_stack_top, n);
@@ -4193,12 +4289,12 @@ d2r_convert(Arena *arena, D2R_ConvertParams *params)
             depth -= 1;
           }
           
-          scratch_end(scratch2);
           if(off == start_off)
           {
             break;
           }
         }
+        scratch_end(scratch2);
       }
     }
     lane_sync();

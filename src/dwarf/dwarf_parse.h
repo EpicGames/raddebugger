@@ -185,6 +185,7 @@ struct DW2_FormVal
 typedef struct DW2_Attrib DW2_Attrib;
 struct DW2_Attrib
 {
+  U64 off;
   DW_AttribKind attrib_kind;
   DW2_FormVal val;
 };
