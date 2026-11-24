@@ -3149,30 +3149,39 @@ d2r_convert(Arena *arena, D2R_ConvertParams *params)
           //
           RDIM_Rng1U64List ranges = {0};
           {
-            if(ranges_attrib != &dw2_attrib_nil)
-            {
-              Temp temp2 = temp_begin(temp.arena);
-              Rng1U64List tag_ranges = dw2_rnglist_from_form_val(temp2.arena, unit_parse_ctx, raw, ranges_attrib->val);
-              for EachNode(n, Rng1U64Node, tag_ranges.first)
-              {
-                rdim_rng1u64_list_push(arena, &ranges, (RDIM_Rng1U64){.min = n->v.min, .max = n->v.max});
-              }
-              temp_end(temp2);
+            Temp range_temp = temp_begin(temp.arena);
+
+            Rng1U64List tag_ranges = {0};
+
+            if (ranges_attrib != &dw2_attrib_nil) {
+              tag_ranges = dw2_rnglist_from_form_val(range_temp.arena, unit_parse_ctx, raw, ranges_attrib->val);
             }
-            if(lopc_attrib != &dw2_attrib_nil && hipc_attrib != &dw2_attrib_nil)
-            {
-              U64 voff_base = lopc_attrib->val.addr - base_vaddr;
-              U64 voff_opl = 0;
-              if(dw_attrib_class_from_form_kind(unit_parse_ctx->version, unit_parse_ctx->exts, hipc_attrib->val.kind) & DW_AttribClass_Address)
-              {
-                voff_opl = hipc_attrib->val.addr;
+
+            if (lopc_attrib != &dw2_attrib_nil && hipc_attrib != &dw2_attrib_nil) {
+              U64 vaddr_min = lopc_attrib->val.addr;
+              U64 vaddr_opl = 0;
+              if (dw_attrib_class_from_form_kind(unit_parse_ctx->version, unit_parse_ctx->exts, hipc_attrib->val.kind) & DW_AttribClass_Address) {
+                vaddr_opl = hipc_attrib->val.addr;
+              } else {
+                U64 size = hipc_attrib->val.u128.u64[0];
+                if (size <= max_U64 - vaddr_min) {
+                  vaddr_opl = vaddr_min + size;
+                }
               }
-              else
-              {
-                voff_opl = voff_base + hipc_attrib->val.u128.u64[0];
-              }
-              rdim_rng1u64_list_push(arena, &ranges, (RDIM_Rng1U64){voff_base, voff_opl});
+              rng1u64_list_push(range_temp.arena, &tag_ranges, (Rng1U64){vaddr_min, vaddr_opl});
             }
+
+            for EachNode(n, Rng1U64Node, tag_ranges.first) {
+              // discard linker tombstones and invalid absolute ranges before rebasing
+              if (n->v.min == 0 || n->v.min < base_vaddr || n->v.min >= n->v.max ||
+                  (binary_sections.count != 0 &&
+                   (n->v.min < acceptable_vaddr_range.min || n->v.max > acceptable_vaddr_range.max))) {
+                continue;
+              }
+              rdim_rng1u64_list_push(arena, &ranges, (RDIM_Rng1U64){n->v.min - base_vaddr, n->v.max - base_vaddr});
+            }
+
+            temp_end(range_temp);
           }
           
           ////////////////////////
