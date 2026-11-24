@@ -284,12 +284,13 @@ internal RDIM_BakeParams
 d2r_convert(Arena *arena, D2R_ConvertParams *params)
 {
   Temp scratch = scratch_begin(&arena, 1);
-  DW_Raw *raw = &params->raw;
-  RDIM_BinarySectionList binary_sections = params->binary_sections;
-  Arch arch = params->arch;
-  ARCH_Info *arch_info = arch_info_from_arch(arch);
-  U64 base_vaddr = params->base_vaddr;
-  U64 arch_addr_size = byte_size_from_arch(arch);
+
+  DW_Raw                 *raw             = &params->raw;
+  RDIM_BinarySectionList  binary_sections = params->binary_sections;
+  Arch                    arch            = params->arch;
+  ARCH_Info              *arch_info       = arch_info_from_arch(arch);
+  U64                     base_vaddr      = params->base_vaddr;
+  U64                     arch_addr_size  = byte_size_from_arch(arch);
   
   B32 make_procedures       = !!(params->subset_flags & RDIM_SubsetFlag_Procedures || params->subset_flags & RDIM_SubsetFlag_ProcedureNameMap);
   B32 make_types            = !!(params->subset_flags & RDIM_SubsetFlag_Types || params->subset_flags & RDIM_SubsetFlag_TypeNameMap);
@@ -301,6 +302,11 @@ d2r_convert(Arena *arena, D2R_ConvertParams *params)
   B32 make_source_line_maps = !!(params->subset_flags & RDIM_SubsetFlag_SourceLineMaps);
   B32 make_line_tables      = !!(params->subset_flags & RDIM_SubsetFlag_LineInfo) || make_source_line_maps;
   B32 make_inline_sites     = make_procedures && make_scopes && !!(params->subset_flags & RDIM_SubsetFlag_InlineLineInfo);
+ 
+  // detect breakpad mode and skip procedures that don't have a valid address range (functions removed during linker's GC pass, etc.)
+  B32 prune_dead_output = (make_procedures && make_scopes && make_namespaces &&
+                           !make_types && !make_locals && !make_global_vars && !make_thread_vars &&
+                           !(params->subset_flags & (RDIM_SubsetFlag_NameMaps|RDIM_SubsetFlag_Constants)));
   
   ////////////////////////////
   //- rjf: determine acceptable address range
@@ -3271,6 +3277,8 @@ d2r_convert(Arena *arena, D2R_ConvertParams *params)
           //- rjf: unpack ranges
           //
           RDIM_Rng1U64List ranges = {0};
+          if(!prune_dead_output ||
+             (tag.kind == DW_TagKind_SubProgram && !is_decl) || (tag.kind == DW_TagKind_LexicalBlock && top_parent != 0 && top_parent->scope != 0))
           {
             Temp range_temp = temp_begin(temp.arena);
 
@@ -4159,10 +4167,12 @@ d2r_convert(Arena *arena, D2R_ConvertParams *params)
             {
               if(make_procedures)
               {
-                if(!is_decl)
+                if(!is_decl && (!prune_dead_output || ranges.count != 0))
                 {
-                  RDIM_Scope *root_scope = rdim_scope_chunk_list_push(arena, &dst_artifacts->scopes, chunk_count);
-                  RDIM_Symbol *procedure = rdim_symbol_chunk_list_push(arena, &dst_artifacts->procedures, chunk_count);
+                  U64          scope_chunk_count = Min(chunk_count, Max(16, dst_artifacts->scopes.total_count));
+                  U64          proc_chunk_count  = Min(chunk_count, Max(16, dst_artifacts->procedures.total_count));
+                  RDIM_Scope  *root_scope        = rdim_scope_chunk_list_push(arena, &dst_artifacts->scopes, scope_chunk_count);
+                  RDIM_Symbol *procedure         = rdim_symbol_chunk_list_push(arena, &dst_artifacts->procedures, proc_chunk_count);
                   procedure->name           = name;
                   procedure->link_name      = link_name;
                   procedure->type           = type;
@@ -4221,6 +4231,7 @@ d2r_convert(Arena *arena, D2R_ConvertParams *params)
 
                   if(dst_symbols)
                   {
+                    var_chunk_count = Min(var_chunk_count, Max(16, dst_symbols->total_count));
                     RDIM_Symbol *var = rdim_symbol_chunk_list_push(arena, dst_symbols, var_chunk_count);
                     var->is_extern = is_external;
                     var->is_param  = (tag.kind == DW_TagKind_FormalParameter);
@@ -4237,9 +4248,11 @@ d2r_convert(Arena *arena, D2R_ConvertParams *params)
             //- rjf: lexical blocks (scopes)
             case DW_TagKind_LexicalBlock:
             {
-              if(make_scopes)
+              if(make_scopes && (!prune_dead_output ||
+                                (ranges.count != 0 && top_parent != 0 && top_parent->scope != 0)))
               {
-                RDIM_Scope *scope = rdim_scope_chunk_list_push(arena, &dst_artifacts->scopes, chunk_count);
+                U64 scope_chunk_count = Min(chunk_count, Max(16, dst_artifacts->scopes.total_count));
+                RDIM_Scope *scope = rdim_scope_chunk_list_push(arena, &dst_artifacts->scopes, scope_chunk_count);
                 scope->voff_ranges = ranges;
                 dst_artifacts->scopes.scope_voff_count += 2*ranges.count;
                 new_scope_open = scope;
@@ -4331,7 +4344,8 @@ d2r_convert(Arena *arena, D2R_ConvertParams *params)
 
               // emit actual namespaces; other containers only contribute their names
               if (tag.kind == DW_TagKind_Namespace) {
-                n->ns = rdim_namespace_chunk_list_push(arena, &dst_artifacts->namespaces, 64);
+                U64 namespace_chunk_count = Min(64, Max(16, dst_artifacts->namespaces.total_count));
+                n->ns = rdim_namespace_chunk_list_push(arena, &dst_artifacts->namespaces, namespace_chunk_count);
                 n->ns->name         = name.size != 0 ? name : str8_lit("(anonymous namespace)");
                 n->ns->parent_scope = top_parent ? top_parent->scope : 0;
                 if (n->ns->parent_scope == 0) {
@@ -4565,7 +4579,7 @@ d2r_convert(Arena *arena, D2R_ConvertParams *params)
     Rng1U64 range = lane_range(sub_unit_works_count);
     for EachInRange(work_idx, range) {
       for EachNode(n, D2R_NameNode, sub_unit_work_artifacts[work_idx].first_name_node) {
-        if (n->ns == 0 || n->ref_offs[2] == 0) {
+        if (n->ns == 0 || (!prune_dead_output && n->ref_offs[2] == 0)) {
           continue;
         }
         Temp    temp    = scratch_begin(&arena, 1);
@@ -4584,6 +4598,10 @@ d2r_convert(Arena *arena, D2R_ConvertParams *params)
         }
         n->ns->name = name.size != 0 ? name : str8_lit("(anonymous namespace)");
 
+        String8List parts = {0};
+        str8_list_push(temp.arena, &parts, n->ns->name);
+        n->ns->parent_scope = 0;
+        n->ns->parent_namespace = 0;
         HashMap visited_parents = {0};
         for (D2R_NameNode *parent = d2r_name_parent(name_ht, n); parent != 0;
              parent = d2r_name_parent(name_ht, parent)) {
@@ -4601,6 +4619,13 @@ d2r_convert(Arena *arena, D2R_ConvertParams *params)
             n->ns->parent_namespace = 0;
             break;
           }
+          if (parent->name.size != 0) {
+            str8_list_push_front(temp.arena, &parts, parent->name);
+          }
+        }
+        if (parts.node_count > 1) {
+          StringJoin join = {.sep = str8_lit("::")};
+          n->ns->name = str8_list_join(arena, &parts, &join);
         }
         scratch_end(temp);
       }
@@ -4642,7 +4667,7 @@ d2r_convert(Arena *arena, D2R_ConvertParams *params)
 
           if (scope_owner != 0 &&
               (parent->symbol == scope_owner ||
-               (parent->symbol != 0 && parent->symbol->root_scope != 0 && d2r_name_nodes_share_identity(name_ht, scope_node, parent)))) {
+               d2r_name_nodes_share_identity(name_ht, scope_node, parent))) {
             found_scope = 1;
             break;
           }
