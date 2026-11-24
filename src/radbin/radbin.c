@@ -52,6 +52,7 @@ rb_thread_entry_point(void *p)
   ThreadNameF("radbin_thread_%I64u", lctx.lane_idx);
   lane_ctx(lctx);
   Arena *arena = arena_alloc();
+  Arena *bake_arena = 0;
   Log *log = log_alloc();
   log_select(log);
   log_scope_begin();
@@ -704,6 +705,9 @@ rb_thread_entry_point(void *p)
           subset_flags = (RDIM_SubsetFlag_Units|RDIM_SubsetFlag_LineInfo|RDIM_SubsetFlag_InlineLineInfo|RDIM_SubsetFlag_Procedures);
         }break;
       }
+
+      // loose conversion objects are needed only until all lanes finish baking
+      Arena *conversion_arena = arena_alloc();
       
       //- rjf: convert inputs to RDI info
       B32 convert_done = 0;
@@ -824,9 +828,9 @@ rb_thread_entry_point(void *p)
                 String8 string_table = str8_substr(exe_data, pe.string_table_range);
                 convert_params.arch = pe.arch;
                 convert_params.base_vaddr = pe.image_base;
-                convert_params.raw = dw_raw_from_coff_section_table(arena, exe_data, string_table, pe.section_count, section_table);
+                convert_params.raw = dw_raw_from_coff_section_table(conversion_arena, exe_data, string_table, pe.section_count, section_table);
                 convert_params.path_style = PathStyle_WindowsAbsolute;
-                convert_params.binary_sections = c2r_rdi_binary_sections_from_coff_sections(arena, exe_data, string_table, pe.section_count, section_table);
+                convert_params.binary_sections = c2r_rdi_binary_sections_from_coff_sections(conversion_arena, exe_data, string_table, pe.section_count, section_table);
                 scratch_end(scratch);
               }break;
               case ExecutableImageKind_Elf32:
@@ -836,9 +840,9 @@ rb_thread_entry_point(void *p)
                 ELF_Bin bin = elf_bin_from_data(scratch.arena, dbg_data);
                 convert_params.arch = arch_from_elf_machine(bin.hdr.e_machine);
                 convert_params.base_vaddr = elf_base_addr_from_bin(&bin);
-                convert_params.raw = dw_raw_from_elf_bin(arena, dbg_data, &bin);
+                convert_params.raw = dw_raw_from_elf_bin(conversion_arena, dbg_data, &bin);
                 convert_params.path_style = PathStyle_UnixAbsolute;
-                convert_params.binary_sections = e2r_rdi_binary_sections_from_elf_section_table(arena, dbg_data, &bin, &bin.shdrs);
+                convert_params.binary_sections = e2r_rdi_binary_sections_from_elf_section_table(conversion_arena, dbg_data, &bin, &bin.shdrs);
                 scratch_end(scratch);
               }break;
             }
@@ -847,7 +851,7 @@ rb_thread_entry_point(void *p)
             convert_params.subset_flags  = subset_flags;
             convert_params.deterministic = cmd_line_has_flag(cmdline, str8_lit("deterministic"));
           }
-          ProfScope("convert") dwarf_bake_params = d2r_convert(arena, &convert_params);
+          ProfScope("convert") dwarf_bake_params = d2r_convert(conversion_arena, &convert_params);
         }
         
         //- rjf: PDB inputs => PDB -> RDI conversion
@@ -874,7 +878,7 @@ rb_thread_entry_point(void *p)
             convert_params.subset_flags   = subset_flags;
             convert_params.deterministic  = cmd_line_has_flag(cmdline, str8_lit("deterministic"));
           }
-          ProfScope("convert") pdb_bake_params = p2r_convert2(arena, &convert_params);
+          ProfScope("convert") pdb_bake_params = p2r_convert2(conversion_arena, &convert_params);
         }
         
         //- rjf: RDI inputs => RDI joining
@@ -892,12 +896,12 @@ rb_thread_entry_point(void *p)
             RDI_Parsed *rdi = 0;
             if(lane_idx() == 0)
             {
-              rdi = push_array(arena, RDI_Parsed, 1);
+              rdi = push_array(conversion_arena, RDI_Parsed, 1);
               RDI_ParseStatus rdi_status = rdi_parse(f->data.str, f->data.size, rdi);
               U64 decompressed_size = rdi_decompressed_size_from_parsed(rdi);
               if(decompressed_size > rdi->raw_data_size)
               {
-                U8 *decompressed_data = push_array_no_zero(arena, U8, decompressed_size);
+                U8 *decompressed_data = push_array_no_zero(conversion_arena, U8, decompressed_size);
                 rdi_decompress_parsed(decompressed_data, decompressed_size, rdi);
                 rdi_status = rdi_parse(decompressed_data, decompressed_size, rdi);
               }
@@ -905,10 +909,10 @@ rb_thread_entry_point(void *p)
             lane_sync_u64(&rdi, 0);
             
             // rjf: RDI -> loose
-            RDIM_BakeParams rdi_loose = rdim_loose_from_rdi(arena, subset_flags, rdi);
+            RDIM_BakeParams rdi_loose = rdim_loose_from_rdi(conversion_arena, subset_flags, rdi);
             
             // rjf: add
-            RDIM_BakeParamsNode *n = push_array(arena, RDIM_BakeParamsNode, 1);
+            RDIM_BakeParamsNode *n = push_array(conversion_arena, RDIM_BakeParamsNode, 1);
             n->v = rdi_loose;
             SLLQueuePush(first_rdi_bake_params, last_rdi_bake_params, n);
           }
@@ -920,7 +924,7 @@ rb_thread_entry_point(void *p)
       RDIM_BakeParams *bake_params = 0;
       if(lane_idx() == 0)
       {
-        bake_params = push_array(arena, RDIM_BakeParams, 1);
+        bake_params = push_array(conversion_arena, RDIM_BakeParams, 1);
         rdim_bake_params_concat_in_place(bake_params, &pdb_bake_params);
         rdim_bake_params_concat_in_place(bake_params, &dwarf_bake_params);
         for EachNode(n, RDIM_BakeParamsNode, first_rdi_bake_params)
@@ -970,10 +974,20 @@ rb_thread_entry_point(void *p)
       }
       
       //- rjf: bake
+      bake_arena = arena_alloc();
       RDIM_BakeResults bake_results = {0};
       ProfScope("bake")
       {
-        bake_results = rdim_bake(arena, bake_params);
+        bake_results = rdim_bake(bake_arena, bake_params);
+      }
+
+      ProfScope("release conversion data")
+      {
+        lane_sync();
+        arena_release(conversion_arena);
+        conversion_arena = 0;
+        bake_params = 0;
+        lane_sync();
       }
       
       //- rjf: serialize
@@ -994,7 +1008,7 @@ rb_thread_entry_point(void *p)
         U64 decompressed_size = rdi_decompressed_size_from_parsed(&rdi);
         if(decompressed_size > rdi.raw_data_size)
         {
-          U8 *decompressed_data = push_array_no_zero(arena, U8, decompressed_size);
+          U8 *decompressed_data = push_array_no_zero(bake_arena, U8, decompressed_size);
           rdi_decompress_parsed(decompressed_data, decompressed_size, &rdi);
           rdi_status = rdi_parse(decompressed_data, decompressed_size, &rdi);
         }
@@ -1010,6 +1024,34 @@ rb_thread_entry_point(void *p)
         }
       }
       lane_sync();
+
+      // consumers share one independent flat RDI image
+      Arena *flat_rdi_arena = 0;
+      RDI_Parsed *flat_rdi = 0;
+      if(convert_done && (output_kind == OutputKind_Breakpad || output_kind == OutputKind_VOff2Line))
+      {
+        ProfScope("flatten to RDI data")
+        {
+          if(lane_idx() == 0)
+          {
+            flat_rdi_arena = arena_alloc();
+            Temp scratch = scratch_begin(&arena, 1);
+            String8List rdi_blobs = rdim_file_blobs_from_section_bundle(scratch.arena, serialized_section_bundle);
+            String8 rdi_data = str8_list_join(flat_rdi_arena, &rdi_blobs, 0);
+            flat_rdi = push_array(flat_rdi_arena, RDI_Parsed, 1);
+            rdi_parse(rdi_data.str, rdi_data.size, flat_rdi);
+            scratch_end(scratch);
+          }
+          lane_sync_u64(&flat_rdi, 0);
+        }
+
+        ProfScope("release baked sections")
+        {
+          arena_release(bake_arena);
+          bake_arena = 0;
+          lane_sync();
+        }
+      }
       
       //- rjf: convert done => generate output
       if(convert_done) switch(output_kind)
@@ -1034,18 +1076,7 @@ rb_thread_entry_point(void *p)
         //- rjf: generate breakpad text
         case OutputKind_Breakpad:
         {
-          //- rjf: flatten to RDI data
-          ProfBegin("flatten to RDI data");
-          RDI_Parsed *rdi = 0;
-          if(lane_idx() == 0)
-          {
-            String8List rdi_blobs = rdim_file_blobs_from_section_bundle(arena, serialized_section_bundle);
-            String8 rdi_data = str8_list_join(arena, &rdi_blobs, 0);
-            rdi = push_array(arena, RDI_Parsed, 1);
-            rdi_parse(rdi_data.str, rdi_data.size, rdi);
-          }
-          lane_sync_u64(&rdi, 0);
-          ProfEnd();
+          RDI_Parsed *rdi = flat_rdi;
           
           //- rjf: set up shared state
           typedef struct P2B_Shared P2B_Shared;
@@ -1226,12 +1257,7 @@ rb_thread_entry_point(void *p)
             log_infof("User specified \"%S\" as virtual offset; parsed as 0x%I64x", voff_str, voff);
           }
           
-          //- rjf: flatten to RDI data
-          String8List rdi_blobs = rdim_file_blobs_from_section_bundle(arena, serialized_section_bundle);
-          String8 rdi_data = str8_list_join(arena, &rdi_blobs, 0);
-          RDI_Parsed rdi_ = {0};
-          RDI_Parsed *rdi = &rdi_;
-          RDI_ParseStatus rdi_status = rdi_parse(rdi_data.str, rdi_data.size, rdi);
+          RDI_Parsed *rdi = flat_rdi;
           
           //- rjf: voff -> line
           RDI_Line line = rdi_line_from_voff(rdi, voff);
@@ -1303,6 +1329,14 @@ rb_thread_entry_point(void *p)
             scratch_end(scratch);
           }
         }break;
+      }
+
+      // formatting copied all text into output arenas; wait for every reader before
+      // lane zero releases the shared RDI image
+      lane_sync();
+      if(flat_rdi_arena != 0)
+      {
+        arena_release(flat_rdi_arena);
       }
     }break;
     
@@ -1611,6 +1645,12 @@ rb_thread_entry_point(void *p)
     }
   }
   lane_sync();
+
+  if(bake_arena != 0)
+  {
+    arena_release(bake_arena);
+    bake_arena = 0;
+  }
   
   //////////////////////////////
   //- rjf: write info & errors
