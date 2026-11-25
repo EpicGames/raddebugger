@@ -597,33 +597,29 @@ pe_bin_info_from_data(Arena *arena, String8 data)
   
   // rjf: extract tls header
   PE_TLSHeader64 tls_header = {0};
-  if(valid && PE_DataDirectoryIndex_TLS < data_dir_count)
-  {
+  if (valid && PE_DataDirectoryIndex_TLS < data_dir_count) {
     Rng1U64 tls_header_frng = data_dir_franges[PE_DataDirectoryIndex_TLS];
-    switch(file_header.machine)
-    {
-      default:{ NotImplemented; }break;
-      case COFF_MachineType_Unknown: break;
-      case COFF_MachineType_X86:
-      {
+    if (tls_header_frng.min != 0 && tls_header_frng.min < tls_header_frng.max && tls_header_frng.max <= data.size) {
+      String8 tls_data = str8_substr(data, tls_header_frng);
+      switch (optional_magic) {
+      case PE_PE32_MAGIC: {
         PE_TLSHeader32 tls_header32 = {0};
-        if(str8_deserial_read_struct(data, tls_header_frng.min, &tls_header32) == sizeof(tls_header32))
-        {
-          tls_header.raw_data_start    = (U64)tls_header32.raw_data_start;
-          tls_header.raw_data_end      = (U64)tls_header32.raw_data_end;
-          tls_header.index_address     = (U64)tls_header32.index_address;
-          tls_header.callbacks_address = (U64)tls_header32.callbacks_address;
-          tls_header.zero_fill_size    = (U64)tls_header32.zero_fill_size;
-          tls_header.characteristics   = (U64)tls_header32.characteristics;
+        if (str8_deserial_read_struct(tls_data, 0, &tls_header32) == sizeof(tls_header32)) {
+          tls_header.raw_data_start    = tls_header32.raw_data_start;
+          tls_header.raw_data_end      = tls_header32.raw_data_end;
+          tls_header.index_address     = tls_header32.index_address;
+          tls_header.callbacks_address = tls_header32.callbacks_address;
+          tls_header.zero_fill_size    = tls_header32.zero_fill_size;
+          tls_header.characteristics   = tls_header32.characteristics;
         }
       }break;
-      case COFF_MachineType_X64:
-      {
-        if(str8_deserial_read_struct(data, tls_header_frng.min, &tls_header) != sizeof(tls_header))
-        {
+      case PE_PE32PLUS_MAGIC: {
+        if (str8_deserial_read_struct(tls_data, 0, &tls_header) != sizeof(tls_header)) {
           MemoryZeroStruct(&tls_header);
         }
       }break;
+      default: {}break;
+      }
     }
   }
   
