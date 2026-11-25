@@ -142,7 +142,7 @@ rdim_loose_from_rdi(Arena *arena, RDIM_SubsetFlags subset_flags, RDI_Parsed *rdi
         }
         
         // rjf: fill basics
-        dst->path          = str8_from_rdi_path_node_idx(arena, rdi, PathStyle_Relative, src->file_path_node_idx);
+        dst->path          = str8_from_rdi_path_node_idx(arena, rdi, src->file_path_node_idx);
         dst->checksum_kind = src->checksum_kind;
         dst->checksum      = checksum;
         src_file_from_idx_table[idx] = dst;
@@ -194,10 +194,10 @@ rdim_loose_from_rdi(Arena *arena, RDIM_SubsetFlags subset_flags, RDI_Parsed *rdi
       RDIM_Unit *dst = rdim_unit_chunk_list_push(arena, &lane_units[lane_idx()], 64);
       dst->unit_name     = str8_from_rdi_string_idx(rdi, src->unit_name_string_idx);
       dst->compiler_name = str8_from_rdi_string_idx(rdi, src->compiler_name_string_idx);
-      dst->source_file   = str8_from_rdi_path_node_idx(arena, rdi, PathStyle_Relative, src->source_file_path_node);
-      dst->object_file   = str8_from_rdi_path_node_idx(arena, rdi, PathStyle_Relative, src->object_file_path_node);
-      dst->archive_file  = str8_from_rdi_path_node_idx(arena, rdi, PathStyle_Relative, src->archive_file_path_node);
-      dst->build_path    = str8_from_rdi_path_node_idx(arena, rdi, PathStyle_Relative, src->build_path_node);
+      dst->source_file   = str8_from_rdi_path_node_idx(arena, rdi, src->source_file_path_node);
+      dst->object_file   = str8_from_rdi_path_node_idx(arena, rdi, src->object_file_path_node);
+      dst->archive_file  = str8_from_rdi_path_node_idx(arena, rdi, src->archive_file_path_node);
+      dst->build_path    = str8_from_rdi_path_node_idx(arena, rdi, src->build_path_node);
       dst->language      = src->language;
       dst->voff_ranges   = unit_ranges[unit_idx];
       

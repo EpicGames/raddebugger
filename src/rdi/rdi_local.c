@@ -51,9 +51,10 @@ str8_from_rdi_string_idx(RDI_Parsed *rdi, U32 idx)
 }
 
 internal String8
-str8_from_rdi_path_node_idx(Arena *arena, RDI_Parsed *rdi, PathStyle path_style, U32 path_node_idx)
+str8_from_rdi_path_node_idx(Arena *arena, RDI_Parsed *rdi, U32 path_node_idx)
 {
   Temp scratch = scratch_begin(&arena, 1);
+  PathStyle path_style = PathStyle_Relative;
   String8List path_parts = {0};
   for(RDI_FilePathNode *fpn = rdi_element_from_name_idx(rdi, FilePathNodes, path_node_idx);
       fpn != rdi_element_from_name_idx(rdi, FilePathNodes, 0);
@@ -61,6 +62,10 @@ str8_from_rdi_path_node_idx(Arena *arena, RDI_Parsed *rdi, PathStyle path_style,
   {
     String8 path_part = {0};
     path_part.str = rdi_string_from_idx(rdi, fpn->name_string_idx, &path_part.size);
+    if (fpn->parent_path_node == 0) {
+      // Infer before splitting: the root's name retains the leading slash.
+      path_style = path_style_from_str8(path_part);
+    }
     String8List s = str8_split_path(scratch.arena, path_part);
     str8_list_concat_in_place(&s, &path_parts);
     path_parts = s;
