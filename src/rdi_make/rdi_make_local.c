@@ -972,6 +972,7 @@ rdim_bake(Arena *arena, RDIM_BakeParams *params)
       {
         line_tables_count = params->line_tables.total_count;
         src_line_tables = push_array(scratch.arena, RDIM_LineTable *, line_tables_count);
+        U64 nonempty_line_tables_count = 0;
         ProfScope("flatten chunk list")
         {
           U64 joined_idx = 0;
@@ -980,13 +981,14 @@ rdim_bake(Arena *arena, RDIM_BakeParams *params)
             for EachIndex(idx, n->count)
             {
               src_line_tables[joined_idx] = &n->v[idx];
+              nonempty_line_tables_count += (n->v[idx].line_count + n->v[idx].seq_count != 0);
               joined_idx += 1;
             }
           }
         }
         baked_line_tables = push_array(scratch.arena, BakedLineTables, 1);
         baked_line_tables->line_tables_count       = params->line_tables.total_count + 1;
-        baked_line_tables->line_table_voffs_count  = params->line_tables.total_line_count + 2*params->line_tables.total_seq_count;
+        baked_line_tables->line_table_voffs_count  = params->line_tables.total_line_count + params->line_tables.total_seq_count + nonempty_line_tables_count;
         baked_line_tables->line_table_lines_count  = params->line_tables.total_line_count + params->line_tables.total_seq_count;
         baked_line_tables->line_table_columns_count= 1;
       }
@@ -1010,12 +1012,13 @@ rdim_bake(Arena *arena, RDIM_BakeParams *params)
               U64 final_idx = idx+1; // NOTE(rjf): +1, to reserve [0] for nil
               RDIM_LineTable *src = src_line_tables[idx];
               RDI_LineTable *dst = &baked_line_tables->line_tables[final_idx];
+              U64 lines_count = src->line_count + src->seq_count;
               dst->voffs_base_idx = voffs_base_idx; // TODO(rjf): @u64_to_u32
               dst->lines_base_idx = lines_base_idx; // TODO(rjf): @u64_to_u32
               dst->cols_base_idx  = cols_base_idx; // TODO(rjf): @u64_to_u32
-              dst->lines_count    = src->line_count + src->seq_count; // TODO(rjf): @u64_to_u32
-              voffs_base_idx += src->line_count + 2*src->seq_count;
-              lines_base_idx += src->line_count + 1*src->seq_count;
+              dst->lines_count    = lines_count; // TODO(rjf): @u64_to_u32
+              voffs_base_idx += lines_count + (lines_count != 0);
+              lines_base_idx += lines_count;
             }
           }
         }
