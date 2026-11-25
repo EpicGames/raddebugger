@@ -343,8 +343,8 @@ d2r_convert(Arena *arena, D2R_ConvertParams *params)
   B32 make_line_tables      = !!(params->subset_flags & RDIM_SubsetFlag_LineInfo) || make_source_line_maps;
   B32 make_inline_sites     = make_procedures && make_scopes && !!(params->subset_flags & RDIM_SubsetFlag_InlineLineInfo);
  
-  // detect breakpad mode and skip procedures that don't have a valid address range (functions removed during linker's GC pass, etc.)
-  B32 prune_dead_output = (make_procedures && make_scopes && make_namespaces &&
+  // detect address-only output (Breakpad/stripped) and skip procedures without valid ranges
+  B32 prune_dead_output = (make_procedures && make_namespaces &&
                            !make_types && !make_locals && !make_global_vars && !make_thread_vars &&
                            !(params->subset_flags & (RDIM_SubsetFlag_NameMaps|RDIM_SubsetFlag_Constants)));
   
@@ -3396,7 +3396,8 @@ d2r_convert(Arena *arena, D2R_ConvertParams *params)
           //
           RDIM_Rng1U64List ranges = {0};
           if(!prune_dead_output ||
-             (tag.kind == DW_TagKind_SubProgram && !is_decl) || (tag.kind == DW_TagKind_LexicalBlock && top_parent != 0 && top_parent->scope != 0))
+             (tag.kind == DW_TagKind_SubProgram && !is_decl) ||
+             (make_scopes && tag.kind == DW_TagKind_LexicalBlock && top_parent != 0 && top_parent->scope != 0))
           {
             Temp range_temp = temp_begin(temp.arena);
 

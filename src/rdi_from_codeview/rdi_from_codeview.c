@@ -1567,7 +1567,8 @@ cv2r_convert(Arena *arena, CV2R_ConvertParams *params)
         }
         
         //- rjf: build per-inline-site line tables
-        if(params->subset_flags & RDIM_SubsetFlag_InlineLineInfo) ProfScope("build per-inline-site line tables")
+        if((params->subset_flags & RDIM_SubsetFlag_InlineLineInfo) &&
+           (params->subset_flags & RDIM_SubsetFlag_Scopes)) ProfScope("build per-inline-site line tables")
         {
           U64 base_voff = 0;
           CV2R_SeparatedCodeMap separated_code_map = cv2r_separated_code_map_from_sym(scratch.arena, src_unit_sym, sections, sections_count);
@@ -3506,13 +3507,16 @@ cv2r_convert(Arena *arena, CV2R_ConvertParams *params)
               }break;
               case CV_SymKind_BLOCK32:
               {
-                scope_record_count += 1;
+                if(params->subset_flags & RDIM_SubsetFlag_Scopes) { scope_record_count += 1; }
               }break;
               case CV_SymKind_INLINESITE:
               case CV_SymKind_INLINESITE2:
               {
-                scope_record_count += 1;
-                inline_site_record_count += 1;
+                if(params->subset_flags & RDIM_SubsetFlag_Scopes)
+                {
+                  scope_record_count += 1;
+                  inline_site_record_count += 1;
+                }
               }break;
               case CV_SymKind_LDATA32:
               case CV_SymKind_GDATA32:
@@ -3603,6 +3607,20 @@ cv2r_convert(Arena *arena, CV2R_ConvertParams *params)
           CV_Record record;
           CV_RecIter iter = cv_record_iter_init_ex(sym->data, CV_RecordKind_Symbol, sym->sym_align);
           while (cv_record_iter_next(&iter, &record)) {
+
+            // for stripped RDI we collect top level scopes only, omit sub scopes but keep the stack balanced
+            if( ! (params->subset_flags & RDIM_SubsetFlag_Scopes) &&
+               (record.header.kind == CV_SymKind_BLOCK32 || record.header.kind == CV_SymKind_INLINESITE || record.header.kind == CV_SymKind_INLINESITE2))
+            {
+              CV2R_ScopeNode *node = free_scope_node;
+              if(node != 0) { SLLStackPop(free_scope_node); }
+              else { node = push_array_no_zero(scratch.arena, CV2R_ScopeNode, 1); }
+              node->scope = top_scope_node != 0 ? top_scope_node->scope : 0;
+              SLLStackPush(top_scope_node, node);
+              defrange_target = 0;
+              continue;
+            }
+
             switch(record.header.kind)
             {
               default:{}break;
@@ -3644,9 +3662,9 @@ cv2r_convert(Arena *arena, CV2R_ConvertParams *params)
                   proc_flags           = chunks->proc_flags;
                   if(root_scope != 0) { curr_proc_symbol = root_scope->symbol; }
                 }
-                if(params->subset_flags & RDIM_SubsetFlag_Scopes)
+                if(params->subset_flags & (RDIM_SubsetFlag_Scopes|RDIM_SubsetFlag_Procedures|RDIM_SubsetFlag_ProcedureNameMap))
                 {
-                  if(root_scope == 0)
+                  if(root_scope == 0 && (params->subset_flags & RDIM_SubsetFlag_Scopes))
                   {
                     // an unresolved parent still needs a stack entry to balance
                     // END; its empty scope must not acquire a made-up address
@@ -3830,7 +3848,7 @@ cv2r_convert(Arena *arena, CV2R_ConvertParams *params)
                 
                 // rjf: unpack proc's container scope
                 RDIM_Scope *container_scope = 0;
-                if(!got_container && top_scope_node != 0)
+                if(!got_container && top_scope_node != 0 && top_scope_node->scope != 0)
                 {
                   container_scope = top_scope_node->scope;
                   got_container = 1;
@@ -3861,7 +3879,7 @@ cv2r_convert(Arena *arena, CV2R_ConvertParams *params)
                 //       procedure *not* the namespaces, so a procedure's root scope always has
                 //       no parent.
                 RDIM_Scope *procedure_root_scope = 0;
-                if(params->subset_flags & RDIM_SubsetFlag_Scopes)
+                if(params->subset_flags & (RDIM_SubsetFlag_Scopes|RDIM_SubsetFlag_Procedures|RDIM_SubsetFlag_ProcedureNameMap))
                 {
                   procedure_root_scope = rdim_scope_chunk_list_push(arena, sym_scopes, sym_scopes_chunk_cap);
                   U64 voff_first = procedure_base_voff;
@@ -3999,7 +4017,8 @@ cv2r_convert(Arena *arena, CV2R_ConvertParams *params)
               //- rjf: REGREL32
               case CV_SymKind_REGREL32:
               {
-                if(params->subset_flags & RDIM_SubsetFlag_Locals && !(proc_flags & CV_ProcFlag_OptDbgInfo))
+                if((params->subset_flags & RDIM_SubsetFlag_Locals) &&
+                   (params->subset_flags & RDIM_SubsetFlag_Scopes) && !(proc_flags & CV_ProcFlag_OptDbgInfo))
                 {
                   // TODO(rjf): apparently some of the information here may end up being
                   // redundant with "better" information from  CV_SymKind_LOCAL record.
@@ -4119,7 +4138,7 @@ cv2r_convert(Arena *arena, CV2R_ConvertParams *params)
                 
                 // rjf: unpack thread variable's container symbol
                 RDIM_Scope *container_scope = 0;
-                if(!got_container && top_scope_node != 0)
+                if(!got_container && top_scope_node != 0 && top_scope_node->scope != 0)
                 {
                   got_container = 1;
                   container_scope = top_scope_node->scope;
@@ -4164,7 +4183,7 @@ cv2r_convert(Arena *arena, CV2R_ConvertParams *params)
               
               //- rjf: LOCAL
               case CV_SymKind_LOCAL:
-              if(params->subset_flags & (RDIM_SubsetFlag_Locals))
+              if((params->subset_flags & RDIM_SubsetFlag_Locals) && (params->subset_flags & RDIM_SubsetFlag_Scopes))
               {
                 // rjf: no containing scope? -> malformed data; locals cannot be produced
                 // outside of a containing scope
