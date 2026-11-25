@@ -191,6 +191,7 @@ eh_uwnd_step(Arch arch, MemoryMap *memory_map, UWND_ModuleInfo *module_info, U64
     U64 reg_count = dw_reg_count_from_arch(arch);
     DW_CFIRow cfi_row = {0};
     cfi_row.reg_rules = push_array(scratch.arena, DW_UnwindRule, reg_count);
+    if (!contains_1u64(fde.pc_range, pc)) {pc -= 1;}
     if(!done && contains_1u64(fde.pc_range, pc))
     {
       U64 code_align_factor = cie.code_align_factor;
