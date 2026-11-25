@@ -556,7 +556,6 @@ lane_sync(); if(flags & (1ull<<(kind))) ProfScope((char *)rdi_name_title_from_du
   //
   DumpSubset(DataSections)
   {
-    if(lane_idx() == 0) { dumpf("\n"); }
     Rng1U64 range = lane_range(rdi->sections_count);
     for EachInRange(idx, range)
     {
@@ -564,7 +563,7 @@ lane_sync(); if(flags & (1ull<<(kind))) ProfScope((char *)rdi_name_title_from_du
       RDI_SectionKind  kind     = (RDI_SectionKind)idx;
       RDI_Section     *section  = &rdi->sections[idx];
       String8          kind_str = rdi_string_from_data_section_kind(scratch.arena, kind);
-      dumpf("  {%#010llx  %10u  %10u  %*s} // data_section[%I64u]\n", section->off, section->encoded_size, section->unpacked_size, 24, kind_str.str, idx);
+      dumpf("  {%#010llx  %10I64u  %10I64u  %*s} // data_section[%I64u]\n", section->off, section->encoded_size, section->unpacked_size, 24, kind_str.str, idx);
       scratch_end(scratch);
     }
   }

@@ -1043,7 +1043,7 @@ di_async_tick(void)
       RDI_Parsed rdi_parsed = rdi_parsed_maybe_compressed;
       {
         U64 decompressed_size = rdi_decompressed_size_from_parsed(&rdi_parsed_maybe_compressed);
-        if(decompressed_size > file_props.size)
+        if(rdi_has_compressed_sections(&rdi_parsed_maybe_compressed))
         {
           rdi_parsed_arena = arena_alloc();
           U8 *decompressed_data = push_array_no_zero(rdi_parsed_arena, U8, decompressed_size);

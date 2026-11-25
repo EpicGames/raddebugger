@@ -232,13 +232,16 @@ rdi_section_raw_data_from_kind(RDI_Parsed *rdi, RDI_SectionKind kind, RDI_Sectio
   result = &rdi_nil_element_union;
   *size_out = rdi_section_element_size_table[kind];
 #endif
-  if(0 <= kind && kind < rdi->sections_count &&
-     rdi->sections[kind].encoded_size != 0 &&
-     rdi->sections[kind].off < rdi->raw_data_size)
+  if(0 <= kind && kind < rdi->sections_count)
   {
-    result = rdi->raw_data+rdi->sections[kind].off;
-    *size_out = rdi->sections[kind].encoded_size;
-    *encoding_out = rdi->sections[kind].encoding;
+    RDI_Section *sec = &rdi->sections[kind];
+    RDI_U64 resident_size = sec->encoding == RDI_SectionEncoding_Unpacked ? sec->unpacked_size : sec->encoded_size;
+    if(resident_size != 0 && sec->off <= rdi->raw_data_size && resident_size <= rdi->raw_data_size - sec->off)
+    {
+      result = rdi->raw_data + sec->off;
+      *size_out = resident_size;
+      *encoding_out = sec->encoding;
+    }
   }
   return result;
 }
@@ -279,12 +282,36 @@ rdi_section_raw_element_from_kind_idx(RDI_Parsed *rdi, RDI_SectionKind kind, RDI
 RDI_PROC RDI_U64
 rdi_decompressed_size_from_parsed(RDI_Parsed *rdi)
 {
-  RDI_U64 decompressed_size = rdi->raw_data_size;
+  if(rdi->raw_data == 0)
+  {
+    return 0;
+  }
+  RDI_Header *hdr = (RDI_Header *)rdi->raw_data;
+  RDI_U64 decompressed_size = (RDI_U64)hdr->data_section_off + (RDI_U64)rdi->sections_count*sizeof(RDI_Section);
+  decompressed_size = (decompressed_size + 7) & ~7ull;
   for(RDI_U64 section_idx = 0; section_idx < rdi->sections_count; section_idx += 1)
   {
-    decompressed_size += (rdi->sections[section_idx].unpacked_size - rdi->sections[section_idx].encoded_size);
+    RDI_U64 size = rdi->sections[section_idx].unpacked_size;
+    if(size > ~0ull - decompressed_size - 7)
+    {
+      return 0;
+    }
+    decompressed_size = (decompressed_size + size + 7) & ~7ull;
   }
   return decompressed_size;
+}
+
+RDI_PROC RDI_U32
+rdi_has_compressed_sections(RDI_Parsed *rdi)
+{
+  for(RDI_U64 idx = 0; idx < rdi->sections_count; idx += 1)
+  {
+    if(rdi->sections[idx].encoding != RDI_SectionEncoding_Unpacked)
+    {
+      return 1;
+    }
+  }
+  return 0;
 }
 
 //- decompression
@@ -311,7 +338,6 @@ rdi_decompress_parsed(U8 *decompressed_data, U64 decompressed_size, RDI_Parsed *
     {
       dsec_base[idx].encoding = RDI_SectionEncoding_Unpacked;
       dsec_base[idx].off = off;
-      dsec_base[idx].encoded_size = dsec_base[idx].unpacked_size;
       off += dsec_base[idx].unpacked_size;
       off += 7;
       off -= off%8;
@@ -329,8 +355,17 @@ rdi_decompress_parsed(U8 *decompressed_data, U64 decompressed_size, RDI_Parsed *
         src < src_opl && dst < dst_opl;
         src += 1, dst += 1)
     {
-      rr_lzb_simple_decode((U8*)og_rdi->raw_data + src->off, src->encoded_size,
-                           decompressed_data     + dst->off, dst->unpacked_size);
+      if(src->unpacked_size == 0) { continue; }
+      U8 *src_data = (U8*)og_rdi->raw_data + src->off;
+      U8 *dst_data = decompressed_data + dst->off;
+      if(src->encoding == RDI_SectionEncoding_Unpacked)
+      {
+        MemoryCopy(dst_data, src_data, src->unpacked_size);
+      }
+      else
+      {
+        rr_lzb_simple_decode(src_data, src->encoded_size, dst_data, dst->unpacked_size);
+      }
     }
   }
 }

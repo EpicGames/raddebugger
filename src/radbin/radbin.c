@@ -1555,7 +1555,7 @@ rb_thread_entry_point(void *p)
               rdi = push_array(conversion_arena, RDI_Parsed, 1);
               RDI_ParseStatus rdi_status = rdi_parse(f->data.str, f->data.size, rdi);
               U64 decompressed_size = rdi_decompressed_size_from_parsed(rdi);
-              if(decompressed_size > rdi->raw_data_size)
+              if(rdi_has_compressed_sections(rdi))
               {
                 U8 *decompressed_data = push_array_no_zero(conversion_arena, U8, decompressed_size);
                 rdi_decompress_parsed(decompressed_data, decompressed_size, rdi);
@@ -1667,7 +1667,7 @@ rb_thread_entry_point(void *p)
         RDI_Parsed rdi = {0};
         RDI_ParseStatus rdi_status = rdi_parse(f->data.str, f->data.size, &rdi);
         U64 decompressed_size = rdi_decompressed_size_from_parsed(&rdi);
-        if(decompressed_size > rdi.raw_data_size)
+        if(rdi_has_compressed_sections(&rdi))
         {
           U8 *decompressed_data = push_array_no_zero(bake_arena, U8, decompressed_size);
           rdi_decompress_parsed(decompressed_data, decompressed_size, &rdi);
@@ -1677,10 +1677,7 @@ rb_thread_entry_point(void *p)
         {
           if(idx < RDI_SectionKind_COUNT)
           {
-            serialized_section_bundle->sections[idx].data          = rdi.raw_data + rdi.sections[idx].off;
-            serialized_section_bundle->sections[idx].encoded_size  = rdi.sections[idx].encoded_size;
-            serialized_section_bundle->sections[idx].unpacked_size = rdi.sections[idx].unpacked_size;
-            serialized_section_bundle->sections[idx].encoding      = rdi.sections[idx].encoding;
+            serialized_section_bundle->sections[idx] = rdim_serialized_section_make_unpacked(rdi.raw_data + rdi.sections[idx].off, rdi.sections[idx].unpacked_size);
           }
         }
       }
@@ -2240,7 +2237,7 @@ rb_thread_entry_point(void *p)
             RDI_Parsed rdi = {0};
             RDI_ParseStatus rdi_status = rdi_parse(f->data.str, f->data.size, &rdi);
             U64 decompressed_size = rdi_decompressed_size_from_parsed(&rdi);
-            if(decompressed_size > rdi.raw_data_size)
+            if(rdi_has_compressed_sections(&rdi) && (rdi_dump_subset_flags & ~RDI_DumpSubsetFlag_DataSections) != 0)
             {
               U8 *decompressed_data = push_array_no_zero(arena, U8, decompressed_size);
               rdi_decompress_parsed(decompressed_data, decompressed_size, &rdi);
