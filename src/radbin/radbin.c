@@ -7,6 +7,19 @@
 #include "radbin/generated/radbin.meta.c"
 
 ////////////////////////////////
+// Breakpad File Paths
+
+internal String8
+rb_breakpad_file_path(String8 prefix, String8 path)
+{
+  if (prefix.size == 0 || path.size <= prefix.size ||
+      !str8_match(str8_prefix(path, prefix.size), prefix, StringMatchFlag_CaseInsensitive|StringMatchFlag_SlashInsensitive)) {
+    return path;
+  }
+  return str8_skip(path, prefix.size);
+}
+
+////////////////////////////////
 // Breakpad Module Identity
 
 internal String8
@@ -1066,6 +1079,7 @@ rb_thread_entry_point(void *p)
       
       fprintf(stderr, "--breakpad       Specifies that the utility should convert debug information\n");
       fprintf(stderr, "                 data to the textual Breakpad format.\n\n");
+      fprintf(stderr, "--breakpad_strip_path_prefix:<path>  Strip a directory prefix from Breakpad FILE paths.\n\n");
       
       fprintf(stderr, "--voff2line      Specifies that the utility should map a virtual offset to a\n");
       fprintf(stderr, "                 line.\n\n");
@@ -1125,6 +1139,11 @@ rb_thread_entry_point(void *p)
           fprintf(stderr, "All input files specified on the command line will be dumped. The following\n");
           fprintf(stderr, "formats are currently supported: PE, COFF, RDI, ELF, and thin 64-bit Mach-O\n\n");
           fprintf(stderr, "Pass the DWARF input file for a dSYM bundle.\n\n");
+          fprintf(stderr, "--breakpad_strip_path_prefix:<path>\n");
+          fprintf(stderr, "  Match a directory prefix case-insensitively, ignoring slash direction,\n");
+          fprintf(stderr, "  then remove it without changing the remaining path.\n");
+          fprintf(stderr, "  Unmatched paths are unchanged; no filesystem lookups are performed.\n");
+          fprintf(stderr, "  Example: \"-breakpad_strip_path_prefix:c:\\devel\\projects\"\n\n");
         }break;
         case OutputKind_VOff2Line:
         {
@@ -1134,6 +1153,15 @@ rb_thread_entry_point(void *p)
         }break;
       }
       
+      String8 breakpad_strip_prefix = cmd_line_string(cmdline, s("breakpad_strip_path_prefix"));
+      if (output_kind == OutputKind_Breakpad &&
+          cmd_line_has_flag(cmdline, s("breakpad_strip_path_prefix")) && breakpad_strip_prefix.size == 0) {
+        if (lane_idx() == 0) {
+          log_user_errorf("--breakpad_strip_path_prefix requires a nonempty directory prefix.\n");
+        }
+        break;
+      }
+
       //- rjf: unpack subset flags
       RDIM_SubsetFlags subset_flags = 0xffffffff;
       switch(output_kind)
@@ -1764,6 +1792,10 @@ rb_thread_entry_point(void *p)
           //- rjf: dump FILE records
           ProfScope("dump FILE records")
           {
+            String8 strip_prefix = breakpad_strip_prefix;
+            if (strip_prefix.size != 0 && !char_is_slash(strip_prefix.str[strip_prefix.size - 1])) {
+              strip_prefix = push_str8_cat(arena, strip_prefix, s("/"));
+            }
             U64 count = 0;
             RDI_SourceFile *v = rdi_table_from_name(rdi, SourceFiles, &count);
             if(count > 0)
@@ -1774,6 +1806,7 @@ rb_thread_entry_point(void *p)
                 String8List *out = &p2b_shared->lane_file_dumps[lane_idx()];
                 Temp scratch = scratch_begin(&arena, 1);
                 String8 src_path = str8_from_rdi_path_node_idx(scratch.arena, rdi, v[idx+1].file_path_node_idx);
+                src_path = rb_breakpad_file_path(strip_prefix, src_path);
                 str8_list_pushf(arena, out, "FILE %I64u %S\n", idx, src_path);
                 scratch_end(scratch);
               }
