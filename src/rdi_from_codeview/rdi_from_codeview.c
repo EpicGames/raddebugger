@@ -789,6 +789,10 @@ cv2r_convert(Arena *arena, CV2R_ConvertParams *params)
   CV2R_LeafStream *ipi_leaf = params->ipi_leaf;
   CV2R_TPIHash *tpi_hash = params->tpi_hash;
 
+  B32 make_procedures = !!(params->subset_flags & (RDIM_SubsetFlag_Procedures|RDIM_SubsetFlag_ProcedureNameMap|RDIM_SubsetFlag_LinkNameProcedureNameMap));
+  B32 make_global_vars = !!(params->subset_flags & (RDIM_SubsetFlag_GlobalVariables|RDIM_SubsetFlag_GlobalVariableNameMap));
+  B32 make_thread_vars = !!(params->subset_flags & (RDIM_SubsetFlag_ThreadVariables|RDIM_SubsetFlag_ThreadVariableNameMap));
+
   B32 leaf_stream_ok = 0;
   if(lane_idx() == 0)
   {
@@ -960,7 +964,7 @@ cv2r_convert(Arena *arena, CV2R_ConvertParams *params)
     }
     
     // rjf: fill
-    if(params->subset_flags & RDIM_SubsetFlag_Procedures)
+    if(make_procedures)
     {
       CV_SymbolStream *sym = comp_units[0].sym;
       CV_Record record;
@@ -3662,7 +3666,7 @@ cv2r_convert(Arena *arena, CV2R_ConvertParams *params)
                   proc_flags           = chunks->proc_flags;
                   if(root_scope != 0) { curr_proc_symbol = root_scope->symbol; }
                 }
-                if(params->subset_flags & (RDIM_SubsetFlag_Scopes|RDIM_SubsetFlag_Procedures|RDIM_SubsetFlag_ProcedureNameMap))
+                if(make_procedures || (params->subset_flags & RDIM_SubsetFlag_Scopes))
                 {
                   if(root_scope == 0 && (params->subset_flags & RDIM_SubsetFlag_Scopes))
                   {
@@ -3720,6 +3724,7 @@ cv2r_convert(Arena *arena, CV2R_ConvertParams *params)
               //- rjf: LDATA32/GDATA32
               case CV_SymKind_LDATA32:
               case CV_SymKind_GDATA32:
+              if(make_global_vars)
               {
                 // rjf: unpack sym
                 CV_SymData32 *data32 = (CV_SymData32 *)record.data.str;
@@ -3879,7 +3884,7 @@ cv2r_convert(Arena *arena, CV2R_ConvertParams *params)
                 //       procedure *not* the namespaces, so a procedure's root scope always has
                 //       no parent.
                 RDIM_Scope *procedure_root_scope = 0;
-                if(params->subset_flags & (RDIM_SubsetFlag_Scopes|RDIM_SubsetFlag_Procedures|RDIM_SubsetFlag_ProcedureNameMap))
+                if(make_procedures || (params->subset_flags & RDIM_SubsetFlag_Scopes))
                 {
                   procedure_root_scope = rdim_scope_chunk_list_push(arena, sym_scopes, sym_scopes_chunk_cap);
                   U64 voff_first = procedure_base_voff;
@@ -3930,7 +3935,7 @@ cv2r_convert(Arena *arena, CV2R_ConvertParams *params)
                 }
                 
                 // rjf: build procedure symbol
-                if(params->subset_flags & (RDIM_SubsetFlag_Procedures|RDIM_SubsetFlag_ProcedureNameMap))
+                if(make_procedures)
                 {
                   curr_proc_symbol = rdim_symbol_chunk_list_push(arena, sym_procedures, sym_procedures_chunk_cap);
                   curr_proc_symbol->is_extern        = (record.header.kind == CV_SymKind_GPROC32);
@@ -3993,6 +3998,7 @@ cv2r_convert(Arena *arena, CV2R_ConvertParams *params)
               
               //- rjf: THUNK32
               case CV_SymKind_THUNK32:
+              if(make_procedures)
               {
                 // rjf: unpack record
                 CV_SymThunk32 *thunk32 = (CV_SymThunk32 *)record.data.str;
@@ -4116,7 +4122,7 @@ cv2r_convert(Arena *arena, CV2R_ConvertParams *params)
               //- rjf: LTHREAD32/GTHREAD32
               case CV_SymKind_LTHREAD32:
               case CV_SymKind_GTHREAD32:
-              if(params->subset_flags & (RDIM_SubsetFlag_ThreadVariables|RDIM_SubsetFlag_ThreadVariableNameMap))
+              if(make_thread_vars)
               {
                 // rjf: unpack sym
                 CV_SymThread32 *thread32 = (CV_SymThread32 *)record.data.str;
@@ -4625,7 +4631,7 @@ cv2r_convert(Arena *arena, CV2R_ConvertParams *params)
   lane_sync();
   
   //////////////////////////////////////////////////////////////
-  //- rjf: produce stub procedures from all pub32 symbols
+  // produce requested procedure/data stubs from uncovered pub32 symbols
   //
   if(lane_idx() == 0 && comp_units_count != 0 && all_units_ptr->first != 0)
   {
@@ -4644,6 +4650,8 @@ cv2r_convert(Arena *arena, CV2R_ConvertParams *params)
         {
           // rjf: unpack record
           CV_SymPub32 *pub32 = (CV_SymPub32 *)record.data.str;
+          B32 is_procedure = (pub32->flags & (CV_Pub32Flag_Code|CV_Pub32Flag_Function));
+          if(is_procedure ? !make_procedures : !make_global_vars) { break; }
           String8 name = cv_name_from_symbol(record.header.kind, record.data);
           U64 voff = cv2r_voff_from_soff(sections, sections_count, pub32->sec, pub32->off);
           
@@ -4676,7 +4684,6 @@ cv2r_convert(Arena *arena, CV2R_ConvertParams *params)
           // rjf: if this pub32 was *not* covered by another symbol record, build a symbol for it
           if(!was_in_other_record)
           {
-            B32 is_procedure = (pub32->flags & (CV_Pub32Flag_Code|CV_Pub32Flag_Function));
             RDIM_SymbolChunkList *symbols = is_procedure ? sym_procedures : sym_global_variables;
             RDIM_Symbol *symbol = rdim_symbol_chunk_list_push(arena, symbols, 64);
             symbol->name = name;
