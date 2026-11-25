@@ -18,6 +18,48 @@ rb_breakpad_debug_id_from_guid_age(Arena *arena, Guid guid, U32 age)
                guid.data4[4], guid.data4[5], guid.data4[6], guid.data4[7], age);
 }
 
+internal B32
+rb_breakpad_elf_text_identifier(String8 data, ELF_Bin *bin, U8 identifier[16])
+{
+  ELF_Class elf_class = bin->hdr.e_ident[ELF_Identifier_Class];
+  if (bin->hdr.e_ident[ELF_Identifier_Data] != ELF_Data_2LSB ||
+      (elf_class != ELF_Class_32 && elf_class != ELF_Class_64)) {
+    return 0;
+  }
+
+  U64 entry_size = elf_shdr_size_from_class(elf_class);
+  if (data.size < elf_hdr_size_from_class(elf_class) ||
+      bin->hdr.e_shentsize != entry_size || bin->hdr.e_shoff > data.size ||
+      bin->shdrs.count > (data.size - bin->hdr.e_shoff)/entry_size ||
+      bin->sh_name_range.min > bin->sh_name_range.max || bin->sh_name_range.max > data.size) {
+    return 0;
+  }
+
+  // use Breakpad's section preference and fold at most one page of code
+  String8 names[] = {s(".text"), s("text")};
+  for EachElement(name_idx, names) {
+    for EachIndex(section_idx, bin->shdrs.count) {
+      ELF_Shdr64 *section = &bin->shdrs.v[section_idx];
+      if (section->sh_type != ELF_ShType_ProgBits ||
+          !str8_match(elf_name_from_shdr64(data, bin, section), names[name_idx], 0)) {
+        continue;
+      }
+      if (section->sh_size == 0 || (section->sh_flags & ELF_Shf_Compressed) ||
+          section->sh_offset > data.size || section->sh_size > data.size - section->sh_offset) {
+        return 0;
+      }
+
+      MemoryZero(identifier, 16);
+      U64 size = Min(section->sh_size, 4096);
+      for EachIndex(idx, size) {
+        identifier[idx % 16] ^= data.str[section->sh_offset + idx];
+      }
+      return 1;
+    }
+  }
+  return 0;
+}
+
 internal RB_BreakpadIdentity
 rb_breakpad_identity_from_inputs(Arena *arena, ExecutableImageKind exe_kind, String8 exe_name, String8 exe_data, String8 dbg_data, B32 dbg_is_pdb)
 {
@@ -54,10 +96,12 @@ rb_breakpad_identity_from_inputs(Arena *arena, ExecutableImageKind exe_kind, Str
   else if (exe_kind == ExecutableImageKind_Elf32 || exe_kind == ExecutableImageKind_Elf64) {
     result.os = s("linux");
 
-    ELF_Bin exe_bin  = elf_bin_from_data(scratch.arena, exe_data);
-    String8 build_id = elf_note_desc_from_bin(exe_data, &exe_bin, s("GNU"), GNU_NoteType_BuildId);
-    if (exe_data.str != dbg_data.str || exe_data.size != dbg_data.size) {
-      ELF_Bin dbg_bin      = elf_bin_from_data(scratch.arena, dbg_data);
+    ELF_Bin exe_bin       = elf_bin_from_data(scratch.arena, exe_data);
+    ELF_Bin dbg_bin       = exe_bin;
+    String8 build_id      = elf_note_desc_from_bin(exe_data, &exe_bin, s("GNU"), GNU_NoteType_BuildId);
+    B32     separate_dbg  = exe_data.str != dbg_data.str || exe_data.size != dbg_data.size;
+    if (separate_dbg) {
+      dbg_bin = elf_bin_from_data(scratch.arena, dbg_data);
       String8 dbg_build_id = elf_note_desc_from_bin(dbg_data, &dbg_bin, s("GNU"), GNU_NoteType_BuildId);
       if (build_id.size != 0 && dbg_build_id.size != 0 && !str8_match(build_id, dbg_build_id, 0)) {
         log_user_errorf("ELF executable and debug file build IDs do not match.\n");
@@ -68,16 +112,24 @@ rb_breakpad_identity_from_inputs(Arena *arena, ExecutableImageKind exe_kind, Str
       }
     }
 
-    if (build_id.size) {
-      // Breakpad's debug ID uses the first 16 bytes as a GUID, zero-padded,
-      // followed by age zero; INFO CODE_ID preserves every original byte
+    U8 text_identifier[16] = {0};
+    String8 identifier = build_id;
+    if (identifier.size == 0 &&
+        (rb_breakpad_elf_text_identifier(exe_data, &exe_bin, text_identifier) ||
+         (separate_dbg && rb_breakpad_elf_text_identifier(dbg_data, &dbg_bin, text_identifier)))) {
+      identifier = str8(text_identifier, sizeof(text_identifier));
+    }
+
+    if (identifier.size) {
+      // debug ID uses GUID byte ordering plus age zero; CODE_ID preserves the
+      // complete build ID, or the raw 16-byte text fallback when no ID exists
       Guid guid = {0};
-      MemoryCopy(&guid, build_id.str, Min(sizeof(guid), build_id.size));
+      MemoryCopy(&guid, identifier.str, Min(sizeof(guid), identifier.size));
       result.debug_id = rb_breakpad_debug_id_from_guid_age(arena, guid, 0);
-      result.code_id  = str8(push_array_no_zero(arena, U8, build_id.size*2), build_id.size*2);
-      for EachIndex(idx, build_id.size) {
-        result.code_id.str[idx*2 + 0] = "0123456789ABCDEF"[build_id.str[idx] >> 4];
-        result.code_id.str[idx*2 + 1] = "0123456789ABCDEF"[build_id.str[idx] & 15];
+      result.code_id  = str8(push_array_no_zero(arena, U8, identifier.size*2), identifier.size*2);
+      for EachIndex(idx, identifier.size) {
+        result.code_id.str[idx*2 + 0] = "0123456789ABCDEF"[identifier.str[idx] >> 4];
+        result.code_id.str[idx*2 + 1] = "0123456789ABCDEF"[identifier.str[idx] & 15];
       }
     }
   } else if (exe_kind == ExecutableImageKind_CoffPe || dbg_is_pdb) {
@@ -1646,7 +1698,7 @@ rb_thread_entry_point(void *p)
             }
             else
             {
-              log_user_errorf("Cannot emit Breakpad symbols: provide a single supported module with an ELF build ID, Mach-O UUID, or PDB/PE GUID and age.\n");
+              log_user_errorf("Cannot emit Breakpad symbols: provide a single supported module with an ELF build ID or file-backed text, a Mach-O UUID, or a PDB/PE GUID and age.\n");
               output_valid = 0;
             }
           }
