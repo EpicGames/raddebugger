@@ -100,13 +100,32 @@ rb_breakpad_identity_from_inputs(Arena *arena, ExecutableImageKind exe_kind, Str
     ELF_Bin dbg_bin       = exe_bin;
     String8 build_id      = elf_note_desc_from_bin(exe_data, &exe_bin, s("GNU"), GNU_NoteType_BuildId);
     B32     separate_dbg  = exe_data.str != dbg_data.str || exe_data.size != dbg_data.size;
+   
+    switch (arch_from_elf_machine(exe_bin.hdr.e_machine)) {
+    case Arch_x64:   result.cpu = s("x86_64"); break;
+    case Arch_x86:   result.cpu = s("x86");    break;
+    case Arch_arm64: result.cpu = s("arm64");  break;
+    default: {
+      log_user_errorf("unsupported ELF machine %u\n", exe_bin.hdr.e_machine);
+      goto done;
+    }
+    }
+
     if (separate_dbg) {
       dbg_bin = elf_bin_from_data(scratch.arena, dbg_data);
+
+      if (exe_bin.hdr.e_machine != dbg_bin.hdr.e_machine ||
+          exe_bin.hdr.e_ident[ELF_Identifier_Class] != dbg_bin.hdr.e_ident[ELF_Identifier_Class]) {
+        log_user_errorf("ELF executable and debug file architectures do not match.\n");
+        goto done;
+      }
+
       String8 dbg_build_id = elf_note_desc_from_bin(dbg_data, &dbg_bin, s("GNU"), GNU_NoteType_BuildId);
       if (build_id.size != 0 && dbg_build_id.size != 0 && !str8_match(build_id, dbg_build_id, 0)) {
         log_user_errorf("ELF executable and debug file build IDs do not match.\n");
         goto done;
       }
+      
       if (build_id.size == 0) {
         build_id = dbg_build_id;
       }
@@ -1162,6 +1181,7 @@ rb_thread_entry_point(void *p)
           
           // rjf: convert
           D2R_ConvertParams convert_params = {0};
+          B32 conversion_supported = 1;
           {
             B32 got_exe = 0;
             B32 got_dbg = 0;
@@ -1270,9 +1290,19 @@ rb_thread_entry_point(void *p)
               {
                 Temp scratch = scratch_begin(&arena, 1);
                 ELF_Bin bin = elf_bin_from_data(scratch.arena, dbg_data);
-                convert_params.arch = arch_from_elf_machine(bin.hdr.e_machine);
-                convert_params.base_vaddr = elf_base_addr_from_bin(&bin);
                 DW_Raw *shared_raw = 0;
+                convert_params.arch = arch_from_elf_machine(bin.hdr.e_machine);
+                if (output_kind != OutputKind_Breakpad) {
+                  ELF_Bin exe_bin = bin;
+                  if (exe_data.str != dbg_data.str || exe_data.size != dbg_data.size) {
+                    exe_bin = elf_bin_from_data(scratch.arena, exe_data);
+                  }
+                  if (convert_params.arch == Arch_arm64 || arch_from_elf_machine(exe_bin.hdr.e_machine) == Arch_arm64) {
+                    conversion_supported = 0;
+                    goto elf_conversion_setup_done;
+                  }
+                }
+                convert_params.base_vaddr = elf_base_addr_from_bin(&bin);
                 if (lane_idx() == 0) {
                   shared_raw = push_array(conversion_arena, DW_Raw, 1);
                   *shared_raw = dw_raw_from_elf_bin(conversion_arena, dbg_data, &bin);
@@ -1281,6 +1311,7 @@ rb_thread_entry_point(void *p)
                 convert_params.raw = *shared_raw;
                 convert_params.path_style = PathStyle_UnixAbsolute;
                 convert_params.binary_sections = e2r_rdi_binary_sections_from_elf_section_table(conversion_arena, dbg_data, &bin, &bin.shdrs);
+                elf_conversion_setup_done:;
                 scratch_end(scratch);
               }break;
             }
@@ -1296,7 +1327,15 @@ rb_thread_entry_point(void *p)
             breakpad_dbg_data    = dbg_data;
             breakpad_module_name = exe_name;
           }
-          ProfScope("convert") dwarf_bake_params = d2r_convert(conversion_arena, &convert_params);
+          if (conversion_supported) {
+            ProfScope("convert") dwarf_bake_params = d2r_convert(conversion_arena, &convert_params);
+          } else {
+            convert_done = 0;
+            output_valid = 0;
+            if (lane_idx() == 0) {
+              log_user_errorf("ARM64 ELF conversion currently supports --breakpad only; ARM64 RDI/register locations are not supported.\n");
+            }
+          }
         }
         
         // thin Mach-O / dSYM inputs => DWARF conversion
@@ -1698,7 +1737,15 @@ rb_thread_entry_point(void *p)
             }
             else
             {
-              log_user_errorf("Cannot emit Breakpad symbols: provide a single supported module with an ELF build ID or file-backed text, a Mach-O UUID, or a PDB/PE GUID and age.\n");
+              if (breakpad_mixed_inputs) {
+                log_user_errorf("Cannot emit Breakpad symbols: provide one module, not mixed input formats.\n");
+              } else if (cpu.size == 0) {
+                log_user_errorf("Cannot emit Breakpad symbols: unsupported or missing module CPU architecture.\n");
+              } else if (identity.debug_id.size == 0) {
+                log_user_errorf("Cannot emit Breakpad symbols: provide an ELF build ID or file-backed text, a Mach-O UUID, or a PDB/PE GUID and age.\n");
+              } else {
+                log_user_errorf("Cannot emit Breakpad symbols: missing module name.\n");
+              }
               output_valid = 0;
             }
           }
