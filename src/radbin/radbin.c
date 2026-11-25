@@ -1220,7 +1220,13 @@ rb_thread_entry_point(void *p)
                 ELF_Bin bin = elf_bin_from_data(scratch.arena, dbg_data);
                 convert_params.arch = arch_from_elf_machine(bin.hdr.e_machine);
                 convert_params.base_vaddr = elf_base_addr_from_bin(&bin);
-                convert_params.raw = dw_raw_from_elf_bin(conversion_arena, dbg_data, &bin);
+                DW_Raw *shared_raw = 0;
+                if (lane_idx() == 0) {
+                  shared_raw = push_array(conversion_arena, DW_Raw, 1);
+                  *shared_raw = dw_raw_from_elf_bin(conversion_arena, dbg_data, &bin);
+                }
+                lane_sync_u64(&shared_raw, 0);
+                convert_params.raw = *shared_raw;
                 convert_params.path_style = PathStyle_UnixAbsolute;
                 convert_params.binary_sections = e2r_rdi_binary_sections_from_elf_section_table(conversion_arena, dbg_data, &bin, &bin.shdrs);
                 scratch_end(scratch);
@@ -2030,7 +2036,13 @@ rb_thread_entry_point(void *p)
             else if(f->format == RB_FileFormat_ELF32 ||
                     f->format == RB_FileFormat_ELF64)
             {
-              dw = dw_raw_from_elf_bin(arena, f->data, &elf);
+              DW_Raw *shared_raw = 0;
+              if (lane_idx() == 0) {
+                shared_raw = push_array(arena, DW_Raw, 1);
+                *shared_raw = dw_raw_from_elf_bin(arena, f->data, &elf);
+              }
+              lane_sync_u64(&shared_raw, 0);
+              dw = *shared_raw;
             }
           }
         }
