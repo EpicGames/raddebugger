@@ -7,7 +7,7 @@
 #include "radbin/generated/radbin.meta.c"
 
 ////////////////////////////////
-//~ Breakpad Module Identity
+// Breakpad Module Identity
 
 internal String8
 rb_breakpad_debug_id_from_guid_age(Arena *arena, Guid guid, U32 age)
@@ -136,6 +136,208 @@ rb_breakpad_identity_from_inputs(Arena *arena, ExecutableImageKind exe_kind, Str
     }
   }
   done:;
+
+  scratch_end(scratch);
+  return result;
+}
+
+////////////////////////////////
+// Breakpad Image Symbols
+
+internal B32
+rb_elf_symbol_is_code(ELF_Bin *bin, ELF_Symbol *symbol)
+{
+  ELF_Sym64  *raw  = &symbol->raw;
+  ELF_SymBind bind = ELF_ST_BIND(raw->st_info);
+  ELF_SymType type = ELF_ST_TYPE(raw->st_info);
+  if ( ! symbol->name_valid || symbol->name.size == 0 ||
+       (bind != ELF_SymBind_Local && bind != ELF_SymBind_Global && bind != ELF_SymBind_Weak) ||
+       (type != ELF_SymType_Func && type != ELF_SymType_GNU_IFunc &&
+        !(type == ELF_SymType_NoType && (bind == ELF_SymBind_Global || bind == ELF_SymBind_Weak))) ||
+       raw->st_shndx == ELF_SectionIndex_Undef || raw->st_shndx >= ELF_SectionIndex_LoReserve ||
+       raw->st_shndx >= bin->shdrs.count) {
+    return 0;
+  }
+
+  ELF_Shdr64 *section = &bin->shdrs.v[raw->st_shndx];
+  U64         flags   = ELF_Shf_Alloc | ELF_Shf_ExecInstr;
+  if ((section->sh_flags & flags) != flags || section->sh_size == 0 ||
+      section->sh_size > max_U64 - section->sh_addr || raw->st_value < section->sh_addr) {
+    return 0;
+  }
+
+  U64 off = raw->st_value - section->sh_addr;
+  return off < section->sh_size && raw->st_size <= section->sh_size - off;
+}
+
+internal B32
+rb_macho_symbol_is_code(MACHO_Bin *bin, MACHO_Symbol *symbol)
+{
+  // ignore STABS, undefined, absolute, indirect, and non-instruction symbols
+  if ( ! symbol->name_valid || symbol->name.size == 0 ||
+       (symbol->type & 0xe0) != 0 || (symbol->type & 0x0e) != 0x0e ||
+       symbol->sect == 0 || symbol->sect > bin->section_count) {
+    return 0;
+  }
+
+  MACHO_Section *section = &bin->sections[symbol->sect - 1];
+  return ! section->is_debug && (section->flags & (0x80000000u | 0x400u)) != 0 && contains_1u64(section->vrange, symbol->value);
+}
+
+internal B32
+rb_public_symbol_is_before(void *a, void *b)
+{
+  RB_PublicSymbol *l = a, *r = b;
+  return l->voff < r->voff || (l->voff == r->voff && l->order < r->order);
+}
+
+internal B32
+rb_func_range_is_before(void *a, void *b)
+{
+  Rng1U64 *l = a, *r = b;
+  return l->min < r->min || (l->min == r->min && l->max < r->max);
+}
+
+internal String8List
+rb_breakpad_public_records(Arena              *arena,
+                          RDI_Parsed          *rdi,
+                          ExecutableImageKind  exe_kind,
+                          U64                  base_vaddr,
+                          String8              exe_data,
+                          String8              dbg_data)
+{
+  String8List result = {0};
+
+  B32 is_elf   = exe_kind == ExecutableImageKind_Elf32 || exe_kind == ExecutableImageKind_Elf64;
+  B32 is_macho = exe_kind == ExecutableImageKind_Macho;
+  if ( ! is_elf && ! is_macho) {
+    return result;
+  }
+
+  Temp scratch = scratch_begin(&arena, 1);
+
+  String8           sources[]        = {exe_data, dbg_data};
+  ELF_Bin           elf_bins[2]      = {0};
+  MACHO_Bin         macho_bins[2]    = {0};
+  ELF_SymbolArray   elf_symbols[2]   = {0};
+  MACHO_SymbolArray macho_symbols[2] = {0};
+  U64               source_counts[2] = {0};
+  U64               capacity         = 0;
+  for EachElement(source_idx, sources) {
+    if (sources[source_idx].size == 0 ||
+        (source_idx != 0 && sources[0].str == sources[source_idx].str && sources[0].size == sources[source_idx].size)) {
+      continue;
+    }
+
+    if (is_elf) {
+      elf_bins[source_idx] = elf_bin_from_data(scratch.arena, sources[source_idx]);
+
+      ELF_Bin *bin          = &elf_bins[source_idx];
+      B32      linked_image = bin->hdr.e_type == ELF_Type_Exec || bin->hdr.e_type == ELF_Type_Dyn;
+      if (bin->hdr.e_type >= ELF_Type_LoOs && bin->hdr.e_type < ELF_Type_LoProc) {
+        for EachIndex(idx, bin->phdrs.count) {
+          linked_image |= bin->phdrs.v[idx].p_type == ELF_PType_Load;
+        }
+      }
+
+      if ( ! linked_image) {
+        continue;
+      }
+
+      elf_symbols[source_idx]   = elf_symbols_from_bin(scratch.arena, sources[source_idx], bin);
+      source_counts[source_idx] = elf_symbols[source_idx].count;
+    } else {
+      macho_bins[source_idx]    = macho_bin_from_data(scratch.arena, sources[source_idx]);
+      macho_symbols[source_idx] = macho_symbols_from_bin(scratch.arena, sources[source_idx], &macho_bins[source_idx]);
+      source_counts[source_idx] = macho_symbols[source_idx].count;
+    }
+    if (source_counts[source_idx] > max_U64/sizeof(RB_PublicSymbol) - capacity) {
+      log_user_errorf("Too many image symbols for Breakpad PUBLIC output.\n");
+      scratch_end(scratch);
+      return result;
+    }
+    capacity += source_counts[source_idx];
+  }
+
+  if (capacity != 0) {
+    // cover exactly the bounding ranges used by emitted FUNC records, not all
+    // scopes or CU ranges; PUBLIC is only a fallback where FUNC has no coverage
+    U64          procedure_count = 0;
+    RDI_Symbol  *procedures      = rdi_table_from_name(rdi, Procedures, &procedure_count);
+    Rng1U64Array covered         = {0};
+    covered.v = push_array_no_zero(scratch.arena, Rng1U64, procedure_count);
+    for EachIndex(idx, procedure_count) {
+      RDI_Scope *scope = rdi_element_from_name_idx(rdi, Scopes, procedures[idx].root_scope_idx);
+      if (scope->voff_range_opl > scope->voff_range_first) {
+        U64 min = *rdi_element_from_name_idx(rdi, ScopeVOffData, scope->voff_range_first);
+        U64 max = *rdi_element_from_name_idx(rdi, ScopeVOffData, scope->voff_range_opl - 1);
+        if (min < max) {
+          covered.v[covered.count++] = r1u64(min, max);
+        }
+      }
+    }
+
+    if (covered.count > 1) {
+      radsort(covered.v, covered.count, rb_func_range_is_before);
+    }
+
+    U64 merged_count = 0;
+    for EachIndex(idx, covered.count) {
+      Rng1U64 range = covered.v[idx];
+      if (merged_count != 0 && range.min <= covered.v[merged_count - 1].max) {
+        covered.v[merged_count - 1].max = Max(covered.v[merged_count - 1].max, range.max);
+      } else {
+        covered.v[merged_count++] = range;
+      }
+    }
+    covered.count = merged_count;
+
+    RB_PublicSymbol *symbols = push_array_no_zero(scratch.arena, RB_PublicSymbol, capacity);
+    U64              count   = 0;
+    for EachElement(source_idx, sources) {
+      for EachIndex(idx, source_counts[source_idx]) {
+        B32 is_code = is_elf
+                      ? rb_elf_symbol_is_code(&elf_bins[source_idx], &elf_symbols[source_idx].v[idx])
+                      : rb_macho_symbol_is_code(&macho_bins[source_idx], &macho_symbols[source_idx].v[idx]);
+        if ( ! is_code) {
+          continue;
+        }
+        U64 vaddr = is_elf ? elf_symbols[source_idx].v[idx].raw.st_value : macho_symbols[source_idx].v[idx].value;
+        if (vaddr < base_vaddr || rng1u64_array_num_from_value__binary_search(&covered, vaddr - base_vaddr) != 0) {
+          continue;
+        }
+        String8 name = is_elf ? elf_symbols[source_idx].v[idx].name : macho_symbols[source_idx].v[idx].name;
+        if (is_macho && name.size != 0 && name.str[0] == '_') {
+          name = str8_skip(name, 1); // remove exactly one Mach-O ABI prefix; no demangling
+        }
+        B32 single_line = name.size != 0;
+        for EachIndex(char_idx, name.size) {
+          if (name.str[char_idx] == '\r' || name.str[char_idx] == '\n') {
+            single_line = 0;
+            break;
+          }
+        }
+        if (single_line) {
+          symbols[count] = (RB_PublicSymbol){vaddr - base_vaddr, count, name};
+          count += 1;
+        }
+      }
+    }
+
+    if (count > 1) {
+      radsort(symbols, count, rb_public_symbol_is_before);
+    }
+
+    for (U64 idx = 0; idx < count;) {
+      U64 end     = idx + 1;
+      B32 aliases = 0;
+      for (; end < count && symbols[end].voff == symbols[idx].voff; end += 1) {
+        aliases |= ! str8_match(symbols[idx].name, symbols[end].name, 0);
+      }
+      str8_list_pushf(arena, &result, "PUBLIC %s%I64x 0 %S\n", aliases ? "m " : "", symbols[idx].voff, symbols[idx].name);
+      idx = end;
+    }
+  }
 
   scratch_end(scratch);
   return result;
@@ -878,6 +1080,7 @@ rb_thread_entry_point(void *p)
       RDIM_BakeParams     pdb_bake_params       = {0};
       RDIM_BakeParams     dwarf_bake_params     = {0};
       ExecutableImageKind breakpad_exe_kind     = ExecutableImageKind_Null;
+      U64                 breakpad_base_vaddr   = 0;
       String8             breakpad_exe_name     = {0};
       String8             breakpad_exe_data     = {0};
       String8             breakpad_dbg_data     = {0};
@@ -986,6 +1189,13 @@ rb_thread_entry_point(void *p)
                 }
               }
             }
+
+            // a linked image without DWARF can still provide PUBLIC symbols
+            if ( ! got_dbg && output_kind == OutputKind_Breakpad) {
+              dbg_name = exe_name;
+              dbg_data = exe_data;
+            }
+
             switch(exe_kind)
             {
               default:{}break;
@@ -1022,6 +1232,7 @@ rb_thread_entry_point(void *p)
             convert_params.deterministic = cmd_line_has_flag(cmdline, str8_lit("deterministic"));
             convert_params.skip_exe_hash = output_kind == OutputKind_Breakpad;
             breakpad_exe_kind    = exe_kind;
+            breakpad_base_vaddr  = convert_params.base_vaddr;
             breakpad_exe_name    = exe_name;
             breakpad_exe_data    = exe_data;
             breakpad_dbg_data    = dbg_data;
@@ -1038,7 +1249,12 @@ rb_thread_entry_point(void *p)
           RB_File   *dbg_file  = 0;
           MACHO_Bin  exe_bin   = {0};
           MACHO_Bin  dbg_bin   = {0};
-          B32        supported = !convert_done && input_files_from_format_table[RB_FileFormat_PDB].count == 0 && input_files_from_format_table[RB_FileFormat_RDI].count == 0;
+          B32        supported = ! convert_done;
+          for EachEnumVal(RB_FileFormat, format) {
+            if (format != RB_FileFormat_Macho && input_files_from_format_table[format].count != 0) {
+              supported = 0;
+            }
+          }
           for EachNode(n, RB_FileNode, input_files_from_format_table[RB_FileFormat_Macho].first) {
             MACHO_Bin bin = macho_bin_from_data(scratch.arena, n->v->data);
 
@@ -1079,8 +1295,8 @@ rb_thread_entry_point(void *p)
                         exe_bin.has_uuid                         &&
                         dbg_bin.has_uuid                         &&
                         MemoryMatch(exe_bin.uuid, dbg_bin.uuid, sizeof(exe_bin.uuid)) &&
-                        convert_params.raw.sec[DW_SectionKind_Info].data.size != 0    &&
-                        convert_params.raw.sec[DW_SectionKind_Abbrev].data.size != 0;
+                        (output_kind == OutputKind_Breakpad ||
+                         (convert_params.raw.sec[DW_SectionKind_Info].data.size != 0 && convert_params.raw.sec[DW_SectionKind_Abbrev].data.size != 0));
 
             // ARM64 address/name/line data is arch independent; register
             // locations and persistent ARM64 RDI output are not supported yet
@@ -1100,6 +1316,7 @@ rb_thread_entry_point(void *p)
               convert_params.deterministic   = cmd_line_has_flag(cmdline, str8_lit("deterministic"));
               convert_params.skip_exe_hash   = output_kind == OutputKind_Breakpad;
               breakpad_exe_kind    = ExecutableImageKind_Macho;
+              breakpad_base_vaddr  = convert_params.base_vaddr;
               breakpad_exe_name    = exe_file->path;
               breakpad_exe_data    = exe_file->data;
               breakpad_dbg_data    = dbg_file->data;
@@ -1538,6 +1755,10 @@ rb_thread_entry_point(void *p)
             for EachIndex(ln_idx, lane_count())
             {
               str8_list_concat_in_place(&p2b_shared->dump, &p2b_shared->lane_func_dumps[ln_idx]);
+            }
+            ProfScope("dump PUBLIC records") {
+              String8List publics = rb_breakpad_public_records(arena, rdi, breakpad_exe_kind, breakpad_base_vaddr, breakpad_exe_data, breakpad_dbg_data);
+              str8_list_concat_in_place(&p2b_shared->dump, &publics);
             }
           }
           lane_sync();

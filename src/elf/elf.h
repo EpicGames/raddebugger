@@ -408,20 +408,21 @@ enum
 typedef U8 ELF_SymType;
 enum
 {
-  ELF_SymType_NoType  = 0,
+  ELF_SymType_NoType     = 0,
   //  Type is not specified.
-  ELF_SymType_Object  = 1,
+  ELF_SymType_Object     = 1,
   //  Symbol is associated with data object, such as a variable, an array, etc.
-  ELF_SymType_Func    = 2,
+  ELF_SymType_Func       = 2,
   //  Symbol is associated with a function.
-  ELF_SymType_Section = 3,
+  ELF_SymType_Section    = 3,
   //  Symbol is used to relocate sections and normally have LOCAL binding.
-  ELF_SymType_File    = 4,
+  ELF_SymType_File       = 4,
   //  Gives name of the source file associated with object.
-  ELF_SymType_Common  = 5,
-  ELF_SymType_Tls     = 6,
-  ELF_SymType_LoProc  = 13,
-  ELF_SymType_HiProc  = 15,
+  ELF_SymType_Common    = 5,
+  ELF_SymType_Tls       = 6,
+  ELF_SymType_GNU_IFunc = 10,
+  ELF_SymType_LoProc    = 13,
+  ELF_SymType_HiProc    = 15,
 };
 
 typedef U8 ELF_SymVisibility;

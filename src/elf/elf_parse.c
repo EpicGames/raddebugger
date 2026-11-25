@@ -144,6 +144,113 @@ elf_base_addr_from_bin(ELF_Bin *bin)
   return base_vaddr;
 }
 
+internal ELF_SymbolArray
+elf_symbols_from_bin(Arena *arena, String8 data, ELF_Bin *bin)
+{
+  ELF_SymbolArray result = {0};
+  if (bin == 0 || data.size < ELF_Identifier_Max ||
+      ! str8_match(str8_prefix(data, elf_magic_string.size), elf_magic_string, 0) ||
+      data.str[ELF_Identifier_Data] != ELF_Data_2LSB) {
+    return result;
+  }
+
+  ELF_Class elf_class = data.str[ELF_Identifier_Class];
+  if (elf_class != ELF_Class_32 && elf_class != ELF_Class_64) {
+    return result;
+  }
+  U64 hdr_size  = elf_hdr_size_from_class(elf_class);
+  U64 shdr_size = elf_shdr_size_from_class(elf_class);
+  U64 sym_size  = elf_sym_size_from_class(elf_class);
+  if (data.size < hdr_size) {
+    return result;
+  }
+
+  // validate the original header before using the normalized section headers
+  ELF_Hdr64 hdr = {0};
+  if (elf_class == ELF_Class_32) {
+    ELF_Hdr32 hdr32;
+    MemoryCopy(&hdr32, data.str, sizeof(hdr32));
+    hdr = elf_hdr64_from_hdr32(hdr32);
+  } else {
+    MemoryCopy(&hdr, data.str, sizeof(hdr));
+  }
+  if (hdr.e_ehsize != hdr_size || hdr.e_shentsize != shdr_size ||
+      hdr.e_shoff == 0 || hdr.e_shoff > data.size ||
+      hdr.e_shnum > (data.size - hdr.e_shoff)/shdr_size ||
+      hdr.e_shnum == 0 || bin->shdrs.count != hdr.e_shnum || bin->shdrs.v == 0) {
+    return result;
+  }
+
+  // count, then fill one exact allocation; no allocation is made per raw symbol
+  for (U64 pass = 0; pass < 2; pass += 1) {
+    U64 count = 0;
+    for (U64 table_pass = 0; table_pass < 2; table_pass += 1) {
+      ELF_ShType table_type = table_pass == 0 ? ELF_ShType_Symtab : ELF_ShType_Dynsym;
+      for EachIndex(shdr_idx, bin->shdrs.count) {
+        ELF_Shdr64 *table = &bin->shdrs.v[shdr_idx];
+        if (table->sh_type != table_type || table->sh_entsize != sym_size ||
+            table->sh_size % sym_size != 0 || table->sh_offset > data.size ||
+            table->sh_size > data.size - table->sh_offset) {
+          continue;
+        }
+
+        U64 sym_count = table->sh_size/sym_size;
+        if (pass == 0) {
+          if (sym_count > max_U64/sizeof(ELF_Symbol) - count) {
+            return result;
+          }
+          count += sym_count;
+          continue;
+        }
+
+        // an invalid string table does not discard the native symbol entries
+        String8 names = {0};
+        if (table->sh_link < bin->shdrs.count) {
+          ELF_Shdr64 *strings = &bin->shdrs.v[table->sh_link];
+          if (strings->sh_type == ELF_ShType_Strtab && strings->sh_offset <= data.size &&
+              strings->sh_size <= data.size - strings->sh_offset) {
+            names = str8(data.str + strings->sh_offset, strings->sh_size);
+          }
+        }
+
+        for EachIndex(sym_idx, sym_count) {
+          U8         *sym_data = data.str + table->sh_offset + sym_idx*sym_size;
+          ELF_Symbol  symbol   = {0};
+          if (elf_class == ELF_Class_32) {
+            ELF_Sym32 sym32;
+            MemoryCopy(&sym32, sym_data, sizeof(sym32));
+            symbol.raw = elf_sym64_from_sym32(sym32);
+          } else {
+            MemoryCopy(&symbol.raw, sym_data, sizeof(symbol.raw));
+          }
+          symbol.table_section_idx = shdr_idx;
+          symbol.table_symbol_idx  = sym_idx;
+
+          if (symbol.raw.st_name < names.size) {
+            U8      *name_start = names.str + symbol.raw.st_name;
+            U64      name_space = names.size - symbol.raw.st_name;
+            String8  name       = str8_cstring_capped(name_start, name_start + name_space);
+            if (name.size < name_space) {
+              symbol.name       = name;
+              symbol.name_valid = 1;
+            }
+          }
+          result.v[count] = symbol;
+          count += 1;
+        }
+      }
+    }
+    if (pass == 0) {
+      if (count == 0) {
+        return result;
+      }
+      result.count = count;
+      result.v     = push_array(arena, ELF_Symbol, count);
+    }
+  }
+  return result;
+}
+
 internal ELF_GnuDebugLink
 elf_gnu_debug_link_from_bin(String8 raw_data, ELF_Bin *bin)
 {

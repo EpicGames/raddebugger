@@ -30,6 +30,21 @@ struct ELF_Bin
   ELF_Phdr64Array phdrs;
 };
 
+typedef struct ELF_Symbol
+{
+  ELF_Sym64 raw;
+  String8   name;
+  U64       table_section_idx;
+  U64       table_symbol_idx;
+  B32       name_valid;
+} ELF_Symbol;
+
+typedef struct ELF_SymbolArray
+{
+  U64         count;
+  ELF_Symbol *v;
+} ELF_SymbolArray;
+
 typedef struct ELF_GnuDebugLink ELF_GnuDebugLink;
 struct ELF_GnuDebugLink
 {
@@ -70,6 +85,7 @@ internal ELF_Bin elf_bin_from_data(Arena *arena, String8 data);
 internal B32 elf_is_dwarf_present_from_bin(String8 data, ELF_Bin *bin);
 internal String8 elf_name_from_shdr64(String8 raw_data, ELF_Bin *bin, ELF_Shdr64 *shdr);
 internal U64 elf_base_addr_from_bin(ELF_Bin *bin);
+internal ELF_SymbolArray elf_symbols_from_bin(Arena *arena, String8 data, ELF_Bin *bin);
 internal ELF_GnuDebugLink elf_gnu_debug_link_from_bin(String8 raw_data, ELF_Bin *bin);
 internal String8 elf_note_desc_from_bin(String8 raw_data, ELF_Bin *bin, String8 owner, ELF_NoteType type);
 

@@ -4,6 +4,12 @@
 #ifndef MACHO_C
 #define MACHO_C
 
+internal U16
+macho_read_u16(U8 *p)
+{
+  return (U16)((U16)p[0] | ((U16)p[1] << 8));
+}
+
 internal U32
 macho_read_u32(U8 *p)
 {
@@ -107,6 +113,7 @@ macho_bin_from_data(Arena *arena, String8 data)
 
     bin.section_count = 0;
     bin.has_uuid      = 0;
+    bin.has_symtab     = 0;
 
     for EachIndex(command_idx, command_count) {
       if (command_end - cursor < 8) {
@@ -132,6 +139,30 @@ macho_bin_from_data(Arena *arena, String8 data)
           bin.uuid[i] = cmd[8 + i];
         }
         bin.has_uuid = 1;
+      } else if (kind == 2) { // LC_SYMTAB
+        if (size != 24) {
+          return macho_bin_error(s("Invalid Mach-O symbol table command size"));
+        }
+
+        // reject even identical duplicates, so there is exactly one source of
+        // symbol metadata; has_symtab is reset for each parser pass
+        if (bin.has_symtab) {
+          return macho_bin_error(s("Duplicate Mach-O symbol table commands"));
+        }
+
+        U64 symoff  = macho_read_u32(cmd + 8);
+        U64 nsyms   = macho_read_u32(cmd + 12);
+        U64 stroff  = macho_read_u32(cmd + 16);
+        U64 strsize = macho_read_u32(cmd + 20);
+        if (symoff > data.size || nsyms > (data.size - symoff)/16 ||
+            stroff > data.size || strsize > data.size - stroff) {
+          return macho_bin_error(s("Invalid Mach-O symbol or string table range"));
+        }
+
+        bin.has_symtab         = 1;
+        bin.symbol_count       = nsyms;
+        bin.symbol_table_range = rng_1u64(symoff, symoff + 16*nsyms);
+        bin.string_table_range = rng_1u64(stroff, stroff + strsize);
       } else if(kind == 0x19) { // LC_SEGMENT_64
         if (size < 72) {
           return macho_bin_error(s("Truncated Mach-O64 segment"));
@@ -272,6 +303,64 @@ macho_bin_from_data(Arena *arena, String8 data)
   bin.valid = 1;
 
   return bin;
+}
+
+internal MACHO_SymbolArray
+macho_symbols_from_bin(Arena *arena, String8 data, MACHO_Bin *bin)
+{
+  MACHO_SymbolArray result = {0};
+  if (bin == 0 || ! bin->valid || ! bin->has_symtab) {
+    return result;
+  }
+
+  // validate ranges against this input before reading or allocating
+  Rng1U64 symbol_range = bin->symbol_table_range;
+  Rng1U64 string_range = bin->string_table_range;
+  if (data.str == 0 || data.size > (U64)(~(size_t)0) ||
+      symbol_range.min > symbol_range.max || symbol_range.max > data.size ||
+      string_range.min > string_range.max || string_range.max > data.size) {
+    return result;
+  }
+
+  U64 symbol_size = symbol_range.max - symbol_range.min;
+  if (symbol_size % 16 != 0 || bin->symbol_count != symbol_size/16 ||
+      bin->symbol_count > (U64)(~(size_t)0)/sizeof(MACHO_Symbol) ||
+      bin->symbol_count == 0) {
+    return result;
+  }
+
+  result.v = push_array_no_zero(arena, MACHO_Symbol, bin->symbol_count);
+  if (result.v == 0) {
+    return result;
+  }
+  result.count = bin->symbol_count;
+
+  U64 string_size = bin->string_table_range.max - bin->string_table_range.min;
+  U8 *strings     = data.str + bin->string_table_range.min;
+  for EachIndex(symbol_idx, result.count) {
+    U8           *src    = data.str + symbol_range.min + 16*symbol_idx;
+    MACHO_Symbol *symbol = &result.v[symbol_idx];
+    symbol->strx       = macho_read_u32(src);
+    symbol->type       = src[4];
+    symbol->sect       = src[5];
+    symbol->desc       = macho_read_u16(src + 6);
+    symbol->value      = macho_read_u64(src + 8);
+    symbol->name       = (String8){0};
+    symbol->name_valid = 0;
+
+    // preserve every entry, even when its name is out of bounds or unterminated
+    U64 strx = symbol->strx;
+    if (strx < string_size) {
+      U64 name_end = strx;
+      for (; name_end < string_size && strings[name_end] != 0; name_end += 1) {}
+      if (name_end < string_size) {
+        symbol->name       = str8(strings + strx, name_end - strx);
+        symbol->name_valid = 1;
+      }
+    }
+  }
+
+  return result;
 }
 
 #endif // MACHO_C

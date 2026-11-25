@@ -70,6 +70,13 @@ typedef struct RB_BreakpadIdentity
   String8 code_file;
 } RB_BreakpadIdentity;
 
+typedef struct RB_PublicSymbol
+{
+  U64     voff;
+  U64     order;
+  String8 name;
+} RB_PublicSymbol;
+
 ////////////////////////////////
 //~ rjf: Cross-Thread State
 
