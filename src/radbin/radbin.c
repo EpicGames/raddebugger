@@ -960,6 +960,7 @@ rb_thread_entry_point(void *p)
     OutputKind_RDI,
     OutputKind_Dump,
     OutputKind_Breakpad,
+    OutputKind_Stripped,
     OutputKind_VOff2Line,
     OutputKind_COUNT
   }
@@ -975,6 +976,7 @@ rb_thread_entry_point(void *p)
     {str8_lit_comp("rdi"),       str8_lit_comp("RAD Debug Info (.rdi) Conversion")},
     {str8_lit_comp("dump"),      str8_lit_comp("Textual Dumping")},
     {str8_lit_comp("breakpad"),  str8_lit_comp("Breakpad Debug Info Conversion")},
+    {str8_lit_comp("stripped"),  str8_lit_comp("Stripped RAD Debug Info (.rdi) Conversion")},
     {str8_lit_comp("voff2line"), str8_lit_comp("Virtual Offset -> Line Mapping")},
   };
   OutputKind output_kind = OutputKind_Null;
@@ -995,22 +997,25 @@ rb_thread_entry_point(void *p)
     }
     
     //- rjf: we can infer from the user-specified output path
-    if(str8_match(str8_skip_last_dot(output_path), str8_lit("rdi"), StringMatchFlag_CaseInsensitive))
+    if(output_kind == OutputKind_Null)
     {
-      output_kind = OutputKind_RDI;
-      log_infof("Output path has .rdi extension; performing `%S`\n", output_kind_info[output_kind].title);
-    }
-    else if(str8_match(str8_skip_last_dot(output_path), str8_lit("dump"), StringMatchFlag_CaseInsensitive) ||
-            str8_match(str8_skip_last_dot(output_path), str8_lit("txt"), StringMatchFlag_CaseInsensitive))
-    {
-      output_kind = OutputKind_Dump;
-      log_infof("Output path has .dump or .txt extension; performing `%S`\n", output_kind_info[output_kind].title);
-    }
-    else if(str8_match(str8_skip_last_dot(output_path), str8_lit("psym"), StringMatchFlag_CaseInsensitive) ||
-            str8_match(str8_skip_last_dot(output_path), str8_lit("psyms"), StringMatchFlag_CaseInsensitive))
-    {
-      output_kind = OutputKind_Breakpad;
-      log_infof("Output path has .psym or .psyms extension; performing `%S`\n", output_kind_info[output_kind].title);
+      if(str8_match(str8_skip_last_dot(output_path), str8_lit("rdi"), StringMatchFlag_CaseInsensitive))
+      {
+        output_kind = OutputKind_RDI;
+        log_infof("Output path has .rdi extension; performing `%S`\n", output_kind_info[output_kind].title);
+      }
+      else if(str8_match(str8_skip_last_dot(output_path), str8_lit("dump"), StringMatchFlag_CaseInsensitive) ||
+              str8_match(str8_skip_last_dot(output_path), str8_lit("txt"), StringMatchFlag_CaseInsensitive))
+      {
+        output_kind = OutputKind_Dump;
+        log_infof("Output path has .dump or .txt extension; performing `%S`\n", output_kind_info[output_kind].title);
+      }
+      else if(str8_match(str8_skip_last_dot(output_path), str8_lit("psym"), StringMatchFlag_CaseInsensitive) ||
+              str8_match(str8_skip_last_dot(output_path), str8_lit("psyms"), StringMatchFlag_CaseInsensitive))
+      {
+        output_kind = OutputKind_Breakpad;
+        log_infof("Output path has .psym or .psyms extension; performing `%S`\n", output_kind_info[output_kind].title);
+      }
     }
   }
   
@@ -1080,6 +1085,9 @@ rb_thread_entry_point(void *p)
       fprintf(stderr, "--breakpad       Specifies that the utility should convert debug information\n");
       fprintf(stderr, "                 data to the textual Breakpad format.\n\n");
       fprintf(stderr, "--breakpad_strip_path_prefix:<path>  Strip a directory prefix from Breakpad FILE paths.\n\n");
+
+      fprintf(stderr, "--stripped       Converts the same debug information subset as --breakpad,\n");
+      fprintf(stderr, "                 but writes RAD Debug Info (.rdi) instead of Breakpad text.\n\n");
       
       fprintf(stderr, "--voff2line      Specifies that the utility should map a virtual offset to a\n");
       fprintf(stderr, "                 line.\n\n");
@@ -1104,6 +1112,7 @@ rb_thread_entry_point(void *p)
     //
     case OutputKind_RDI:
     case OutputKind_Breakpad:
+    case OutputKind_Stripped:
     case OutputKind_VOff2Line:
     {
       //- rjf: no inputs => help
@@ -1145,6 +1154,14 @@ rb_thread_entry_point(void *p)
           fprintf(stderr, "  Unmatched paths are unchanged; no filesystem lookups are performed.\n");
           fprintf(stderr, "  Example: \"-breakpad_strip_path_prefix:c:\\devel\\projects\"\n\n");
         }break;
+        case OutputKind_Stripped:
+        {
+          fprintf(stderr, "Converts native debug information to a stripped version of RDI,\n");
+          fprintf(stderr, "that has can be used to symbolize callstacks.\n\n");
+          fprintf(stderr, "Existing RDI inputs are not supported for stripping.\n\n");
+          fprintf(stderr, "--compress       Compresses the RDI file's contents.\n\n");
+          fprintf(stderr, "Example: radbin --stripped program.pdb --out:program.stripped.rdi\n\n");
+        }break;
         case OutputKind_VOff2Line:
         {
           fprintf(stderr, "ARGUMENTS\n\n");
@@ -1153,6 +1170,20 @@ rb_thread_entry_point(void *p)
         }break;
       }
       
+      if (output_kind == OutputKind_Stripped && cmdline->inputs.node_count == 0) {
+        output_valid = 0;
+        break;
+      }
+
+      if (output_kind == OutputKind_Stripped && input_files_from_format_table[RB_FileFormat_RDI].count != 0) {
+        if (lane_idx() == 0) {
+          log_user_errorf("--stripped does not support existing RDI inputs; provide native debug information instead.\n");
+        }
+        output_valid = 0;
+        break;
+      }
+
+      B32 breakpad_subset = output_kind == OutputKind_Breakpad || output_kind == OutputKind_Stripped;
       String8 breakpad_strip_prefix = cmd_line_string(cmdline, s("breakpad_strip_path_prefix"));
       if (output_kind == OutputKind_Breakpad &&
           cmd_line_has_flag(cmdline, s("breakpad_strip_path_prefix")) && breakpad_strip_prefix.size == 0) {
@@ -1195,6 +1226,7 @@ rb_thread_entry_point(void *p)
           }
         }break;
         case OutputKind_Breakpad:
+        case OutputKind_Stripped:
         {
           subset_flags = (RDIM_SubsetFlag_Units|RDIM_SubsetFlag_Procedures|RDIM_SubsetFlag_Scopes|RDIM_SubsetFlag_LineInfo|RDIM_SubsetFlag_InlineLineInfo|RDIM_SubsetFlag_Namespaces);
         }break;
@@ -1323,7 +1355,7 @@ rb_thread_entry_point(void *p)
             }
 
             // a linked image without DWARF can still provide PUBLIC symbols
-            if ( ! got_dbg && output_kind == OutputKind_Breakpad) {
+            if ( ! got_dbg && breakpad_subset) {
               dbg_name = exe_name;
               dbg_data = exe_data;
             }
@@ -1368,7 +1400,7 @@ rb_thread_entry_point(void *p)
             convert_params.exe_data      = exe_data;
             convert_params.subset_flags  = subset_flags;
             convert_params.deterministic = cmd_line_has_flag(cmdline, str8_lit("deterministic"));
-            convert_params.skip_exe_hash = output_kind == OutputKind_Breakpad;
+            convert_params.skip_exe_hash = breakpad_subset;
             breakpad_exe_kind    = exe_kind;
             breakpad_base_vaddr  = convert_params.base_vaddr;
             breakpad_exe_name    = exe_name;
@@ -1433,7 +1465,7 @@ rb_thread_entry_point(void *p)
                         exe_bin.has_uuid                         &&
                         dbg_bin.has_uuid                         &&
                         MemoryMatch(exe_bin.uuid, dbg_bin.uuid, sizeof(exe_bin.uuid)) &&
-                        (output_kind == OutputKind_Breakpad ||
+                        (breakpad_subset ||
                          (convert_params.raw.sec[DW_SectionKind_Info].data.size != 0 && convert_params.raw.sec[DW_SectionKind_Abbrev].data.size != 0));
 
             if (supported) {
@@ -1445,7 +1477,7 @@ rb_thread_entry_point(void *p)
               convert_params.path_style      = PathStyle_UnixAbsolute;
               convert_params.subset_flags    = subset_flags;
               convert_params.deterministic   = cmd_line_has_flag(cmdline, str8_lit("deterministic"));
-              convert_params.skip_exe_hash   = output_kind == OutputKind_Breakpad;
+              convert_params.skip_exe_hash   = breakpad_subset;
               breakpad_exe_kind    = ExecutableImageKind_Macho;
               breakpad_base_vaddr  = convert_params.base_vaddr;
               breakpad_exe_name    = exe_file->path;
@@ -1572,6 +1604,7 @@ rb_thread_entry_point(void *p)
         {
           default:{}break;
           case OutputKind_RDI:
+          case OutputKind_Stripped:
           {
             output_path = str8f(arena, "%S.rdi", output_path__noext);
           }break;
@@ -1596,6 +1629,9 @@ rb_thread_entry_point(void *p)
       if(!convert_done && cmdline->inputs.node_count != 0)
       {
         log_user_errorf("Could not load debug info from the specified inputs. You must provide a valid PDB file, a PE/ELF/Mach-O file with DWARF debug info, or RDI file(s).");
+        if (output_kind == OutputKind_Stripped) {
+          output_valid = 0;
+        }
       }
       
       //- rjf: bake
@@ -1685,6 +1721,7 @@ rb_thread_entry_point(void *p)
         
         //- rjf: generate RDI blobs
         case OutputKind_RDI:
+        case OutputKind_Stripped:
         {
           // rjf: compress
           RDIM_SerializedSectionBundle serialized_section_bundle__compressed = serialized_section_bundle[0];
