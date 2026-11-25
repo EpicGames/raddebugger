@@ -10,6 +10,27 @@
 // Breakpad Module Identity
 
 internal String8
+rb_breakpad_cpu_from_arch(Arch arch)
+{
+  String8 result = {0};
+  switch (arch) {
+  case Arch_x64:   result = s("x86_64"); break;
+  case Arch_x86:   result = s("x86");    break;
+  case Arch_arm64: result = s("arm64");  break;
+  default: break;
+  }
+  return result;
+}
+
+internal Arch
+rb_pdb_arch_from_stream_table(Arena *arena, String8 data, MSF_RawStreamTable *streams)
+{
+  String8        dbi_data = msf_data_from_stream_number(arena, data, streams, PDB_FixedStream_Dbi);
+  PDB_DbiParsed *dbi      = pdb_dbi_from_data(arena, dbi_data);
+  return arch_from_coff_machine(dbi->machine_type);
+}
+
+internal String8
 rb_breakpad_debug_id_from_guid_age(Arena *arena, Guid guid, U32 age)
 {
   return str8f(arena, "%08X%04X%04X%02X%02X%02X%02X%02X%02X%02X%02X%X",
@@ -84,7 +105,7 @@ rb_breakpad_identity_from_inputs(Arena *arena, ExecutableImageKind exe_kind, Str
     }
 
     result.os       = s("mac");
-    result.cpu      = exe_bin.arch == Arch_arm64 ? s("arm64") : s("x86_64");
+    result.cpu      = rb_breakpad_cpu_from_arch(exe_bin.arch);
     result.debug_id = str8(push_array_no_zero(arena, U8, 33), 33);
 
     for EachIndex(idx, 16) {
@@ -101,14 +122,10 @@ rb_breakpad_identity_from_inputs(Arena *arena, ExecutableImageKind exe_kind, Str
     String8 build_id      = elf_note_desc_from_bin(exe_data, &exe_bin, s("GNU"), GNU_NoteType_BuildId);
     B32     separate_dbg  = exe_data.str != dbg_data.str || exe_data.size != dbg_data.size;
    
-    switch (arch_from_elf_machine(exe_bin.hdr.e_machine)) {
-    case Arch_x64:   result.cpu = s("x86_64"); break;
-    case Arch_x86:   result.cpu = s("x86");    break;
-    case Arch_arm64: result.cpu = s("arm64");  break;
-    default: {
+    result.cpu = rb_breakpad_cpu_from_arch(arch_from_elf_machine(exe_bin.hdr.e_machine));
+    if (result.cpu.size == 0) {
       log_user_errorf("unsupported ELF machine %u\n", exe_bin.hdr.e_machine);
       goto done;
-    }
     }
 
     if (separate_dbg) {
@@ -157,11 +174,14 @@ rb_breakpad_identity_from_inputs(Arena *arena, ExecutableImageKind exe_kind, Str
     Guid guid     = {0};
     U32  age      = 0;
     B32  got_guid = 0;
+    Arch pdb_arch = Arch_Null;
     if (dbg_is_pdb) {
       MSF_RawStreamTable *st        = msf_raw_stream_table_from_data(scratch.arena, dbg_data);
       String8             info_data = msf_data_from_stream_number(scratch.arena, dbg_data, st, PDB_FixedStream_Info);
       PDB_InfoParse       info      = {0};
       pdb_info_parse_from_data(info_data, &info);
+      pdb_arch = rb_pdb_arch_from_stream_table(scratch.arena, dbg_data, st);
+      result.cpu = rb_breakpad_cpu_from_arch(pdb_arch);
 
       if (info.version >= PDB_InfoVersion_VC70_DEP) {
         guid     = info.guid;
@@ -172,6 +192,13 @@ rb_breakpad_identity_from_inputs(Arena *arena, ExecutableImageKind exe_kind, Str
 
     if (exe_data.size) {
       PE_BinInfo pe = pe_bin_info_from_data(scratch.arena, exe_data);
+      if (pdb_arch != Arch_Null && pe.arch != Arch_Null && pdb_arch != pe.arch) {
+        log_user_errorf("PE executable and PDB architectures do not match.\n");
+        goto done;
+      }
+      if (pe.arch != Arch_Null) {
+        result.cpu = rb_breakpad_cpu_from_arch(pe.arch);
+      }
 
       if (pe.image_size != 0 && exe_name.size != 0) {
         result.code_id   = str8f(arena, "%08X%X", pe.timestamp, pe.image_size);
@@ -746,6 +773,12 @@ rb_thread_entry_point(void *p)
             {
               ext_path_absolute = path_absolute_dst_from_relative_dst_src(arena, ext_path_absolute, str8_chop_last_slash(input_file_path));
             }
+            if ( ! file_path_exists(ext_path_absolute)) {
+              String8 sibling_path = str8f(arena, "%S/%S", str8_chop_last_slash(input_file_path), str8_skip_last_slash(n->v.path));
+              if (file_path_exists(sibling_path)) {
+                ext_path_absolute = sibling_path;
+              }
+            }
             str8_list_push(arena, &input_file_path_tasks, ext_path_absolute);
           }
         }
@@ -1091,7 +1124,7 @@ rb_thread_entry_point(void *p)
         {
           fprintf(stderr, "All input files specified on the command line will be dumped. The following\n");
           fprintf(stderr, "formats are currently supported: PE, COFF, RDI, ELF, and thin 64-bit Mach-O\n\n");
-          fprintf(stderr, "Pass the DWARF payload file for a dSYM bundle. ARM64 conversion supports --breakpad only.\n\n");
+          fprintf(stderr, "Pass the DWARF input file for a dSYM bundle.\n\n");
         }break;
         case OutputKind_VOff2Line:
         {
@@ -1181,7 +1214,6 @@ rb_thread_entry_point(void *p)
           
           // rjf: convert
           D2R_ConvertParams convert_params = {0};
-          B32 conversion_supported = 1;
           {
             B32 got_exe = 0;
             B32 got_dbg = 0;
@@ -1292,16 +1324,6 @@ rb_thread_entry_point(void *p)
                 ELF_Bin bin = elf_bin_from_data(scratch.arena, dbg_data);
                 DW_Raw *shared_raw = 0;
                 convert_params.arch = arch_from_elf_machine(bin.hdr.e_machine);
-                if (output_kind != OutputKind_Breakpad) {
-                  ELF_Bin exe_bin = bin;
-                  if (exe_data.str != dbg_data.str || exe_data.size != dbg_data.size) {
-                    exe_bin = elf_bin_from_data(scratch.arena, exe_data);
-                  }
-                  if (convert_params.arch == Arch_arm64 || arch_from_elf_machine(exe_bin.hdr.e_machine) == Arch_arm64) {
-                    conversion_supported = 0;
-                    goto elf_conversion_setup_done;
-                  }
-                }
                 convert_params.base_vaddr = elf_base_addr_from_bin(&bin);
                 if (lane_idx() == 0) {
                   shared_raw = push_array(conversion_arena, DW_Raw, 1);
@@ -1311,7 +1333,6 @@ rb_thread_entry_point(void *p)
                 convert_params.raw = *shared_raw;
                 convert_params.path_style = PathStyle_UnixAbsolute;
                 convert_params.binary_sections = e2r_rdi_binary_sections_from_elf_section_table(conversion_arena, dbg_data, &bin, &bin.shdrs);
-                elf_conversion_setup_done:;
                 scratch_end(scratch);
               }break;
             }
@@ -1327,15 +1348,7 @@ rb_thread_entry_point(void *p)
             breakpad_dbg_data    = dbg_data;
             breakpad_module_name = exe_name;
           }
-          if (conversion_supported) {
-            ProfScope("convert") dwarf_bake_params = d2r_convert(conversion_arena, &convert_params);
-          } else {
-            convert_done = 0;
-            output_valid = 0;
-            if (lane_idx() == 0) {
-              log_user_errorf("ARM64 ELF conversion currently supports --breakpad only; ARM64 RDI/register locations are not supported.\n");
-            }
-          }
+          ProfScope("convert") dwarf_bake_params = d2r_convert(conversion_arena, &convert_params);
         }
         
         // thin Mach-O / dSYM inputs => DWARF conversion
@@ -1394,13 +1407,6 @@ rb_thread_entry_point(void *p)
                         MemoryMatch(exe_bin.uuid, dbg_bin.uuid, sizeof(exe_bin.uuid)) &&
                         (output_kind == OutputKind_Breakpad ||
                          (convert_params.raw.sec[DW_SectionKind_Info].data.size != 0 && convert_params.raw.sec[DW_SectionKind_Abbrev].data.size != 0));
-
-            // ARM64 address/name/line data is arch independent; register
-            // locations and persistent ARM64 RDI output are not supported yet
-            if (dbg_bin.arch == Arch_arm64 && output_kind != OutputKind_Breakpad) {
-              supported = 0;
-              if (lane_idx() == 0) { log_user_errorf("ARM64 Mach-O conversion currently supports --breakpad only.\n"); }
-            }
 
             if (supported) {
               convert_params.exe_name        = exe_file->path;
@@ -1768,7 +1774,7 @@ rb_thread_entry_point(void *p)
                 String8List *out = &p2b_shared->lane_file_dumps[lane_idx()];
                 Temp scratch = scratch_begin(&arena, 1);
                 String8 src_path = str8_from_rdi_path_node_idx(scratch.arena, rdi, PathStyle_Relative, v[idx+1].file_path_node_idx);
-                str8_list_pushf(arena, out, "FILE %I64u %S\n", idx+1, src_path);
+                str8_list_pushf(arena, out, "FILE %I64u %S\n", idx, src_path);
                 scratch_end(scratch);
               }
             }
@@ -1842,7 +1848,7 @@ rb_thread_entry_point(void *p)
                                     line_voff_min,
                                     line_voff_opl-line_voff_min,
                                     (U64)line->line_num,
-                                    (U64)line->file_idx);
+                                    (U64)line->file_idx - 1);
                   }
                 }
               }
