@@ -71,7 +71,8 @@ union RDI_GUID {RDI_U8 u8[16]; RDI_U64 u64[2];};
 
 // "raddbg\0\0"
 #define RDI_MAGIC_CONSTANT   0x0000676264646172
-#define RDI_ENCODING_VERSION 26
+#define RDI_ENCODING_VERSION 27
+#define RDI_BYTE_SHUFFLE_BLOCK_SIZE 8192
 
 ////////////////////////////////////////////////////////////////
 //~ Format Types & Functions

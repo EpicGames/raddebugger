@@ -318,6 +318,73 @@ rdi_has_compressed_sections(RDI_Parsed *rdi)
   return 0;
 }
 
+RDI_PROC RDI_U32
+rdi_address_stride_from_section_kind(RDI_SectionKind kind)
+{
+  switch(kind) {
+  case RDI_SectionKind_LineInfoVOffs:
+  case RDI_SectionKind_SourceLineMapVOffs:
+  case RDI_SectionKind_ScopeVOffData: return 8;
+  case RDI_SectionKind_UnitVMap:
+  case RDI_SectionKind_ScopeVMap:
+  case RDI_SectionKind_GlobalVMap: return 16;
+  default: return 0;
+  }
+}
+
+RDI_PROC void
+rdi_address_delta(RDI_U8 *data, RDI_U64 size, RDI_U32 stride, RDI_U32 inverse)
+{
+  for (RDI_U64 off = 0; off < size;) {
+    RDI_U64 block_size = size - off;
+    if (block_size > RDI_BYTE_SHUFFLE_BLOCK_SIZE) {
+      block_size = RDI_BYTE_SHUFFLE_BLOCK_SIZE;
+    }
+
+    RDI_U64 previous = 0;
+    for (RDI_U64 pos = 0; pos < block_size; pos += stride) {
+      RDI_U64 value;
+      memcpy(&value, data + off + pos, sizeof(value));
+      RDI_U64 original = value;
+      if (inverse) {
+        value += previous;
+        previous = value;
+      } else {
+        value -= previous;
+        previous = original;
+      }
+      memcpy(data + off + pos, &value, sizeof(value));
+    }
+    off += block_size;
+  }
+}
+
+RDI_PROC void
+rdi_byte_shuffle_8(RDI_U8 *data, RDI_U64 size, RDI_U32 inverse)
+{
+  RDI_U8 block[RDI_BYTE_SHUFFLE_BLOCK_SIZE];
+  for (RDI_U64 off = 0; off < size;) {
+    RDI_U64 block_size = size - off;
+    if (block_size > sizeof(block)) {
+      block_size = sizeof(block);
+    }
+    RDI_U64 count = block_size/8;
+    memcpy(block, data + off, block_size);
+    for (RDI_U64 byte = 0; byte < 8; byte += 1) {
+      if (inverse) {
+        for (RDI_U64 idx = 0; idx < count; idx += 1) {
+          data[off + 8*idx + byte] = block[byte*count + idx];
+        }
+      } else {
+        for (RDI_U64 idx = 0; idx < count; idx += 1) {
+          data[off + byte*count + idx] = block[8*idx + byte];
+        }
+      }
+    }
+    off += block_size;
+  }
+}
+
 //- decompression
 
 RDI_PROC RDI_ParseStatus
@@ -363,6 +430,14 @@ rdi_decompress_parsed(RDI_U8 *decompressed_data, RDI_U64 decompressed_size, RDI_
       break;
     }
 
+    RDI_U32 address_stride = rdi_address_stride_from_section_kind((RDI_SectionKind)idx);
+    if (src->encoding != RDI_SectionEncoding_Unpacked &&
+        address_stride != 0 &&
+        src->unpacked_size % address_stride != 0) {
+      result = RDI_ParseStatus_InvalidDataSecionLayout;
+      break;
+    }
+
     dst->encoding = RDI_SectionEncoding_Unpacked;
     dst->off = off;
 
@@ -403,6 +478,14 @@ rdi_decompress_parsed(RDI_U8 *decompressed_data, RDI_U64 decompressed_size, RDI_
     default: {
       result = RDI_ParseStatus_UnsupportedSectionEncoding;
     } break;
+    }
+
+    if (result != RDI_ParseStatus_Good) {
+      break;
+    }
+    if (src->encoding != RDI_SectionEncoding_Unpacked && address_stride != 0) {
+      rdi_byte_shuffle_8(dst_data, src->unpacked_size, 1);
+      rdi_address_delta(dst_data, src->unpacked_size, address_stride, 1);
     }
 
     RDI_U64 end = off + src->unpacked_size;

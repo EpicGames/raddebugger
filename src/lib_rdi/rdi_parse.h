@@ -192,6 +192,10 @@ RDI_PROC void *rdi_section_raw_element_from_kind_idx(RDI_Parsed *rdi, RDI_Sectio
 RDI_PROC RDI_U64 rdi_decompressed_size_from_parsed(RDI_Parsed *rdi);
 RDI_PROC RDI_U32 rdi_has_compressed_sections(RDI_Parsed *rdi);
 
+RDI_PROC RDI_U32 rdi_address_stride_from_section_kind(RDI_SectionKind kind);
+RDI_PROC void rdi_address_delta(RDI_U8 *data, RDI_U64 size, RDI_U32 stride, RDI_U32 inverse);
+RDI_PROC void rdi_byte_shuffle_8(RDI_U8 *data, RDI_U64 size, RDI_U32 inverse);
+
 //- decompression
 RDI_PROC RDI_ParseStatus rdi_decompress_parsed(RDI_U8 *decompressed_data, RDI_U64 decompressed_size, RDI_Parsed *og_rdi);
 

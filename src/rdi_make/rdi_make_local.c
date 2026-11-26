@@ -3663,6 +3663,11 @@ rdim_compress(Arena *arena, RDIM_SerializedSectionBundle *in, RDI_SectionEncodin
       continue;
     }
 
+    U32 address_stride = rdi_address_stride_from_section_kind(k);
+    if (address_stride != 0 && src->encoded_size % address_stride != 0) {
+      continue;
+    }
+
     // establish capacity for the encode buffer
     size_t encode_capcity = 0;
     switch (encoding) {
@@ -3691,20 +3696,30 @@ rdim_compress(Arena *arena, RDIM_SerializedSectionBundle *in, RDI_SectionEncodin
     }
 
     if (encode_capcity > 0) {
+      Temp section_temp = temp_begin(scratch.arena);
+
+      void *compression_data = src->data;
+      if (address_stride) {
+        compression_data = push_array_no_zero(scratch.arena, U8, src->encoded_size);
+        MemoryCopy(compression_data, src->data, src->encoded_size);
+        rdi_address_delta(compression_data, src->encoded_size, address_stride, 0);
+        rdi_byte_shuffle_8(compression_data, src->encoded_size, 0);
+      }
+
       // compress section bytes
       U8 *encoded_data = push_array_no_zero(arena, U8, encode_capcity);
       U64 encoded_size  = 0;
       switch (encoding) {
       case RDI_SectionEncoding_Unpacked: break;
       case RDI_SectionEncoding_LZB: {
-        encoded_size = (U64)rr_lzb_simple_encode_veryfast(&lzb_ctx, src->data, (SINTa)src->encoded_size, encoded_data);
+        encoded_size = (U64)rr_lzb_simple_encode_veryfast(&lzb_ctx, compression_data, (SINTa)src->encoded_size, encoded_data);
         if (encoded_size >= src->encoded_size) {
           encoded_size = 0;
         }
       } break;
       case RDI_SectionEncoding_Zstd: {
 #if RDI_USE_ZSTD
-        encoded_size = (U64)ZSTD_compressCCtx(zstd_ctx, encoded_data, encode_capcity, src->data, (size_t)src->encoded_size, compression_level);
+        encoded_size = (U64)ZSTD_compressCCtx(zstd_ctx, encoded_data, encode_capcity, compression_data, (size_t)src->encoded_size, compression_level);
         if (ZSTD_isError(encoded_size) || encoded_size >= src->encoded_size) {
           encoded_size = 0;
         }
@@ -3723,6 +3738,7 @@ rdim_compress(Arena *arena, RDIM_SerializedSectionBundle *in, RDI_SectionEncodin
 
       // release the unused bytes
       arena_pop(arena, encode_capcity - encoded_size);
+      temp_end(section_temp);
     }
   }
   lane_sync();
