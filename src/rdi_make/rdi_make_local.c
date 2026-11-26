@@ -2,6 +2,9 @@
 // Licensed under the MIT license (https://opensource.org/license/mit/)
 
 #include "lib_rdi_make/rdi_make.c"
+#if RDI_USE_ZSTD
+# include "third_party/zstd/zstd.h"
+#endif
 
 internal RDIM_DataModel
 rdim_data_model_from_os_arch(OperatingSystem os, RDI_Arch arch)
@@ -3635,37 +3638,101 @@ rdim_bake(Arena *arena, RDIM_BakeParams *params)
 }
 
 internal RDIM_SerializedSectionBundle
-rdim_compress(Arena *arena, RDIM_SerializedSectionBundle *in)
+rdim_compress(Arena *arena, RDIM_SerializedSectionBundle *in, RDI_SectionEncoding encoding)
 {
   Temp scratch = scratch_begin(&arena, 1);
-  RDIM_SerializedSectionBundle out_ = {0};
-  RDIM_SerializedSectionBundle *out = &out_;
+
+  RDIM_SerializedSectionBundle  out_ = {0};
+  RDIM_SerializedSectionBundle *out  = &out_;
   lane_sync_u64(&out, 0);
   
-  //- rjf: set up compression context
-  rr_lzb_simple_context ctx = {0};
-  ctx.m_tableSizeBits = 14;
-  ctx.m_hashTable = push_array(scratch.arena, U16, 1<<ctx.m_tableSizeBits);
-  
-  //- rjf: compress, or just copy, all sections
+#if RDI_USE_ZSTD
+  ZSTD_CCtx             *zstd_ctx = 0;
+#endif
+  rr_lzb_simple_context  lzb_ctx  = { .m_tableSizeBits = 14 };
+
   Rng1U64 range = lane_range(RDI_SectionKind_COUNT);
-  for EachInRange(idx, range)
-  {
+  for EachInRange(idx, range) {
     RDI_SectionKind k = (RDI_SectionKind)idx;
+
     RDIM_SerializedSection *src = &in->sections[k];
     RDIM_SerializedSection *dst = &out->sections[k];
     MemoryCopyStruct(dst, src);
-    if(src->encoded_size != 0)
-    {
-      MemoryZero(ctx.m_hashTable, sizeof(U16)*(1<<ctx.m_tableSizeBits));
-      dst->data = push_array_no_zero(arena, U8, src->encoded_size);
-      dst->encoded_size = rr_lzb_simple_encode_veryfast(&ctx, src->data, src->encoded_size, dst->data);
-      dst->unpacked_size = src->encoded_size;
-      dst->encoding = RDI_SectionEncoding_LZB;
+
+    if (src->unpacked_size == 0 || src->encoded_size > (U64)(size_t)-1) {
+      continue;
+    }
+
+    // establish capacity for the encode buffer
+    size_t encode_capcity = 0;
+    switch (encoding) {
+    case RDI_SectionEncoding_Unpacked: break;
+    case RDI_SectionEncoding_LZB: {
+      if (src->encoded_size > (U64)max_S64) { break; }
+      if (lzb_ctx.m_hashTable == 0) {
+        lzb_ctx.m_hashTable = push_array_no_zero(scratch.arena, U16, 1 << lzb_ctx.m_tableSizeBits);
+      }
+      encode_capcity = (size_t)src->encoded_size;
+    } break;
+    case RDI_SectionEncoding_Zstd: {
+#if RDI_USE_ZSTD
+      if (zstd_ctx == 0) {
+        zstd_ctx = ZSTD_createCCtx();
+      }
+      if (zstd_ctx != 0) {
+        encode_capcity = ZSTD_compressBound((size_t)src->encoded_size);
+      }
+      if (ZSTD_isError(encode_capcity)) {
+        encode_capcity = 0;
+      }
+#endif
+    } break;
+    default: InvalidPath;
+    }
+
+    if (encode_capcity > 0) {
+      // compress section bytes
+      U8 *encoded_data = push_array_no_zero(arena, U8, encode_capcity);
+      U64 encoded_size  = 0;
+      switch (encoding) {
+      case RDI_SectionEncoding_Unpacked: break;
+      case RDI_SectionEncoding_LZB: {
+        encoded_size = (U64)rr_lzb_simple_encode_veryfast(&lzb_ctx, src->data, (SINTa)src->encoded_size, encoded_data);
+        if (encoded_size >= src->encoded_size) {
+          encoded_size = 0;
+        }
+      } break;
+      case RDI_SectionEncoding_Zstd: {
+#if RDI_USE_ZSTD
+        encoded_size = (U64)ZSTD_compressCCtx(zstd_ctx, encoded_data, encode_capcity, src->data, (size_t)src->encoded_size, ZSTD_CLEVEL_DEFAULT);
+        if (ZSTD_isError(encoded_size) || encoded_size >= src->encoded_size) {
+          encoded_size = 0;
+        }
+#endif
+      } break;
+      default: InvalidPath;
+      }
+
+      if (encoded_size) {
+        // fill out section
+        dst->data          = encoded_data;
+        dst->encoded_size  = encoded_size;
+        dst->unpacked_size = src->unpacked_size;
+        dst->encoding      = encoding;
+      }
+
+      // release the unused bytes
+      arena_pop(arena, encode_capcity - encoded_size);
     }
   }
   lane_sync();
-  
+
+#if RDI_USE_ZSTD
+  if (zstd_ctx) {
+    ZSTD_freeCCtx(zstd_ctx);
+  }
+#endif
+
   scratch_end(scratch);
   return *out;
 }

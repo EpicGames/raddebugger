@@ -27,6 +27,10 @@
   "# define RDI_PROC static";
   "#endif";
   "";
+  "#if !defined(RDI_USE_ZSTD)";
+  "# define RDI_USE_ZSTD 0";
+  "#endif";
+  "";
   "////////////////////////////////////////////////////////////////";
   "//~ Overridable Basic Integer Types";
   "";
@@ -77,7 +81,7 @@
   "";
   "// \"raddbg\\0\\0\"";
   "#define RDI_MAGIC_CONSTANT   0x0000676264646172";
-  "#define RDI_ENCODING_VERSION 23";
+  "#define RDI_ENCODING_VERSION 26";
   "";
   "////////////////////////////////////////////////////////////////";
   "//~ Format Types & Functions";
@@ -216,6 +220,7 @@ RDI_SectionEncodingTable:
 {
   {Unpacked 0}
   {LZB      1}
+  {Zstd     2}
 }
 
 @table(name type desc)

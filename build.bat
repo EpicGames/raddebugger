@@ -159,6 +159,17 @@ if not exist build\blake3.lib if "%VSCMD_ARG_TGT_ARCH%" equ "x64" (
   popd
 )
 
+:: --- Assemble zstd ----------------------------------------------------------
+set need_zstd=0
+for %%t in (raddbg raddbg_non_graphical radlink radbin torture) do if "!%%t!"=="1" set need_zstd=1
+if "%need_zstd%"=="1" if not exist build\zstd.lib (
+  echo [building zstd]
+  pushd build
+  %compile_release% %only_compile% ..\src\third_party\zstd\zstd.c %obj_out%zstd.obj || exit /b 1
+  %mklib% -out:zstd.lib zstd.obj || exit /b 1
+  popd
+)
+
 :: --- Set up Oodle SDK -------------------------------------------------------
 if "%oodle%"=="1" (
   set "oodle_sdk_path=%OODLE_SDK_DIR%"
@@ -191,14 +202,14 @@ if "%oodle%"=="1" (
 
 :: --- Build Everything (@build_targets) --------------------------------------
 pushd build
-if "%raddbg%"=="1"                     set didbuild=1 && %compile% ..\src\raddbg\raddbg_main.c                               %compile_link% %link_icon% %out%raddbg.exe || exit /b 1
-if "%raddbg_non_graphical%"=="1"       set didbuild=1 && %compile% -DWM_STUB=1 -DR_BACKEND=R_BACKEND_STUB ..\src\raddbg\raddbg_main.c %compile_link% %link_icon% %out%raddbg_non_graphical.exe || exit /b 1
+if "%raddbg%"=="1"                     set didbuild=1 && %compile% -DRDI_USE_ZSTD=1 ..\src\raddbg\raddbg_main.c zstd.lib %compile_link% %link_icon% %out%raddbg.exe || exit /b 1
+if "%raddbg_non_graphical%"=="1"       set didbuild=1 && %compile% -DRDI_USE_ZSTD=1 -DWM_STUB=1 -DR_BACKEND=R_BACKEND_STUB ..\src\raddbg\raddbg_main.c zstd.lib %compile_link% %link_icon% %out%raddbg_non_graphical.exe || exit /b 1
 if "%com_shim%"=="1"                   set didbuild=1 && %compile% ..\src\com_shim\com_shim_main.c                           %compile_link% %out%com_shim.exe || exit /b 1
 if "%raddbg_server%"=="1"              set didbuild=1 && %compile% ..\src\raddbg_server\raddbg_server_main.c                 %compile_link% %out%raddbg_server.exe || exit /b 1
-if "%radlink%"=="1"                    set didbuild=1 && %compile% ..\src\linker\lnk.c                                       %compile_link% %linker% /NOIMPLIB %linker% /NATVIS:"%~dp0\src\linker\linker.natvis" %out%radlink.exe || exit /b 1
-if "%radbin%"=="1"                     set didbuild=1 && %compile% ..\src\radbin\radbin_main.c                               %compile_link% %out%radbin.exe || exit /b 1
+if "%radlink%"=="1"                    set didbuild=1 && %compile% -DRDI_USE_ZSTD=1 ..\src\linker\lnk.c zstd.lib %compile_link% %linker% /NOIMPLIB %linker% /NATVIS:"%~dp0\src\linker\linker.natvis" %out%radlink.exe || exit /b 1
+if "%radbin%"=="1"                     set didbuild=1 && %compile% -DRDI_USE_ZSTD=1 ..\src\radbin\radbin_main.c zstd.lib %compile_link% %out%radbin.exe || exit /b 1
 if "%raddump%"=="1"                    set didbuild=1 && %compile% ..\src\raddump\raddump_main.c                             %compile_link% %out%raddump.exe || exit /b 1
-if "%ryan_scratch%"=="1"               set didbuild=1 && %compile% ..\src\scratch\ryan_scratch.c                             %compile_link% %out%ryan_scratch.exe || exit /b 1
+if "%ryan_scratch%"=="1"               set didbuild=1 && %compile% ..\src\scratch\ryan_scratch.c %compile_link% %out%ryan_scratch.exe || exit /b 1
 if "%textperf%"=="1"                   set didbuild=1 && %compile% ..\src\scratch\textperf.c                                 %compile_link% %out%textperf.exe || exit /b 1
 if "%convertperf%"=="1"                set didbuild=1 && %compile% ..\src\scratch\convertperf.c                              %compile_link% %out%convertperf.exe || exit /b 1
 if "%debugstringperf%"=="1"            set didbuild=1 && %compile% ..\src\scratch\debugstringperf.c                          %compile_link% %out%debugstringperf.exe || exit /b 1
@@ -207,7 +218,7 @@ if "%strip_lib_debug%"=="1"            set didbuild=1 && %compile% ..\src\strip_
 if "%mule_main%"=="1"                  set didbuild=1 && del vc*.pdb mule*.pdb && %compile_release% %only_compile% ..\src\mule\mule_inline.cpp %obj_out%mule_inline.obj && %compile_release% %only_compile% ..\src\mule\mule_o2.cpp %obj_out%mule_o2.obj && %compile_debug% %EHsc% ..\src\mule\mule_main.cpp ..\src\mule\mule_c.c mule_inline.obj mule_o2.obj %compile_link% %no_aslr% %out%mule_main.exe || exit /b 1
 if "%mule_module%"=="1"                set didbuild=1 && %compile% ..\src\mule\mule_module.cpp                               %link_dll% %out%mule_module.dll || exit /b 1
 if "%mule_hotload%"=="1"               set didbuild=1 && %compile% ..\src\mule\mule_hotload_main.c %compile_link% %out%mule_hotload.exe & %compile% ..\src\mule\mule_hotload_module_main.c %compile_link% %link_dll% %out%mule_hotload_module.dll || exit /b 1
-if "%torture%"=="1"                    set didbuild=1 && %compile% ..\src\torture\torture_main.c                             %compile_link% %out%torture.exe || exit /b1
+if "%torture%"=="1"                    set didbuild=1 && %compile% -DRDI_USE_ZSTD=1 ..\src\torture\torture_main.c zstd.lib %compile_link% %out%torture.exe || exit /b1
 if "%dwarf_expr_test%"=="1"            set didbuild=1 && %compile% ..\src\torture\dwarf_expr_test.c                          %compile_link% %out%dwarf_expr_test.exe || exit /b1
 if "%unit_sizes_from_pdb%"=="1"        set didbuild=1 && %compile% ..\src\scratch\unit_sizes_from_pdb.c                      %compile_link% %out%unit_sizes_from_pdb.exe || exit /b1
 if "%mule_peb_trample%"=="1" (

@@ -23,11 +23,22 @@
   RDI_ParseStatus status = RDI_ParseStatus_Good;
   {
     RDI_Parsed rdi_compressed = {0};
-    RDI_ParseStatus rdi_compressed_status = rdi_parse(compressed_data, compressed_size, &rdi_compressed);
-    RDI_U64 decompressed_size = rdi_decompressed_size_from_parsed(&rdi_compressed);
-    RDI_U8 *decompressed_data = allocate(decompressed_size);
-    rdi_decompress_parsed(decompressed_data, decompressed_size, &rdi_compressed);
-    status = rdi_parse(decompressed_data, decompressed_size, &rdi);
+    status = rdi_parse(compressed_data, compressed_size, &rdi_compressed);
+    if(status == RDI_ParseStatus_Good)
+    {
+      RDI_U64 decompressed_size = rdi_decompressed_size_from_parsed(&rdi_compressed);
+      RDI_U8 *decompressed_data = decompressed_size != 0 ? allocate(decompressed_size) : 0;
+      status = RDI_ParseStatus_DecompressionFailed;
+      if(decompressed_data != 0)
+      {
+        status = rdi_decompress_parsed(decompressed_data, decompressed_size, &rdi_compressed);
+        if(status == RDI_ParseStatus_Good)
+        {
+          status = rdi_parse(decompressed_data, decompressed_size, &rdi);
+        }
+        // on failure, discard decompressed_data; its contents are incomplete
+      }
+    }
   }
 }
 
@@ -80,6 +91,8 @@ typedef enum RDI_ParseStatus
   RDI_ParseStatus_HeaderDoesNotMatch = 1,
   RDI_ParseStatus_UnsupportedVersionNumber = 2,
   RDI_ParseStatus_InvalidDataSecionLayout = 3,
+  RDI_ParseStatus_UnsupportedSectionEncoding = 4,
+  RDI_ParseStatus_DecompressionFailed = 5,
 }
 RDI_ParseStatus;
 
@@ -180,7 +193,7 @@ RDI_PROC RDI_U64 rdi_decompressed_size_from_parsed(RDI_Parsed *rdi);
 RDI_PROC RDI_U32 rdi_has_compressed_sections(RDI_Parsed *rdi);
 
 //- decompression
-internal void rdi_decompress_parsed(U8 *decompressed_data, U64 decompressed_size, RDI_Parsed *og_rdi);
+RDI_PROC RDI_ParseStatus rdi_decompress_parsed(RDI_U8 *decompressed_data, RDI_U64 decompressed_size, RDI_Parsed *og_rdi);
 
 //- strings
 RDI_PROC RDI_U8 *rdi_string_from_idx(RDI_Parsed *rdi, RDI_U32 idx, RDI_U64 *len_out);

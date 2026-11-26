@@ -1,6 +1,11 @@
 // Copyright (c) Epic Games Tools
 // Licensed under the MIT license (https://opensource.org/license/mit/)
 
+#include <string.h>
+#if RDI_USE_ZSTD
+#include "third_party/zstd/zstd.h"
+#endif
+
 ////////////////////////////////
 //~ Compression/Decompression Forward-Declares
 
@@ -161,6 +166,7 @@ RDI_PROC RDI_ParseStatus
 rdi_parse(RDI_U8 *data, RDI_U64 size, RDI_Parsed *out)
 {
   RDI_ParseStatus result = RDI_ParseStatus_Good;
+  *out = rdi_parsed_nil;
   
   //////////////////////////////
   //- rjf: extract header
@@ -168,7 +174,7 @@ rdi_parse(RDI_U8 *data, RDI_U64 size, RDI_Parsed *out)
   RDI_Header *hdr = 0;
   if(result == RDI_ParseStatus_Good)
   {
-    if(sizeof(*hdr) <= size)
+    if(data != 0 && sizeof(*hdr) <= size && size <= (RDI_U64)(size_t)-1)
     {
       hdr = (RDI_Header*)data;
     }
@@ -191,8 +197,9 @@ rdi_parse(RDI_U8 *data, RDI_U64 size, RDI_Parsed *out)
   RDI_U32 dsec_count = 0;
   if(result == RDI_ParseStatus_Good)
   {
-    RDI_U64 opl = (RDI_U64)hdr->data_section_off + (RDI_U64)hdr->data_section_count*sizeof(*dsecs);
-    if(opl <= size)
+    RDI_U64 table_size = (RDI_U64)hdr->data_section_count*sizeof(*dsecs);
+    if(hdr->data_section_off >= sizeof(*hdr) && hdr->data_section_off <= size &&
+       table_size <= size - hdr->data_section_off)
     {
       dsecs = (RDI_Section*)(data + hdr->data_section_off);
       dsec_count = hdr->data_section_count;
@@ -282,21 +289,18 @@ rdi_section_raw_element_from_kind_idx(RDI_Parsed *rdi, RDI_SectionKind kind, RDI
 RDI_PROC RDI_U64
 rdi_decompressed_size_from_parsed(RDI_Parsed *rdi)
 {
-  if(rdi->raw_data == 0)
+  RDI_Parsed checked = {0};
+  if(rdi_parse(rdi->raw_data, rdi->raw_data_size, &checked) != RDI_ParseStatus_Good)
   {
     return 0;
   }
-  RDI_Header *hdr = (RDI_Header *)rdi->raw_data;
-  RDI_U64 decompressed_size = (RDI_U64)hdr->data_section_off + (RDI_U64)rdi->sections_count*sizeof(RDI_Section);
-  decompressed_size = (decompressed_size + 7) & ~7ull;
-  for(RDI_U64 section_idx = 0; section_idx < rdi->sections_count; section_idx += 1)
+  RDI_Header *hdr = (RDI_Header *)checked.raw_data;
+  RDI_U64 decompressed_size = (RDI_U64)hdr->data_section_off + checked.sections_count*sizeof(RDI_Section);
+  decompressed_size = (decompressed_size + 7) & ~(RDI_U64)7;
+  for(RDI_U64 section_idx = 0; section_idx < checked.sections_count; section_idx += 1)
   {
-    RDI_U64 size = rdi->sections[section_idx].unpacked_size;
-    if(size > ~0ull - decompressed_size - 7)
-    {
-      return 0;
-    }
-    decompressed_size = (decompressed_size + size + 7) & ~7ull;
+    RDI_U64 size = checked.sections[section_idx].unpacked_size;
+    decompressed_size = (decompressed_size + size + 7) & ~(RDI_U64)7;
   }
   return decompressed_size;
 }
@@ -316,58 +320,101 @@ rdi_has_compressed_sections(RDI_Parsed *rdi)
 
 //- decompression
 
-internal void
-rdi_decompress_parsed(U8 *decompressed_data, U64 decompressed_size, RDI_Parsed *og_rdi)
+RDI_PROC RDI_ParseStatus
+rdi_decompress_parsed(RDI_U8 *decompressed_data, RDI_U64 decompressed_size, RDI_Parsed *og_rdi)
 {
-  // rjf: copy header
-  RDI_Header *src_header = (RDI_Header *)og_rdi->raw_data;
-  RDI_Header *dst_header = (RDI_Header *)decompressed_data;
-  {
-    MemoryCopy(dst_header, src_header, sizeof(RDI_Header));
+  RDI_Parsed checked = {0};
+  RDI_ParseStatus result = rdi_parse(og_rdi->raw_data, og_rdi->raw_data_size, &checked);
+  if (result != RDI_ParseStatus_Good) {
+    return result;
   }
-  
-  // rjf: copy & adjust sections for decompressed version
-  if(og_rdi->sections_count != 0)
-  {
-    RDI_Section *dsec_base = (RDI_Section *)(decompressed_data + dst_header->data_section_off);
-    MemoryCopy(dsec_base, (U8 *)og_rdi->raw_data + src_header->data_section_off, sizeof(RDI_Section) * og_rdi->sections_count);
-    U64 off = dst_header->data_section_off + sizeof(RDI_Section) * og_rdi->sections_count;
-    off += 7;
-    off -= off%8;
-    for(U64 idx = 0; idx < og_rdi->sections_count; idx += 1)
-    {
-      dsec_base[idx].encoding = RDI_SectionEncoding_Unpacked;
-      dsec_base[idx].off = off;
-      off += dsec_base[idx].unpacked_size;
-      off += 7;
-      off -= off%8;
+
+  RDI_U64 required_size = rdi_decompressed_size_from_parsed(&checked);
+  if (decompressed_data == 0 || required_size == 0 || required_size > decompressed_size || decompressed_size > (RDI_U64)(size_t)-1) {
+    return RDI_ParseStatus_InvalidDataSecionLayout;
+  }
+
+#if RDI_USE_ZSTD
+  ZSTD_DCtx *dctx = 0;
+#endif
+
+  RDI_Header *src_header = (RDI_Header *)checked.raw_data;
+  RDI_U64 table_end = (RDI_U64)src_header->data_section_off + checked.sections_count*sizeof(RDI_Section);
+  if (table_end > decompressed_size || decompressed_size - table_end < ((8 - table_end%8)%8)) {
+    return RDI_ParseStatus_InvalidDataSecionLayout;
+  }
+
+  memcpy(decompressed_data, checked.raw_data, (size_t)table_end);
+  RDI_Section *dst_sections = (RDI_Section *)(decompressed_data + src_header->data_section_off);
+  RDI_U64      off          = (table_end + 7) & ~(RDI_U64)7;
+  memset(decompressed_data + table_end, 0, (size_t)(off - table_end));
+
+  for (RDI_U64 idx = 0; idx < checked.sections_count; idx += 1) {
+    RDI_Section *src           = &checked.sections[idx];
+    RDI_Section *dst           = &dst_sections[idx];
+    RDI_U64      resident_size = src->encoding == RDI_SectionEncoding_Unpacked ? src->unpacked_size : src->encoded_size;
+
+    if (src->off > checked.raw_data_size                ||
+       resident_size > checked.raw_data_size - src->off ||
+       off > decompressed_size                          ||
+       src->unpacked_size > decompressed_size - off     ||
+       decompressed_size - off - src->unpacked_size < ((8 - src->unpacked_size % 8) % 8)) {
+      result = RDI_ParseStatus_InvalidDataSecionLayout;
+      break;
     }
-  }
-  
-  // rjf: decompress sections into new decompressed file buffer
-  if(og_rdi->sections_count != 0)
-  {
-    RDI_Section *src_first = og_rdi->sections;
-    RDI_Section *dst_first = (RDI_Section *)(decompressed_data + dst_header->data_section_off);
-    RDI_Section *src_opl = src_first + og_rdi->sections_count;
-    RDI_Section *dst_opl = dst_first + og_rdi->sections_count;
-    for(RDI_Section *src = src_first, *dst = dst_first;
-        src < src_opl && dst < dst_opl;
-        src += 1, dst += 1)
-    {
-      if(src->unpacked_size == 0) { continue; }
-      U8 *src_data = (U8*)og_rdi->raw_data + src->off;
-      U8 *dst_data = decompressed_data + dst->off;
-      if(src->encoding == RDI_SectionEncoding_Unpacked)
-      {
-        MemoryCopy(dst_data, src_data, src->unpacked_size);
+
+    dst->encoding = RDI_SectionEncoding_Unpacked;
+    dst->off = off;
+
+    RDI_U8 *src_data = checked.raw_data + src->off;
+    RDI_U8 *dst_data = decompressed_data + off;
+
+    switch (src->encoding) {
+    case RDI_SectionEncoding_Unpacked: {
+      if (src->unpacked_size != 0) {
+        memcpy(dst_data, src_data, (size_t)src->unpacked_size);
       }
-      else
-      {
-        rr_lzb_simple_decode(src_data, src->encoded_size, dst_data, dst->unpacked_size);
+    } break;
+    case RDI_SectionEncoding_LZB: {
+      if (rr_lzb_simple_decode(src_data, (SINTa)src->encoded_size, dst_data, (SINTa)src->unpacked_size) != (SINTa)src->encoded_size) {
+        result = RDI_ParseStatus_DecompressionFailed;
       }
+    } break;
+    case RDI_SectionEncoding_Zstd: {
+#if RDI_USE_ZSTD
+      if (dctx == 0) {
+        dctx = ZSTD_createDCtx();
+        if (dctx == 0) {
+          result = RDI_ParseStatus_DecompressionFailed;
+          break;
+        }
+      }
+
+      size_t decoded_size = ZSTD_decompressDCtx(dctx, dst_data, (size_t)src->unpacked_size, src_data, (size_t)src->encoded_size);
+      if (ZSTD_isError(decoded_size) || decoded_size != src->unpacked_size) {
+        result = RDI_ParseStatus_DecompressionFailed;
+        break;
+      }
+#else
+      result = RDI_ParseStatus_UnsupportedSectionEncoding;
+      break;
+#endif
+    } break;
+    default: {
+      result = RDI_ParseStatus_UnsupportedSectionEncoding;
+    } break;
     }
+
+    RDI_U64 end = off + src->unpacked_size;
+    off = (end + 7) & ~(RDI_U64)7;
+    memset(decompressed_data + end, 0, (size_t)(off - end));
   }
+
+#if RDI_USE_ZSTD
+  ZSTD_freeDCtx(dctx);
+#endif
+
+  return result;
 }
 
 //- strings
@@ -452,7 +499,7 @@ rdi_parsed_from_line_table(RDI_Parsed *rdi, RDI_LineTable *line_table, RDI_Parse
 RDI_PROC RDI_U64
 rdi_line_info_idx_range_from_voff(RDI_ParsedLineTable *line_info, RDI_U64 voff, RDI_U64 *n_out)
 {
-  RDI_U64 result = max_U64;
+  RDI_U64 result = ~(RDI_U64)0;
   RDI_U64 n = 0;
   if(line_info->count > 0 && line_info->voffs[0] <= voff && voff < line_info->voffs[line_info->count - 1])
   {

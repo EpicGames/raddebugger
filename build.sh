@@ -81,6 +81,19 @@ if [[ ! -f "build/blake3.a" ]]; then
   $ar rs build/blake3.a build/blake3_*_unix.o
 fi
 
+# --- Assemble zstd -----------------------------------------------------------
+need_zstd=0
+for target in raddbg raddbg_non_graphical radlink radbin torture; do
+  if [[ "${!target:-0}" == "1" ]]; then need_zstd=1; fi
+done
+if [[ "$need_zstd" == "1" && ! -f "build/zstd.a" ]]; then
+  echo "[building zstd]"
+  cd build
+  $compiler $cc_release -c ../src/third_party/zstd/zstd.c -o zstd.o
+  $ar rcs zstd.a zstd.o
+  cd ..
+fi
+
 # --- Set up Oodle SDK -------------------------------------------------------
 if [[ "${oodle:-0}" == "1" ]]; then
   oodle_sdk_path="${OODLE_SDK_DIR:-}"
@@ -125,12 +138,12 @@ if [[ "${radcobj:-0}" == "1" ]]; then
   $compile "${oodle_flags[@]}" -fPIC -c ../src/linker/radcobj_main.c -o radcobj.o
   $ar rcs libradcobj.a radcobj.o
 fi
-if [[ "${raddbg:-0}"               == "1" ]]; then didbuild=1 && compile ../src/raddbg/raddbg_main.c $cc_icon $cc_link $cc_os_gfx $cc_render $cc_font_provider -o raddbg; fi
-if [[ "${raddbg_non_graphical:-0}" == "1" ]]; then didbuild=1 && compile ../src/raddbg/raddbg_main.c -DWM_STUB=1 -DR_BACKEND=R_BACKEND_STUB $cc_link $cc_os_gfx $cc_render $cc_font_provider -o raddbg_non_graphical; fi
+if [[ "${raddbg:-0}"               == "1" ]]; then didbuild=1 && compile -DRDI_USE_ZSTD=1 ../src/raddbg/raddbg_main.c zstd.a $cc_icon $cc_link $cc_os_gfx $cc_render $cc_font_provider -o raddbg; fi
+if [[ "${raddbg_non_graphical:-0}" == "1" ]]; then didbuild=1 && compile -DRDI_USE_ZSTD=1 ../src/raddbg/raddbg_main.c zstd.a -DWM_STUB=1 -DR_BACKEND=R_BACKEND_STUB $cc_link $cc_os_gfx $cc_render $cc_font_provider -o raddbg_non_graphical; fi
 if [[ "${raddbg_server:-0}"        == "1" ]]; then didbuild=1 && compile ../src/raddbg_server/raddbg_server_main.c $cc_link -o raddbg_server; fi
-if [[ "${radbin:-0}"               == "1" ]]; then didbuild=1 && compile ../src/radbin/radbin_main.c   $cc_link -o radbin; fi
-if [[ "${radlink:-0}"              == "1" ]]; then didbuild=1 && compile ../src/linker/lnk.c           $cc_link -o radlink; fi
-if [[ "${torture:-0}"              == "1" ]]; then didbuild=1 && compile ../src/torture/torture_main.c $cc_link $cc_os_gfx $cc_render $cc_font_provider -o torture; fi
+if [[ "${radbin:-0}"               == "1" ]]; then didbuild=1 && compile -DRDI_USE_ZSTD=1 ../src/radbin/radbin_main.c zstd.a $cc_link -o radbin; fi
+if [[ "${radlink:-0}"              == "1" ]]; then didbuild=1 && compile -DRDI_USE_ZSTD=1 ../src/linker/lnk.c zstd.a $cc_link -o radlink; fi
+if [[ "${torture:-0}"              == "1" ]]; then didbuild=1 && compile -DRDI_USE_ZSTD=1 ../src/torture/torture_main.c zstd.a $cc_link $cc_os_gfx $cc_render $cc_font_provider -o torture; fi
 if [[ "${ryan_scratch:-0}"         == "1" ]]; then didbuild=1 && compile ../src/scratch/ryan_scratch.c $cc_link $cc_os_gfx $cc_render $cc_font_provider -o ryan_scratch; fi
 cd ..
 

@@ -17,6 +17,10 @@
 # define RDI_PROC static
 #endif
 
+#if !defined(RDI_USE_ZSTD)
+# define RDI_USE_ZSTD 0
+#endif
+
 ////////////////////////////////////////////////////////////////
 //~ Overridable Basic Integer Types
 
@@ -67,7 +71,7 @@ union RDI_GUID {RDI_U8 u8[16]; RDI_U64 u64[2];};
 
 // "raddbg\0\0"
 #define RDI_MAGIC_CONSTANT   0x0000676264646172
-#define RDI_ENCODING_VERSION 23
+#define RDI_ENCODING_VERSION 26
 
 ////////////////////////////////////////////////////////////////
 //~ Format Types & Functions
@@ -126,6 +130,7 @@ typedef enum RDI_SectionEncodingEnum
 {
 RDI_SectionEncoding_Unpacked   = 0,
 RDI_SectionEncoding_LZB        = 1,
+RDI_SectionEncoding_Zstd       = 2,
 } RDI_SectionEncodingEnum;
 
 typedef RDI_U32 RDI_Arch;
@@ -568,6 +573,7 @@ X(NameMapNodes, name_map_nodes, RDI_NameMapNode)\
 #define RDI_SectionEncoding_XList \
 X(Unpacked)\
 X(LZB)\
+X(Zstd)\
 
 #define RDI_Section_XList \
 X(RDI_SectionEncoding, encoding)\

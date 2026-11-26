@@ -1123,7 +1123,8 @@ rb_thread_entry_point(void *p)
         {
           fprintf(stderr, "ARGUMENTS\n\n");
           
-          fprintf(stderr, "--compress                       Compresses the RDI file's contents.\n");
+          fprintf(stderr, "--compress                       Compresses the RDI file's contents with LZB.\n");
+          fprintf(stderr, "--compress-zstd                  Uses Zstd instead; takes precedence over --compress.\n");
           fprintf(stderr, "\n");
           fprintf(stderr, "--only:<comma delimited names>   Specifies that only the named subsets of debug\n");
           fprintf(stderr, "                                 information should be generated. See below for\n");
@@ -1159,7 +1160,8 @@ rb_thread_entry_point(void *p)
           fprintf(stderr, "Converts native debug information to a stripped version of RDI,\n");
           fprintf(stderr, "that has can be used to symbolize callstacks.\n\n");
           fprintf(stderr, "Existing RDI inputs are not supported for stripping.\n\n");
-          fprintf(stderr, "--compress       Compresses the RDI file's contents.\n\n");
+          fprintf(stderr, "--compress       Compresses the RDI file's contents with LZB.\n");
+          fprintf(stderr, "--compress-zstd  Uses Zstd instead; takes precedence over --compress.\n\n");
           fprintf(stderr, "Example: radbin --stripped program.pdb --out:program.stripped.rdi\n\n");
         }break;
         case OutputKind_VOff2Line:
@@ -1234,6 +1236,51 @@ rb_thread_entry_point(void *p)
         {
           subset_flags = (RDIM_SubsetFlag_Units|RDIM_SubsetFlag_LineInfo|RDIM_SubsetFlag_InlineLineInfo|RDIM_SubsetFlag_Procedures);
         }break;
+      }
+
+#if !RDI_USE_ZSTD
+      if((output_kind == OutputKind_RDI || output_kind == OutputKind_Stripped) &&
+         cmdline->inputs.node_count != 0 && cmd_line_has_flag(cmdline, str8_lit("compress-zstd")))
+      {
+        if(lane_idx() == 0) { log_user_errorf("--compress-zstd requires a build with RDI_USE_ZSTD enabled.\n"); }
+        output_valid = 0;
+        break;
+      }
+#endif
+
+      // mixed native/RDI conversion is unsupported; otherwise a single RDI can
+      // be silently ignored instead of being decoded and checked
+      U64 rdi_input_count = input_files_from_format_table[RB_FileFormat_RDI].count;
+      if(rdi_input_count != 0 && rdi_input_count != input_files.count)
+      {
+        if(lane_idx() == 0)
+        {
+          log_user_errorf("RDI inputs cannot be mixed with native inputs for conversion.\n");
+        }
+        output_valid = 0;
+        break;
+      }
+
+      // Validate every RDI input before any joining/conversion work begins.
+      U64 rdi_inputs_valid = 1;
+      if(lane_idx() == 0)
+      {
+        for EachNode(n, RB_FileNode, input_files_from_format_table[RB_FileFormat_RDI].first)
+        {
+          RDI_Parsed rdi = {0};
+          RDI_ParseStatus status = rdi_parse(n->v->data.str, n->v->data.size, &rdi);
+          if(status != RDI_ParseStatus_Good)
+          {
+            log_user_errorf("RDI parse failure for %S (status %u)\n", n->v->path, status);
+            rdi_inputs_valid = 0;
+          }
+        }
+      }
+      lane_sync_u64(&rdi_inputs_valid, 0);
+      if( ! rdi_inputs_valid)
+      {
+        output_valid = 0;
+        break;
       }
 
       // loose conversion objects are needed only until all lanes finish baking
@@ -1543,29 +1590,43 @@ rb_thread_entry_point(void *p)
           convert_done = 1;
           log_infof("RDIs specified; joining RDIs\n");
           
-          // rjf: produce bake params for each RDI
-          for EachNode(n, RB_FileNode, input_files_from_format_table[RB_FileFormat_RDI].first)
+          // parse and decode every input
+          RDI_Parsed *rdis = 0;
+          if(lane_idx() == 0)
           {
-            RB_File *f = n->v;
-            
-            // rjf: decompress RDI
-            RDI_Parsed *rdi = 0;
-            if(lane_idx() == 0)
+            rdis = push_array(conversion_arena, RDI_Parsed, input_files_from_format_table[RB_FileFormat_RDI].count);
+            U64 rdi_idx = 0;
+            for EachNode(n, RB_FileNode, input_files_from_format_table[RB_FileFormat_RDI].first)
             {
-              rdi = push_array(conversion_arena, RDI_Parsed, 1);
+              RB_File *f = n->v;
+              RDI_Parsed *rdi = &rdis[rdi_idx++];
               RDI_ParseStatus rdi_status = rdi_parse(f->data.str, f->data.size, rdi);
-              U64 decompressed_size = rdi_decompressed_size_from_parsed(rdi);
-              if(rdi_has_compressed_sections(rdi))
+              if(rdi_status == RDI_ParseStatus_Good && rdi_has_compressed_sections(rdi))
               {
-                U8 *decompressed_data = push_array_no_zero(conversion_arena, U8, decompressed_size);
-                rdi_decompress_parsed(decompressed_data, decompressed_size, rdi);
-                rdi_status = rdi_parse(decompressed_data, decompressed_size, rdi);
+                U64 decompressed_size = rdi_decompressed_size_from_parsed(rdi);
+                U8 *decompressed_data = decompressed_size != 0 ? push_array_no_zero(conversion_arena, U8, decompressed_size) : 0;
+                rdi_status = rdi_decompress_parsed(decompressed_data, decompressed_size, rdi);
+                if(rdi_status == RDI_ParseStatus_Good)
+                {
+                  rdi_status = rdi_parse(decompressed_data, decompressed_size, rdi);
+                }
+              }
+              if(rdi_status != RDI_ParseStatus_Good)
+              {
+                *rdi = rdi_parsed_nil;
+                rdi_inputs_valid = 0;
+                log_user_errorf("RDI parse/decompression failure for %S (status %u)\n", f->path, rdi_status);
               }
             }
-            lane_sync_u64(&rdi, 0);
-            
+          }
+          lane_sync_u64(&rdis, 0);
+          lane_sync_u64(&rdi_inputs_valid, 0);
+
+          // rjf: produce bake params for each RDI
+          if(rdi_inputs_valid) for EachIndex(rdi_idx, input_files_from_format_table[RB_FileFormat_RDI].count)
+          {
             // rjf: RDI -> loose
-            RDIM_BakeParams rdi_loose = rdim_loose_from_rdi(conversion_arena, subset_flags, rdi);
+            RDIM_BakeParams rdi_loose = rdim_loose_from_rdi(conversion_arena, subset_flags, &rdis[rdi_idx]);
             
             // rjf: add
             RDIM_BakeParamsNode *n = push_array(conversion_arena, RDIM_BakeParamsNode, 1);
@@ -1575,7 +1636,14 @@ rb_thread_entry_point(void *p)
         }
       }
       lane_sync();
-      
+
+      if( ! rdi_inputs_valid)
+      {
+        arena_release(conversion_arena);
+        output_valid = 0;
+        break;
+      }
+
       //- rjf: join conversion artifacts
       RDIM_BakeParams *bake_params = 0;
       if(lane_idx() == 0)
@@ -1666,14 +1734,22 @@ rb_thread_entry_point(void *p)
         RB_File *f = rb_file_list_first(&input_files);
         RDI_Parsed rdi = {0};
         RDI_ParseStatus rdi_status = rdi_parse(f->data.str, f->data.size, &rdi);
-        U64 decompressed_size = rdi_decompressed_size_from_parsed(&rdi);
-        if(rdi_has_compressed_sections(&rdi))
+        if(rdi_status == RDI_ParseStatus_Good && rdi_has_compressed_sections(&rdi))
         {
-          U8 *decompressed_data = push_array_no_zero(bake_arena, U8, decompressed_size);
-          rdi_decompress_parsed(decompressed_data, decompressed_size, &rdi);
-          rdi_status = rdi_parse(decompressed_data, decompressed_size, &rdi);
+          U64 decompressed_size = rdi_decompressed_size_from_parsed(&rdi);
+          U8 *decompressed_data = decompressed_size != 0 ? push_array_no_zero(bake_arena, U8, decompressed_size) : 0;
+          rdi_status = rdi_decompress_parsed(decompressed_data, decompressed_size, &rdi);
+          if(rdi_status == RDI_ParseStatus_Good)
+          {
+            rdi_status = rdi_parse(decompressed_data, decompressed_size, &rdi);
+          }
         }
-        for EachIndex(idx, rdi.sections_count)
+        if(rdi_status != RDI_ParseStatus_Good)
+        {
+          rdi_inputs_valid = 0;
+          log_user_errorf("RDI parse/decompression failure for %S (status %u)\n", f->path, rdi_status);
+        }
+        else for EachIndex(idx, rdi.sections_count)
         {
           if(idx < RDI_SectionKind_COUNT)
           {
@@ -1681,7 +1757,12 @@ rb_thread_entry_point(void *p)
           }
         }
       }
-      lane_sync();
+      lane_sync_u64(&rdi_inputs_valid, 0);
+      if(!rdi_inputs_valid)
+      {
+        output_valid = 0;
+        break;
+      }
 
       // consumers share one independent flat RDI image
       Arena *flat_rdi_arena = 0;
@@ -1697,10 +1778,16 @@ rb_thread_entry_point(void *p)
             String8List rdi_blobs = rdim_file_blobs_from_section_bundle(scratch.arena, serialized_section_bundle);
             String8 rdi_data = str8_list_join(flat_rdi_arena, &rdi_blobs, 0);
             flat_rdi = push_array(flat_rdi_arena, RDI_Parsed, 1);
-            rdi_parse(rdi_data.str, rdi_data.size, flat_rdi);
+            RDI_ParseStatus rdi_status = rdi_parse(rdi_data.str, rdi_data.size, flat_rdi);
+            if(rdi_status != RDI_ParseStatus_Good)
+            {
+              rdi_inputs_valid = 0;
+              log_user_errorf("RDI parse failure after serialization (status %u)\n", rdi_status);
+            }
             scratch_end(scratch);
           }
           lane_sync_u64(&flat_rdi, 0);
+          lane_sync_u64(&rdi_inputs_valid, 0);
         }
 
         ProfScope("release baked sections")
@@ -1710,7 +1797,17 @@ rb_thread_entry_point(void *p)
           lane_sync();
         }
       }
-      
+
+      if( ! rdi_inputs_valid)
+      {
+        if(flat_rdi_arena != 0)
+        {
+          arena_release(flat_rdi_arena);
+        }
+        output_valid = 0;
+        break;
+      }
+
       //- rjf: convert done => generate output
       if(convert_done) switch(output_kind)
       {
@@ -1722,9 +1819,11 @@ rb_thread_entry_point(void *p)
         {
           // rjf: compress
           RDIM_SerializedSectionBundle serialized_section_bundle__compressed = serialized_section_bundle[0];
-          if(cmd_line_has_flag(cmdline, str8_lit("compress"))) ProfScope("compress")
+          B32 compress_zstd = cmd_line_has_flag(cmdline, str8_lit("compress-zstd"));
+          if(compress_zstd || cmd_line_has_flag(cmdline, str8_lit("compress"))) ProfScope("compress")
           {
-            serialized_section_bundle__compressed = rdim_compress(arena, serialized_section_bundle);
+            RDI_SectionEncoding encoding = compress_zstd ? RDI_SectionEncoding_Zstd : RDI_SectionEncoding_LZB;
+            serialized_section_bundle__compressed = rdim_compress(arena, serialized_section_bundle, encoding);
           }
           
           // rjf: serialize
@@ -2236,12 +2335,20 @@ rb_thread_entry_point(void *p)
           {
             RDI_Parsed rdi = {0};
             RDI_ParseStatus rdi_status = rdi_parse(f->data.str, f->data.size, &rdi);
-            U64 decompressed_size = rdi_decompressed_size_from_parsed(&rdi);
-            if(rdi_has_compressed_sections(&rdi) && (rdi_dump_subset_flags & ~RDI_DumpSubsetFlag_DataSections) != 0)
+            if(rdi_status == RDI_ParseStatus_Good && rdi_has_compressed_sections(&rdi) &&
+               (rdi_dump_subset_flags & ~RDI_DumpSubsetFlag_DataSections) != 0)
             {
-              U8 *decompressed_data = push_array_no_zero(arena, U8, decompressed_size);
-              rdi_decompress_parsed(decompressed_data, decompressed_size, &rdi);
-              rdi_status = rdi_parse(decompressed_data, decompressed_size, &rdi);
+              U64 decompressed_size = rdi_decompressed_size_from_parsed(&rdi);
+              U8 *decompressed_data = decompressed_size != 0 ? push_array_no_zero(arena, U8, decompressed_size) : 0;
+              rdi_status = rdi_decompress_parsed(decompressed_data, decompressed_size, &rdi);
+              if(rdi_status == RDI_ParseStatus_Good)
+              {
+                rdi_status = rdi_parse(decompressed_data, decompressed_size, &rdi);
+              }
+            }
+            if(rdi_status != RDI_ParseStatus_Good)
+            {
+              output_valid = 0;
             }
             switch(rdi_status)
             {
@@ -2249,6 +2356,8 @@ rb_thread_entry_point(void *p)
               case RDI_ParseStatus_HeaderDoesNotMatch:      {log_user_errorf("RDI parse failure: header does not match\n");}break;
               case RDI_ParseStatus_UnsupportedVersionNumber:{log_user_errorf("RDI parse failure: unsupported version\n");}break;
               case RDI_ParseStatus_InvalidDataSecionLayout: {log_user_errorf("RDI parse failure: invalid data section layout\n");}break;
+              case RDI_ParseStatus_UnsupportedSectionEncoding: {log_user_errorf("RDI parse failure: unsupported section encoding\n");}break;
+              case RDI_ParseStatus_DecompressionFailed: {log_user_errorf("RDI parse failure: section decompression failed\n");}break;
               case RDI_ParseStatus_Good:
               {
                 String8List dump = rdi_dump_list_from_parsed(arena, &rdi, rdi_dump_subset_flags);

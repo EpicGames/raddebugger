@@ -1033,23 +1033,32 @@ di_async_tick(void)
       
       //- rjf: do initial parse of rdi
       RDI_Parsed rdi_parsed_maybe_compressed = rdi_parsed_nil;
-      {
-        RDI_ParseStatus parse_status = rdi_parse((U8 *)file_base, file_props.size, &rdi_parsed_maybe_compressed);
-        (void)parse_status;
-      }
+      RDI_ParseStatus parse_status = rdi_parse((U8 *)file_base, file_props.size, &rdi_parsed_maybe_compressed);
       
       //- rjf: decompress & re-parse, if necessary
       Arena *rdi_parsed_arena = 0;
       RDI_Parsed rdi_parsed = rdi_parsed_maybe_compressed;
+      if(parse_status == RDI_ParseStatus_Good)
       {
-        U64 decompressed_size = rdi_decompressed_size_from_parsed(&rdi_parsed_maybe_compressed);
         if(rdi_has_compressed_sections(&rdi_parsed_maybe_compressed))
         {
+          U64 decompressed_size = rdi_decompressed_size_from_parsed(&rdi_parsed_maybe_compressed);
           rdi_parsed_arena = arena_alloc();
-          U8 *decompressed_data = push_array_no_zero(rdi_parsed_arena, U8, decompressed_size);
-          rdi_decompress_parsed(decompressed_data, decompressed_size, &rdi_parsed_maybe_compressed);
-          RDI_ParseStatus parse_status = rdi_parse(decompressed_data, decompressed_size, &rdi_parsed);
-          (void)parse_status;
+          U8 *decompressed_data = decompressed_size != 0 ? push_array_no_zero(rdi_parsed_arena, U8, decompressed_size) : 0;
+          parse_status = rdi_decompress_parsed(decompressed_data, decompressed_size, &rdi_parsed_maybe_compressed);
+          if(parse_status == RDI_ParseStatus_Good)
+          {
+            parse_status = rdi_parse(decompressed_data, decompressed_size, &rdi_parsed);
+          }
+        }
+      }
+      if(parse_status != RDI_ParseStatus_Good)
+      {
+        rdi_parsed = rdi_parsed_nil;
+        if(rdi_parsed_arena != 0)
+        {
+          arena_release(rdi_parsed_arena);
+          rdi_parsed_arena = 0;
         }
       }
       
