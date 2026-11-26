@@ -1124,7 +1124,8 @@ rb_thread_entry_point(void *p)
           fprintf(stderr, "ARGUMENTS\n\n");
           
           fprintf(stderr, "--compress                       Compresses the RDI file's contents with LZB.\n");
-          fprintf(stderr, "--compress-zstd                  Uses Zstd instead; takes precedence over --compress.\n");
+          fprintf(stderr, "--compress-zstd[:LEVEL]          Uses Zstd (default level 9); overrides --compress.\n");
+          fprintf(stderr, "                                 Negative levels favor speed; 0 selects Zstd's default (3).\n");
           fprintf(stderr, "\n");
           fprintf(stderr, "--only:<comma delimited names>   Specifies that only the named subsets of debug\n");
           fprintf(stderr, "                                 information should be generated. See below for\n");
@@ -1161,7 +1162,8 @@ rb_thread_entry_point(void *p)
           fprintf(stderr, "that has can be used to symbolize callstacks.\n\n");
           fprintf(stderr, "Existing RDI inputs are not supported for stripping.\n\n");
           fprintf(stderr, "--compress       Compresses the RDI file's contents with LZB.\n");
-          fprintf(stderr, "--compress-zstd  Uses Zstd instead; takes precedence over --compress.\n\n");
+          fprintf(stderr, "--compress-zstd[:LEVEL]  Uses Zstd (default level 9); overrides --compress.\n");
+          fprintf(stderr, "                         Negative levels favor speed; 0 selects Zstd's default (3).\n\n");
           fprintf(stderr, "Example: radbin --stripped program.pdb --out:program.stripped.rdi\n\n");
         }break;
         case OutputKind_VOff2Line:
@@ -1238,7 +1240,33 @@ rb_thread_entry_point(void *p)
         }break;
       }
 
-#if !RDI_USE_ZSTD
+      B32 compress_zstd     = cmd_line_has_flag(cmdline, str8_lit("compress-zstd"));
+      S32 compression_level = 9;
+#if RDI_USE_ZSTD
+      if((output_kind == OutputKind_RDI || output_kind == OutputKind_Stripped) && compress_zstd)
+      {
+        String8 level_string = cmd_line_string(cmdline, str8_lit("compress-zstd"));
+        if(level_string.size != 0)
+        {
+          String8 digits = {0};
+          S64 sign      = sign_from_str8(level_string, &digits);
+          B32 valid     = digits.size <= 10 && level_string.size - digits.size <= 1 && str8_is_integer(digits, 10);
+          S64 level     = valid ? sign*(S64)u64_from_str8(digits, 10) : 0;
+          S32 min_level = ZSTD_minCLevel();
+          S32 max_level = ZSTD_maxCLevel();
+          if( ! valid || level < min_level || level > max_level)
+          {
+            if(lane_idx() == 0)
+            {
+              log_user_errorf("--compress-zstd expects a decimal level between %d and %d (0 selects Zstd's default).\n", min_level, max_level);
+            }
+            output_valid = 0;
+            break;
+          }
+          compression_level = (S32)level;
+        }
+      }
+#else
       if((output_kind == OutputKind_RDI || output_kind == OutputKind_Stripped) &&
          cmdline->inputs.node_count != 0 && cmd_line_has_flag(cmdline, str8_lit("compress-zstd")))
       {
@@ -1822,11 +1850,10 @@ rb_thread_entry_point(void *p)
         {
           // rjf: compress
           RDIM_SerializedSectionBundle serialized_section_bundle__compressed = serialized_section_bundle[0];
-          B32 compress_zstd = cmd_line_has_flag(cmdline, str8_lit("compress-zstd"));
           if(compress_zstd || cmd_line_has_flag(cmdline, str8_lit("compress"))) ProfScope("compress")
           {
             RDI_SectionEncoding encoding = compress_zstd ? RDI_SectionEncoding_Zstd : RDI_SectionEncoding_LZB;
-            serialized_section_bundle__compressed = rdim_compress(arena, serialized_section_bundle, encoding);
+            serialized_section_bundle__compressed = rdim_compress(arena, serialized_section_bundle, encoding, compression_level);
           }
           
           // rjf: serialize

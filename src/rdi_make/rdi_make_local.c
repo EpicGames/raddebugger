@@ -3638,7 +3638,7 @@ rdim_bake(Arena *arena, RDIM_BakeParams *params)
 }
 
 internal RDIM_SerializedSectionBundle
-rdim_compress(Arena *arena, RDIM_SerializedSectionBundle *in, RDI_SectionEncoding encoding)
+rdim_compress(Arena *arena, RDIM_SerializedSectionBundle *in, RDI_SectionEncoding encoding, S32 compression_level)
 {
   Temp scratch = scratch_begin(&arena, 1);
 
@@ -3704,7 +3704,7 @@ rdim_compress(Arena *arena, RDIM_SerializedSectionBundle *in, RDI_SectionEncodin
       } break;
       case RDI_SectionEncoding_Zstd: {
 #if RDI_USE_ZSTD
-        encoded_size = (U64)ZSTD_compressCCtx(zstd_ctx, encoded_data, encode_capcity, src->data, (size_t)src->encoded_size, ZSTD_CLEVEL_DEFAULT);
+        encoded_size = (U64)ZSTD_compressCCtx(zstd_ctx, encoded_data, encode_capcity, src->data, (size_t)src->encoded_size, compression_level);
         if (ZSTD_isError(encoded_size) || encoded_size >= src->encoded_size) {
           encoded_size = 0;
         }
