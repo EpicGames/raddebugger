@@ -62,7 +62,7 @@ smsv_init(void)
           for EachNode(n, String8Node, parts.first)
           {
             PathStyle style = path_style_from_str8(n->string);
-            if(w32_smsv_state->symbol_cache_path.size != 0 && style == PathStyle_WindowsAbsolute)
+            if(w32_smsv_state->symbol_cache_path.size == 0 && style == PathStyle_WindowsAbsolute)
             {
               w32_smsv_state->symbol_cache_path = n->string;
             }
