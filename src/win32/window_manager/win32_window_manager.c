@@ -795,7 +795,53 @@ w32_wm_wnd_proc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
                 result = HTCLIENT;
               }
             }
+            
+            // NOTE(bitrake): maximize button -> HTMAXBUTTON, so that Windows 11
+            // shows its Snap Layouts flyout when hovering it
+            Rng2F32 max_rect = window->title_bar_maximize_button_rect;
+            if(max_rect.x0 <= pos_client.x && pos_client.x < max_rect.x1 &&
+               max_rect.y0 <= pos_client.y && pos_client.y < max_rect.y1)
+            {
+              result = HTMAXBUTTON;
+            }
           }
+        }
+      }break;
+      
+      // NOTE(bitrake): [custom border] maximize button - since it hit-tests as
+      // HTMAXBUTTON, mouse input over it arrives as non-client messages. moves
+      // still go to the default procedure (which drives the Snap Layouts flyout),
+      // but are also reported, and presses are turned into regular presses +
+      // capture, so the rest of the click (and its release) arrives as client
+      // messages.
+      case WM_NCMOUSEMOVE:
+      {
+        if(wParam == HTMAXBUTTON)
+        {
+          POINT p = {GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
+          ScreenToClient(hwnd, &p);
+          WM_Event *event = w32_wm_push_event(WM_EventKind_MouseMove, window);
+          event->pos.x = (F32)p.x;
+          event->pos.y = (F32)p.y;
+        }
+        result = DefWindowProcW(hwnd, uMsg, wParam, lParam);
+      }break;
+      case WM_NCLBUTTONDOWN:
+      case WM_NCLBUTTONDBLCLK:
+      {
+        if(wParam == HTMAXBUTTON)
+        {
+          POINT p = {GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
+          ScreenToClient(hwnd, &p);
+          WM_Event *event = w32_wm_push_event(WM_EventKind_Press, window);
+          event->key = WM_Key_LeftMouseButton;
+          event->pos.x = (F32)p.x;
+          event->pos.y = (F32)p.y;
+          SetCapture(hwnd);
+        }
+        else
+        {
+          result = DefWindowProcW(hwnd, uMsg, wParam, lParam);
         }
       }break;
     }
@@ -1341,6 +1387,7 @@ wm_window_clear_custom_border_data(WM_Window handle)
   {
     arena_clear(window->paint_arena);
     window->first_title_bar_client_area = window->last_title_bar_client_area = 0;
+    window->title_bar_maximize_button_rect = r2f32p(0, 0, 0, 0);
     window->custom_border_title_thickness = 0;
     window->custom_border_edge_thickness = 0;
   }
@@ -1378,6 +1425,16 @@ wm_window_push_custom_title_bar_client_area(WM_Window handle, Rng2F32 rect)
       area->rect = rect;
       SLLQueuePush(window->first_title_bar_client_area, window->last_title_bar_client_area, area);
     }
+  }
+}
+
+internal void
+wm_window_push_custom_title_bar_maximize_button(WM_Window handle, Rng2F32 rect)
+{
+  W32_WM_Window *window = w32_wm_window_from_handle(handle);
+  if(window && window->custom_border)
+  {
+    window->title_bar_maximize_button_rect = rect;
   }
 }
 

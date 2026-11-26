@@ -8048,6 +8048,7 @@ rd_window_frame(void)
             }
             wm_window_push_custom_title_bar_client_area(ws->os, min_sig.box->rect);
             wm_window_push_custom_title_bar_client_area(ws->os, max_sig.box->rect);
+            wm_window_push_custom_title_bar_maximize_button(ws->os, max_sig.box->rect);
             wm_window_push_custom_title_bar_client_area(ws->os, pad_2f32(cls_sig.box->rect, 2.f));
           }
         }
