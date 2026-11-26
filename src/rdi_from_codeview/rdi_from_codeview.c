@@ -3940,7 +3940,7 @@ cv2r_convert(Arena *arena, CV2R_ConvertParams *params)
                   curr_proc_symbol = rdim_symbol_chunk_list_push(arena, sym_procedures, sym_procedures_chunk_cap);
                   curr_proc_symbol->is_extern        = (record.header.kind == CV_SymKind_GPROC32);
                   curr_proc_symbol->name             = name__maybe_partially_qualified;
-                  curr_proc_symbol->link_name        = link_name;
+                  curr_proc_symbol->link_name        = (params->single_symbol_name && curr_proc_symbol->name.size != 0) ? (String8){0} : link_name;
                   curr_proc_symbol->type             = type;
                   curr_proc_symbol->container_scope  = container_scope;
                   curr_proc_symbol->container_type   = container_type;
@@ -4687,7 +4687,7 @@ cv2r_convert(Arena *arena, CV2R_ConvertParams *params)
             RDIM_SymbolChunkList *symbols = is_procedure ? sym_procedures : sym_global_variables;
             RDIM_Symbol *symbol = rdim_symbol_chunk_list_push(arena, symbols, 64);
             symbol->name = name;
-            symbol->link_name = name;
+            symbol->link_name = (params->single_symbol_name && symbol->name.size != 0) ? (String8){0} : name;
             if(is_procedure)
             {
               RDIM_Scope *scope = rdim_scope_chunk_list_push(arena, sym_scopes, 64);

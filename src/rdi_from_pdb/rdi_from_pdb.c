@@ -528,6 +528,7 @@ p2r_convert2(Arena *arena, P2R_ConvertParams *params)
     cv2r_params.ipi_hash                      = ipi_hash;
     cv2r_params.subset_flags                  = params->subset_flags;
     cv2r_params.deterministic                 = params->deterministic;
+    cv2r_params.single_symbol_name            = params->single_symbol_name;
   }
   
   //////////////////////////////////////////////////////////////

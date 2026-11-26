@@ -134,6 +134,7 @@ struct D2R_ConvertParams
   RDIM_SubsetFlags subset_flags;
   B32 deterministic;
   B32 skip_exe_hash;
+  B32 single_symbol_name; // keep linkage only when the primary name is empty
 };
 
 ////////////////////////////////

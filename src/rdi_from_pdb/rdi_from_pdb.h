@@ -16,6 +16,7 @@ struct P2R_ConvertParams
   String8 input_exe_data;
   RDIM_SubsetFlags subset_flags;
   B32 deterministic;
+  B32 single_symbol_name; // keep linkage only when the primary name is empty
 };
 
 ////////////////////////////////

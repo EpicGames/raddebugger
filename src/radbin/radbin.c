@@ -1443,11 +1443,12 @@ rb_thread_entry_point(void *p)
                 scratch_end(scratch);
               }break;
             }
-            convert_params.exe_name      = exe_name;
-            convert_params.exe_data      = exe_data;
-            convert_params.subset_flags  = subset_flags;
-            convert_params.deterministic = cmd_line_has_flag(cmdline, str8_lit("deterministic"));
-            convert_params.skip_exe_hash = breakpad_subset;
+            convert_params.exe_name           = exe_name;
+            convert_params.exe_data           = exe_data;
+            convert_params.subset_flags       = subset_flags;
+            convert_params.deterministic      = cmd_line_has_flag(cmdline, str8_lit("deterministic"));
+            convert_params.skip_exe_hash      = breakpad_subset;
+            convert_params.single_symbol_name = breakpad_subset;
             breakpad_exe_kind    = exe_kind;
             breakpad_base_vaddr  = convert_params.base_vaddr;
             breakpad_exe_name    = exe_name;
@@ -1525,6 +1526,7 @@ rb_thread_entry_point(void *p)
               convert_params.subset_flags    = subset_flags;
               convert_params.deterministic   = cmd_line_has_flag(cmdline, str8_lit("deterministic"));
               convert_params.skip_exe_hash   = breakpad_subset;
+              convert_params.single_symbol_name = breakpad_subset;
               breakpad_exe_kind    = ExecutableImageKind_Macho;
               breakpad_base_vaddr  = convert_params.base_vaddr;
               breakpad_exe_name    = exe_file->path;
@@ -1579,6 +1581,7 @@ rb_thread_entry_point(void *p)
             convert_params.input_exe_data = exe_data;
             convert_params.subset_flags   = subset_flags;
             convert_params.deterministic  = cmd_line_has_flag(cmdline, str8_lit("deterministic"));
+            convert_params.single_symbol_name = breakpad_subset;
           }
           ProfScope("convert") pdb_bake_params = p2r_convert2(conversion_arena, &convert_params);
         }

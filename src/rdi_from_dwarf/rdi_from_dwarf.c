@@ -4293,7 +4293,7 @@ d2r_convert(Arena *arena, D2R_ConvertParams *params)
                   RDIM_Scope  *root_scope        = rdim_scope_chunk_list_push(arena, &dst_artifacts->scopes, scope_chunk_count);
                   RDIM_Symbol *procedure         = rdim_symbol_chunk_list_push(arena, &dst_artifacts->procedures, proc_chunk_count);
                   procedure->name           = name;
-                  procedure->link_name      = link_name;
+                  procedure->link_name      = (params->single_symbol_name && procedure->name.size != 0) ? (String8){0} : link_name;
                   procedure->type           = type;
                   procedure->root_scope     = root_scope;
                   procedure->location_cases = framebase_location_cases;
@@ -4355,7 +4355,7 @@ d2r_convert(Arena *arena, D2R_ConvertParams *params)
                     var->is_extern = is_external;
                     var->is_param  = (tag.kind == DW_TagKind_FormalParameter);
                     var->name      = name;
-                    var->link_name = link_name;
+                    var->link_name = (params->single_symbol_name && var->name.size != 0) ? (String8){0} : link_name;
                     var->type      = type;
                     var->location_cases = location_cases;
                     new_symbol = var;
